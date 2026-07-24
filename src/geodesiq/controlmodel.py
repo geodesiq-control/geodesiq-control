@@ -74,9 +74,6 @@ class ControlModel:
         self._flags.add("metric_computed", parents=["eigenproblem_solved", "dia_list_computed"])
         self._flags.add("ode_solved", parent="metric_computed")
 
-        self._flags.add("hamiltonian_checked")
-        self._flags.add("partial_hamiltonian_checked")
-
         if self._partial_H_func is not None:
             self._flag_numerical_partial_H = False
         else:
@@ -121,18 +118,14 @@ class ControlModel:
     def _call_hamiltonian(self, *args: Any, **kwargs: Any) -> np.ndarray:
         matrix = self.H_func(*args, **{**self._parameters, **kwargs})
 
-        if not self._flags["hamiltonian_checked"]:
-            if len(set(matrix.shape)) != 1 or len(matrix.shape) != 2:  # Square
-                raise ValidationError(
-                    f"H_func must return a 2D square matrix, but the provided shape is {matrix.shape}.")
+        if len(set(matrix.shape)) != 1 or len(matrix.shape) != 2:  # Square
+            raise ValidationError(f"H_func must return a 2D square matrix, but the provided shape is {matrix.shape}.")
 
-            if not np.allclose(matrix, matrix.T.conj()):  # Hermitian
-                raise ValidationError("H_func must return a Hermitian matrix.")
+        if not np.allclose(matrix, matrix.T.conj()):  # Hermitian
+            raise ValidationError("H_func must return a Hermitian matrix.")
 
-            if not np.all(np.isfinite(matrix)):  # Non-finite values
-                raise ValidationError("H_func must return a matrix with finite values.")
-
-            self._flags["hamiltonian_checked"] = True
+        if not np.all(np.isfinite(matrix)):  # Non-finite values
+            raise ValidationError("H_func must return a matrix with finite values.")
 
         return matrix
 
@@ -142,22 +135,19 @@ class ControlModel:
             raise MissingControlParameterError("partial_H_func is not configured.")
         matrix = partial_H_func(*args, **{**self._parameters, **kwargs})
 
-        if not self._flags["partial_hamiltonian_checked"]:
-            if len(set(matrix.shape)) != 1 or len(matrix.shape) != 2:  # Square
-                raise ValidationError(
-                    f"partial_H_func must return a 2D square matrix, but the provided shape is {matrix.shape}.")
+        if len(set(matrix.shape)) != 1 or len(matrix.shape) != 2:  # Square
+            raise ValidationError(
+                f"partial_H_func must return a 2D square matrix, but the provided shape is {matrix.shape}.")
 
-            if not np.allclose(matrix, matrix.T.conj()):  # Hermitian
-                raise ValidationError("partial_H_func must return a Hermitian matrix.")
+        if not np.allclose(matrix, matrix.T.conj()):  # Hermitian
+            raise ValidationError("partial_H_func must return a Hermitian matrix.")
 
-            if not np.all(np.isfinite(matrix)):  # Non-finite values
-                raise ValidationError("partial_H_func must return a matrix with finite values.")
+        if not np.all(np.isfinite(matrix)):  # Non-finite values
+            raise ValidationError("partial_H_func must return a matrix with finite values.")
 
-            hamiltonian_temp = self.H_func(*args, **{**self._parameters, **kwargs})
-            if np.shape(matrix) != hamiltonian_temp.shape:
-                raise ValidationError("partial_H_func must return a matrix with the same shape as H_func.")
-
-            self._flags["partial_hamiltonian_checked"] = True
+        hamiltonian_temp = self.H_func(*args, **{**self._parameters, **kwargs})
+        if np.shape(matrix) != hamiltonian_temp.shape:
+            raise ValidationError("partial_H_func must return a matrix with the same shape as H_func.")
 
         return matrix
 
@@ -196,7 +186,6 @@ class ControlModel:
             if not callable(func):
                 raise ValidationError("H_func must be callable.")
             self._H_func = func
-            self._flags["hamiltonian_checked"] = False
         else:
             raise ImmutableConfigurationError("H_func is already set and cannot be changed. If you want to change it,"
                                               " please create a new instance of the ControlModel class.")
@@ -213,7 +202,6 @@ class ControlModel:
             self._partial_H_func = func
             self._flag_numerical_partial_H = False  # Update the numerical partial flag
             self._flags["eigenproblem_solved"] = False  # Reset the eigenproblem solved flag
-            self._flags["partial_hamiltonian_checked"] = False
         else:
             raise ImmutableConfigurationError(
                 "partial_H_func is already set and cannot be changed. If you want to change it,"
@@ -277,7 +265,8 @@ class ControlModel:
         if self._pulse_initial is not None and value == self._pulse_initial:
             raise InvalidControlParameterError("pulse_initial and pulse_final values must be different.")
         self._pulse_final = value
-        self._flags["eigenproblem_solved"] = (False# Reset the eigenproblem solved flag if the pulse final value changes
+        self._flags["eigenproblem_solved"] = (False
+                                              # Reset the eigenproblem solved flag if the pulse final value changes
                                               )
 
     @property
@@ -434,22 +423,6 @@ class ControlModel:
         if self._control_sol is None:
             raise SolverError("The control solution is unavailable after solving.")
         return self._control_sol.copy()
-
-    @property
-    def pulse(self) -> PulseControl:
-        """Return the synthesized pulse.
-
-        A pulse does not exist until ``synthesize_pulse`` has been called because
-        pulse synthesis requires a physical duration.
-        """
-
-        all_flags_check = self._flags.all()
-        if not all_flags_check:
-            self.solve_problem()  # Attempt to solve the pulse if not already solved
-
-        if self._pulse is None:
-            raise SolverError("The pulse is unavailable after solving.")
-        return self._pulse
 
     @property
     def eigenenergies(self) -> np.ndarray:

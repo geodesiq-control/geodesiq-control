@@ -1135,14 +1135,6 @@ class TestSynthesizePulse:
         with pytest.raises(SolverError, match="Cannot synthesize a pulse"):
             configured_ham.synthesize_pulse(duration=1.0)
 
-    def test_pulse_property_triggers_solve_when_flags_not_all_true(self, configured_ham, monkeypatch):
-        def fake_solve_problem(*args, **kwargs):
-            configured_ham._pulse = "sentinel"
-
-        monkeypatch.setattr(configured_ham, "solve_problem", fake_solve_problem)
-
-        assert configured_ham.pulse == "sentinel"
-
 
 class TestSolveProblemErrorsExtended:
     def test_solve_ode_raises_if_called_before_metric_is_ready(self, bare_ham):
