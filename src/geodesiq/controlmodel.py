@@ -1,8 +1,7 @@
-from dataclasses import dataclass
-from typing import Any, Callable
-
-from types import MappingProxyType
 from collections.abc import Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any, Callable
 
 import numpy as np
 from scipy.differentiate import jacobian
@@ -116,10 +115,19 @@ class ControlModel:
         self._hamiltonian_dimension: int | None = None
 
     def _call_hamiltonian(self, *args: Any, **kwargs: Any) -> np.ndarray:
-        matrix = self.H_func(*args, **{**self._parameters, **kwargs})
+        matrix = np.asarray(self.H_func(*args, **{**self._parameters, **kwargs}))
 
-        if len(set(matrix.shape)) != 1 or len(matrix.shape) != 2:  # Square
-            raise ValidationError(f"H_func must return a 2D square matrix, but the provided shape is {matrix.shape}.")
+        if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
+            raise ValidationError(f"H_func must return a 2D square matrix, got shape {matrix.shape}.")
+
+        dimension = matrix.shape[0]
+
+        if self._hamiltonian_dimension is None:
+            self._hamiltonian_dimension = dimension
+        elif dimension != self._hamiltonian_dimension:
+            raise ValidationError("The Hamiltonian dimension cannot change after ControlModel "
+                                  f"initialization: expected {self._hamiltonian_dimension}, "
+                                  f"got {dimension}.")
 
         if not np.allclose(matrix, matrix.T.conj()):  # Hermitian
             raise ValidationError("H_func must return a Hermitian matrix.")
@@ -133,11 +141,10 @@ class ControlModel:
         partial_H_func = self.partial_H_func
         if partial_H_func is None:
             raise MissingControlParameterError("partial_H_func is not configured.")
-        matrix = partial_H_func(*args, **{**self._parameters, **kwargs})
+        matrix = np.asarray(partial_H_func(*args, **{**self._parameters, **kwargs}))
 
-        if len(set(matrix.shape)) != 1 or len(matrix.shape) != 2:  # Square
-            raise ValidationError(
-                f"partial_H_func must return a 2D square matrix, but the provided shape is {matrix.shape}.")
+        if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
+            raise ValidationError(f"partial_H_func must return a 2D square matrix, got shape {matrix.shape}.")
 
         if not np.allclose(matrix, matrix.T.conj()):  # Hermitian
             raise ValidationError("partial_H_func must return a Hermitian matrix.")
@@ -265,8 +272,7 @@ class ControlModel:
         if self._pulse_initial is not None and value == self._pulse_initial:
             raise InvalidControlParameterError("pulse_initial and pulse_final values must be different.")
         self._pulse_final = value
-        self._flags["eigenproblem_solved"] = (False
-                                              # Reset the eigenproblem solved flag if the pulse final value changes
+        self._flags["eigenproblem_solved"] = (False# Reset the eigenproblem solved flag if the pulse final value changes
                                               )
 
     @property
@@ -293,6 +299,7 @@ class ControlModel:
 
         self._flags["metric_computed"] = False  # Reset the  metric computed flag if the initial state index changes
         self._flags["dia_list_computed"] = False  # Reset the diabatic computed flag if the pulse initial value changes
+        self._dia_list = None
 
         # If the initial state is the same as the final state, we can mark the diabatic passage list as computed
         if self._initial_state == self._final_state:
@@ -318,6 +325,7 @@ class ControlModel:
         self._final_state = value
         self._flags["metric_computed"] = False  # Reset the metric computed flag if the final state index changes
         self._flags["dia_list_computed"] = False  # Reset the diabatic computed flag if the pulse initial value changes
+        self._dia_list = None
 
         # If the initial state is the same as the final state, we can mark the diabatic passage list as computed
         if self._initial_state == self._final_state:
@@ -458,9 +466,11 @@ class ControlModel:
 
         new_params = {**self._parameters, **parameters}
 
-        if not values_equal(new_params, self._parameters):
-            self._parameters = new_params
-            self._flags["eigenproblem_solved"] = False
+        if values_equal(new_params, self._parameters):
+            return
+
+        self._parameters = new_params
+        self._flags["eigenproblem_solved"] = False
 
     @property
     def parameters(self) -> Mapping[str, Any]:
@@ -628,7 +638,6 @@ class ControlModel:
         if config is None:
             config = self._check_eigensystem_parameters()
 
-        self._hamiltonian_dimension = None
         self._control_pulse = np.linspace(config.pulse_initial, config.pulse_final, num=config.num_steps, dtype=float, )
         full_hamiltonian = np.stack([self.evaluate_hamiltonian(value) for value in self._control_pulse])
         dimension = full_hamiltonian.shape[1]

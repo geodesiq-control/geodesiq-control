@@ -36,6 +36,13 @@ def simple_hamiltonian(control, offset=0.0):
     return np.array([[control + offset, 0.0], [0.0, -control + offset], ])
 
 
+def variable_dimension_hamiltonian(lam: float, dimension: int, ) -> np.ndarray:
+    if dimension == 2:
+        return np.array([[lam, 1.0], [1.0, -lam], ])
+
+    return np.array([[lam, 1.0, 0.0], [1.0, -lam, 0.5], [0.0, 0.5, 2.0], ])
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -1218,3 +1225,61 @@ class TestDiabaticMetricPath:
         ham._solve_dia_list({})
 
         np.testing.assert_array_equal(ham._dia_list, np.array([[1]]))
+
+
+# ---------------------------------------------------------------------------
+# Test mutability of the model with changing the parameters
+# ---------------------------------------------------------------------------
+
+class TestMutability:
+    def test_parameter_change_keeps_diabatic_list(self):
+        model = ControlModel(lz_hamiltonian, lz_partial)
+
+        model.set_parameters(delta=1.0)
+
+        model.set_control(control_name="lam", pulse_initial=-2.0, pulse_final=2.0, initial_state=0, final_state=1,
+                          alpha=2.0, beta=2.0, dia_alpha=1.0, dia_beta=1.0, )
+
+        model.solve_problem()
+
+        dia_list = model._dia_list
+
+        model.set_parameters(delta=2.0)
+
+        assert model._flags["eigenproblem_solved"] is False
+        assert model._flags["dia_list_computed"] is True
+        assert model._dia_list is dia_list
+
+    def test_state_change_invalidates_diabatic_list(self):
+
+        def hamiltonian(lam, t):
+            return np.array([[lam, t, 0], [t, -lam, 1], [0, 1, 0]])
+
+        model = ControlModel(hamiltonian)
+
+        model.set_parameters(t=1.0)
+
+        model.set_control(control_name="lam", pulse_initial=-2.0, pulse_final=2.0, initial_state=0, final_state=1,
+                          alpha=2.0, beta=2.0, dia_alpha=1.0, dia_beta=1.0, )
+
+        model.solve_problem()
+
+        assert model._flags["dia_list_computed"]
+
+        model.final_state = 2
+
+        assert not model._flags["dia_list_computed"]
+        assert model._dia_list is None
+
+    def test_hamiltonian_dimension_cannot_change(self):
+        model = ControlModel(variable_dimension_hamiltonian)
+
+        model.set_parameters(dimension=2)
+        model.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, )
+
+        model.evaluate_hamiltonian(0.0)
+
+        model.set_parameters(dimension=3)
+
+        with pytest.raises(ValidationError, match="Hamiltonian dimension cannot change", ):
+            model.evaluate_hamiltonian(0.0)
