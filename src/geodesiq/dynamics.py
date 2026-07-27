@@ -4,7 +4,7 @@ import numpy as np
 import qutip as qt
 
 from .controlmodel import ControlModel
-from .exceptions import ValidationError
+from .exceptions import ValidationError, ConfigurationError
 
 
 class Dynamics:
@@ -100,13 +100,23 @@ class Dynamics:
             raise ValidationError("Collapse operators must be provided as a list of Qobj or numpy arrays.")
 
         control_pulse = self._control_pulse
-        assert control_pulse is not None
+
+        if control_pulse is None:
+            raise ConfigurationError(
+                "Control pulse is unavailable. Solve the ControlModel before computing the dynamics.")
+
         pulse_times: list[float] = np.asarray(self._pulse_times, dtype=float).tolist()
 
         if initial_state is None and final_state is None:
-            assert self._initial_state is not None and self._final_state is not None
-            psi_init = self._eigenstate(float(control_pulse[0]), self._initial_state)
-            psi_target = self._eigenstate(float(control_pulse[-1]), self._final_state)
+            initial_index = self._initial_state
+            final_index = self._final_state
+
+            if initial_index is None or final_index is None:
+                raise ConfigurationError("Initial and final state indices must be configured in the ControlModel "
+                                         "when no explicit states are provided.")
+
+            psi_init = self._eigenstate(float(control_pulse[0]), initial_index, )
+            psi_target = self._eigenstate(float(control_pulse[-1]), final_index, )
 
         elif isinstance(initial_state, int) and isinstance(final_state, int):
             psi_init = self._eigenstate(float(control_pulse[0]), initial_state)
