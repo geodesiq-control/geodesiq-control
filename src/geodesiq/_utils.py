@@ -1,6 +1,9 @@
-import numpy as np
 from collections.abc import Mapping, Sequence
 from typing import Any
+
+import numpy as np
+
+from .exceptions import ValidationError
 
 
 class Flags:
@@ -211,3 +214,15 @@ def values_equal(a: Any, b: Any) -> bool:
         pass
 
     return a == b
+
+
+def validate_state_index(index: int, dimension: int, name: str) -> int:
+    if not isinstance(index, (int, np.integer)) or isinstance(index, bool):
+        raise ValidationError(f"{name} must be an integer.")
+
+    index = int(index)
+
+    if not 0 <= index < dimension:
+        raise ValidationError(f"{name} must be between 0 and {dimension - 1}, got {index}.")
+
+    return index

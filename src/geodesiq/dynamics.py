@@ -3,6 +3,7 @@ from typing import List, Optional
 import numpy as np
 import qutip as qt
 
+from ._utils import validate_state_index
 from .controlmodel import ControlModel
 from .exceptions import ValidationError, ConfigurationError
 
@@ -30,6 +31,7 @@ class Dynamics:
         self._control_sol: np.ndarray | None = np.asarray(model.control_sol) if model.control_sol is not None else None
         self._initial_state: int | None = model.initial_state
         self._final_state: int | None = model.final_state
+        self._hamiltonian_dimension: int | None = model.hamiltonian_dimension
 
         if not isinstance(hbar, (int, float, np.integer, np.floating)) or isinstance(hbar, bool):
             raise ValidationError("hbar must be a finite positive number.")
@@ -44,10 +46,15 @@ class Dynamics:
         self._control_pulse = np.asarray(self._control_pulse, dtype=float)
         self._control_sol = np.asarray(self._control_sol, dtype=float)
 
-        if duration <= 0:
-            raise ValidationError("The duration must be larger than 0.")
-        self._duration = duration
-        self._pulse_times: np.ndarray = duration * np.linspace(0, 1, len(self._control_sol))
+        if not isinstance(duration, (int, float, np.integer, np.floating)) or isinstance(duration, bool):
+            raise ValidationError("duration must be a finite positive number.")
+
+        duration = float(duration)
+
+        if not np.isfinite(duration) or duration <= 0:
+            raise ValidationError("duration must be a finite positive number.")
+        self._duration: float = duration
+        self._pulse_times: np.ndarray = duration * np.linspace(0.0, 1.0, len(self._control_sol))
 
     def _eigenstate(self, control_value: float, state_index: int) -> qt.Qobj:
         hamiltonian = qt.Qobj(self.evaluate_hamiltonian(control_value))
@@ -119,16 +126,21 @@ class Dynamics:
             psi_target = self._eigenstate(float(control_pulse[-1]), final_index, )
 
         elif isinstance(initial_state, int) and isinstance(final_state, int):
+
+            validate_state_index(initial_state, self._hamiltonian_dimension, "initial_state")
+            validate_state_index(final_state, self._hamiltonian_dimension, "final_state")
+
             psi_init = self._eigenstate(float(control_pulse[0]), initial_state)
             psi_target = self._eigenstate(float(control_pulse[-1]), final_state)
 
         elif isinstance(initial_state, np.ndarray) and isinstance(final_state, np.ndarray):
-            ham_shape = self._get_ham(0).shape
 
-            if initial_state.shape[0] != ham_shape[0] or final_state.shape[0] != ham_shape[0]:
+            if initial_state.shape[0] != self._hamiltonian_dimension or final_state.shape[
+                0] != self._hamiltonian_dimension:
                 raise ValidationError(
                     f"Initial and final states must have the same dimension as the ControlModel. Shape of ControlModel:"
-                    f" {ham_shape}. Shape of initial state: {initial_state.shape}")
+                    f" {(self._hamiltonian_dimension, self._hamiltonian_dimension)}."
+                    f" Shape of initial state: {initial_state.shape}")
 
             psi_init = qt.Qobj(initial_state)
             psi_target = qt.Qobj(final_state)

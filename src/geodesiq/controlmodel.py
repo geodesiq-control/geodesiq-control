@@ -9,7 +9,7 @@ from scipy.differentiate import jacobian
 from scipy.integrate import romb, solve_ivp
 from scipy.interpolate import PchipInterpolator
 
-from ._utils import Flags, build_diab, values_equal
+from ._utils import Flags, build_diab, values_equal, validate_state_index
 from .exceptions import (ImmutableConfigurationError, InvalidControlParameterError, MissingControlParameterError,
                          SolverError, ValidationError, MetricComputationError, )
 from .pulses import PulseControl
@@ -116,6 +116,10 @@ class ControlModel:
         self._metric_integrator_kwargs: dict[str, Any] = {}
         self._previous_pulse_accuracy: int | None = None  # To track changes in pulse accuracy for ODE solving
         self._hamiltonian_dimension: int | None = None
+
+    @property
+    def hamiltonian_dimension(self) -> int | None:
+        return self._hamiltonian_dimension
 
     def _call_hamiltonian(self, *args: Any, **kwargs: Any) -> np.ndarray:
         matrix = np.asarray(self.H_func(*args, **{**self._parameters, **kwargs}))
@@ -1218,6 +1222,11 @@ class ControlModel:
             raise MissingControlParameterError(
                 f"Missing control parameters: {', '.join(missing_params)}. Please set them using set_control"
                 f"({', '.join(f'{name}=<...>' for name in missing_params)}).")
+
+        hamiltonian = self.evaluate_hamiltonian(pulse_initial)
+        dimension = hamiltonian.shape[0]
+        validate_state_index(initial_state, dimension, "initial_state")
+        validate_state_index(final_state, dimension, "final_state")
 
         return _ControlParameters(control_name=control_name, pulse_initial=pulse_initial, pulse_final=pulse_final,
                                   num_steps=num_steps, initial_state=initial_state, final_state=final_state,

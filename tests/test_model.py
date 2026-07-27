@@ -1326,3 +1326,28 @@ class TestMutability:
 
         with pytest.raises(ValidationError, match="Hamiltonian dimension cannot change", ):
             model.evaluate_hamiltonian(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Test initial and final indices
+# ---------------------------------------------------------------------------
+
+class TestIndices:
+    @pytest.mark.parametrize(("initial_state", "final_state"), [(2, 0), (0, 2), (2, 2)], )
+    def test_out_of_range_control_state_indices_raise(self, initial_state: int, final_state: int, ) -> None:
+        model = ControlModel(hamiltonian)
+
+        model.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=initial_state,
+                          final_state=final_state, alpha=2.0, beta=2.0, dia_alpha=1, dia_beta=2)
+
+        with pytest.raises(ValidationError, match="must be between", ):
+            model.solve_problem()
+
+    @pytest.mark.parametrize(("initial_state", "final_state"), [(0, 0), (0, 1), (1, 0), (1, 1), ], )
+    def test_valid_control_state_indices_are_accepted(self, initial_state: int, final_state: int, ) -> None:
+        model = ControlModel(hamiltonian)
+
+        model.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=initial_state,
+                          final_state=final_state, alpha=2.0, beta=2.0, dia_alpha=1, dia_beta=2)
+
+        model.solve_problem()

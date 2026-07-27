@@ -78,6 +78,19 @@ def test_get_ham_interpolation(varying_dynamics):
     np.testing.assert_allclose(H_qobj.full(), expected)
 
 
+@pytest.mark.parametrize("duration", [0, -1, -1.5, np.nan, np.inf, -np.inf, True, False, "1.0", None, 1 + 2j, ], )
+def test_invalid_duration_raises_validation_error(real_model, duration: Any) -> None:
+    with pytest.raises(ValidationError, match="duration must be a finite positive number", ):
+        Dynamics(duration=duration, model=real_model)
+
+
+@pytest.mark.parametrize("duration", [1, 1.5, np.int64(2), np.float64(2.5), ], )
+def test_valid_duration_is_accepted(real_model, duration: Any) -> None:
+    dynamics = Dynamics(duration=duration, model=real_model)
+
+    assert dynamics._duration == float(duration)
+
+
 # ------------------------------------------------------------
 # Testing gate and state transfer fidelity
 # ------------------------------------------------------------
@@ -235,3 +248,20 @@ def test_average_gate_fidelity_invalid_gate_type(default_dynamics):
     """Invalid gate types should raise a ValidationError."""
     with pytest.raises(ValidationError, match="Gate must be a Qobj or a list of Qobj instances"):
         default_dynamics.average_gate_fidelity(gate=cast(Any, [qt.identity(2), np.eye(2)]), target_gate=qt.identity(2))
+
+
+# ---------------------------------------------------------------------------
+# Test initial and final indices
+# ---------------------------------------------------------------------------
+
+class TestIndices:
+    @pytest.mark.parametrize(("initial_state", "final_state"), [(2, 0), (0, 2), (2, 2)], )
+    def test_out_of_range_control_state_indices_raise(self, default_dynamics, initial_state: int,
+                                                      final_state: int, ) -> None:
+        with pytest.raises(ValidationError, match="must be between", ):
+            default_dynamics.state_fidelity(initial_state=initial_state, final_state=final_state)
+
+    @pytest.mark.parametrize(("initial_state", "final_state"), [(0, 0), (0, 1), (1, 0), (1, 1), ], )
+    def test_valid_control_state_indices_are_accepted(self, default_dynamics, initial_state: int,
+                                                      final_state: int, ) -> None:
+        default_dynamics.state_fidelity(initial_state=initial_state, final_state=final_state)
