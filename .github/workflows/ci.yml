@@ -140,6 +140,22 @@ jobs:
       - name: Check distributions
         run: uv run twine check --strict dist/*
 
+      - name: Create isolated test environment
+        run: uv venv .venv-wheel --python 3.14
+
+      - name: Install built wheel
+        run: uv pip install --python .venv-wheel/bin/python dist/*.whl
+
+      - name: Smoke test installed wheel
+        run: |
+          cd /tmp
+
+          "$GITHUB_WORKSPACE/.venv-wheel/bin/python" -W error - <<'PY'
+          import geodesiq
+
+          print(f"Successfully imported geodesiq from {geodesiq.__file__}")
+          PY
+
   pr-gate:
     name: PR gate
     if: always() && github.event_name == 'pull_request'
