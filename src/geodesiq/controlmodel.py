@@ -42,6 +42,7 @@ class ControlModel:
     """
 
     _SINGULARITY_RTOL = 1e-12
+    _SINGULARITY_ATOL = 1e-14
 
     def __init__(self, H_func: Callable[..., np.ndarray], partial_H_func: Callable[..., np.ndarray] | None = None,
                  _flags_verbose: bool = False, ) -> None:
@@ -93,7 +94,8 @@ class ControlModel:
         self._num_steps: int | None = None
 
         # Initialize energy gaps and matrix elements to None (to be computed in self.solve_problem())
-        self._energies: np.ndarray | None = None
+        self._centered_energies: np.ndarray | None = None
+        self._energy_offset: np.ndarray | None = None
         self._matrix_elements: np.ndarray | None = None
 
         # Initialize metric tensor and normalization factor to None (to be computed in self.solve_problem())
@@ -273,7 +275,8 @@ class ControlModel:
         if self._pulse_initial is not None and value == self._pulse_initial:
             raise InvalidControlParameterError("pulse_initial and pulse_final values must be different.")
         self._pulse_final = value
-        self._flags["eigenproblem_solved"] = (False# Reset the eigenproblem solved flag if the pulse final value changes
+        self._flags["eigenproblem_solved"] = (False
+                                              # Reset the eigenproblem solved flag if the pulse final value changes
                                               )
 
     @property
@@ -439,9 +442,9 @@ class ControlModel:
         if not self._flags["eigenproblem_solved"]:
             self._check_eigensystem_parameters()
             self._solve_eigenproblem()
-        if self._energies is None:
+        if self._centered_energies is None:
             raise SolverError("Eigenenergies are unavailable after eigensystem solution.")
-        return self._energies.copy()
+        return self._centered_energies.copy() + self._energy_offset[:, None]
 
     @property
     def control_pulse(self) -> np.ndarray:
@@ -624,9 +627,9 @@ class ControlModel:
         if self._flags["dia_list_computed"]:
             return
 
-        if self._energies is None:
+        if self._centered_energies is None:
             raise SolverError("Eigenenergies are unavailable before computing diabatic passages.")
-        dim = self._energies.shape[1]
+        dim = self._centered_energies.shape[1]
         self._dia_list = build_diab(initial_state=config.initial_state, final_state=config.final_state, dim=dim)
         self._flags["dia_list_computed"] = True
 
@@ -642,6 +645,9 @@ class ControlModel:
         full_hamiltonian = np.stack([self.evaluate_hamiltonian(value) for value in self._control_pulse])
         dimension = full_hamiltonian.shape[1]
 
+        energy_offset = np.trace(full_hamiltonian, axis1=1, axis2=2) / dimension
+        hamiltonian_centered = full_hamiltonian - energy_offset[:, None, None] * np.eye(dimension)
+
         # State indices are required for a full solve, but not for plotting/eigenenergy access.
         if isinstance(config, _ControlParameters):
             for label, index in (("initial_state", config.initial_state), ("final_state", config.final_state)):
@@ -650,14 +656,15 @@ class ControlModel:
                         f"{label}={index} is out of range for a {dimension}-dimensional Hamiltonian.")
 
         try:
-            energies, eigenvectors = np.linalg.eigh(full_hamiltonian)
+            energies, eigenvectors = np.linalg.eigh(hamiltonian_centered)
         except np.linalg.LinAlgError as exc:
             raise SolverError("Hamiltonian eigendecomposition failed.") from exc
 
         energies = np.asarray(energies, dtype=float)
         if not np.all(np.isfinite(energies)):
             raise SolverError("Hamiltonian eigendecomposition produced non-finite eigenenergies.")
-        self._energies = energies
+        self._centered_energies = energies
+        self._energy_offset = energy_offset
 
         if self._flag_numerical_partial_H:
             full_partial_H = self._compute_numerical_partial_H()
@@ -676,13 +683,28 @@ class ControlModel:
     def _metric_ratio(self, numerator: np.ndarray, denominator: np.ndarray, alpha: float, beta: float,
                       transition: tuple[int, int], ) -> np.ndarray:
         if alpha > 0:
-            gap_scale = max(1.0, float(np.max(np.abs(self._energies)))) if self._energies is not None else 1.0
-            tolerance = self._SINGULARITY_RTOL * gap_scale
-            if np.any(denominator <= tolerance):
-                raise MetricComputationError("Degenerate or near-degenerate energy gap encountered for transition "
-                                             f"{transition}; provide a regularized model or avoid the degeneracy.")
-        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            if self._centered_energies is None:
+                raise MetricComputationError("Eigenenergies are unavailable for degeneracy detection.")
+
+            bandwidth = np.ptp(self._centered_energies, axis=1)
+
+            tolerance = (self._SINGULARITY_ATOL + self._SINGULARITY_RTOL * bandwidth)
+
+            singular = denominator <= tolerance
+
+            if np.any(singular):
+                indices = np.flatnonzero(singular)
+
+                details = ", ".join(f"x={self._control_pulse[i]:.6g}, "
+                                    f"gap={denominator[i]:.3e}, "
+                                    f"tol={tolerance[i]:.3e}" for i in indices[:5])
+
+                raise MetricComputationError("Degenerate or near-degenerate energy gap encountered "
+                                             f"for transition {transition}: {details}")
+
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore", ):
             ratio = numerator ** beta / denominator ** alpha
+
         return np.asarray(ratio, dtype=float)
 
     def _compute_metric_tensor(self, config: _ControlParameters) -> None:
@@ -745,12 +767,12 @@ class ControlModel:
         self._flags["metric_computed"] = True
 
     def _compute_G_diabatic(self, config: _ControlParameters) -> None:
-        if self._energies is None or self._matrix_elements is None or self._dia_list is None:
+        if self._centered_energies is None or self._matrix_elements is None or self._dia_list is None:
             raise SolverError("Diabatic metric prerequisites are unavailable.")
         if config.dia_alpha is None or config.dia_beta is None:
             raise MissingControlParameterError("Diabatic metric exponents are required.")
 
-        num, dim = self._energies.shape
+        num, dim = self._centered_energies.shape
         metric = np.zeros(num, dtype=float)
 
         for m in range(dim):
@@ -758,7 +780,7 @@ class ControlModel:
                 if n == m:
                     continue
                 adiabatic = bool(self._dia_list[m, n])
-                denominator = np.abs(self._energies[:, n] - self._energies[:, m])
+                denominator = np.abs(self._centered_energies[:, n] - self._centered_energies[:, m])
                 numerator = self._matrix_elements[:, m, n]
                 metric += self._metric_ratio(numerator, denominator,
                                              alpha=config.alpha if adiabatic else config.dia_alpha,
@@ -767,15 +789,15 @@ class ControlModel:
 
     def _compute_G_adiabatic(self, config: _ControlParameters) -> None:
         """Compute the adiabatic contribution to the metric tensor."""
-        if self._energies is None or self._matrix_elements is None:
+        if self._centered_energies is None or self._matrix_elements is None:
             raise SolverError("Adiabatic metric prerequisites are unavailable.")
 
-        num, dim = self._energies.shape
+        num, dim = self._centered_energies.shape
         metric = np.zeros(num, dtype=float)
         for state in range(dim):
             if state == config.initial_state:
                 continue
-            denominator = np.abs(self._energies[:, state] - self._energies[:, config.initial_state])
+            denominator = np.abs(self._centered_energies[:, state] - self._centered_energies[:, config.initial_state])
             numerator = self._matrix_elements[:, config.initial_state, state]
             metric += self._metric_ratio(numerator, denominator, alpha=config.alpha, beta=config.beta,
                                          transition=(config.initial_state, state), )

@@ -586,8 +586,8 @@ class TestSolveProblem:
 
     def test_solve_problem_populates_energies(self, configured_ham):
         configured_ham.solve_problem()
-        assert configured_ham._energies is not None
-        assert configured_ham._energies.shape[0] == configured_ham.num_steps
+        assert configured_ham._centered_energies is not None
+        assert configured_ham._centered_energies.shape[0] == configured_ham.num_steps
 
     def test_solve_problem_control_sol_matches_boundaries(self, configured_ham):
         configured_ham.solve_problem()
@@ -784,11 +784,11 @@ class TestSolveEigenproblemCaching:
         """Calling _solve_eigenproblem twice should reuse the cached result."""
         configured_ham._control_pulse = np.linspace(-5.0, 5.0, configured_ham.num_steps)
         configured_ham._solve_eigenproblem()
-        energies_first = configured_ham._energies.copy()
+        energies_first = configured_ham._centered_energies.copy()
 
         # Second call should skip (flag already True) and keep the same data
         configured_ham._solve_eigenproblem()
-        np.testing.assert_array_equal(configured_ham._energies, energies_first)
+        np.testing.assert_array_equal(configured_ham._centered_energies, energies_first)
 
 
 # ---------------------------------------------------------------------------
