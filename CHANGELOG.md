@@ -10,7 +10,7 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 - Duplicate code in verification of `filtered_pulse`.
 - Possibility to directly call `PulseControl`. Instead, use `ControlModel` to create a control model and then call
-  `ControlModel.pulse_control` to obtain the pulse control, and latter use the provided methods.
+  `ControlModel.synthesize_pulse()` to obtain the pulse control, and later use the provided methods.
 - Access of private attributes of `ControlModel` in `Dynamics`.
 
 ### Added
