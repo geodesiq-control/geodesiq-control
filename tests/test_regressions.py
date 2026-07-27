@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from typing import Any, cast
 
 import numpy as np
@@ -5,7 +6,7 @@ import pytest
 from scipy.integrate import solve_ivp
 
 from geodesiq import ControlModel
-from geodesiq.exceptions import (InvalidControlParameterError, MetricComputationError, )
+from geodesiq.exceptions import (InvalidControlParameterError, MetricComputationError, SolverError, )
 
 
 def lz_hamiltonian(lam: float, delta: float = 0.5) -> np.ndarray:
@@ -132,3 +133,43 @@ def test_decreasing_control_sweep_is_supported():
                       num_steps=65, )
     model.solve_problem(pulse_accuracy=80)
     assert np.all(np.diff(model.control_sol) <= 1e-8)
+
+
+@pytest.mark.parametrize(("status_code", "error_value"), [(-1, 1e-4), (-2, 1e-2), (-3, np.inf), ], )
+def test_numerical_derivative_rejects_failed_jacobian(monkeypatch, status_code: int, error_value: float, ) -> None:
+    def hamiltonian(lam: float) -> np.ndarray:
+        return np.array([[lam, 1.0], [1.0, -lam], ], dtype=float, )
+
+    model = ControlModel(hamiltonian)
+
+    model.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0, beta=2.0,
+                      num_steps=5, )
+
+    def failed_jacobian(func, x, **kwargs):
+        del func, kwargs
+
+        n_points = x.shape[-1]
+
+        # 2x2 Hamiltonian -> 4 complex elements
+        # packed as 4 real + 4 imaginary = 8 outputs
+        shape = (8, 1, n_points)
+
+        df = np.zeros(shape, dtype=float)
+        success = np.ones(shape, dtype=bool)
+        status = np.zeros(shape, dtype=int)
+        error = np.zeros(shape, dtype=float)
+
+        # Make the middle control point fail.
+        success[..., 2] = False
+        status[..., 2] = status_code
+        error[..., 2] = error_value
+
+        return SimpleNamespace(df=df, success=success, status=status, error=error, )
+
+    monkeypatch.setattr("geodesiq.controlmodel.jacobian", failed_jacobian, )
+
+    with pytest.raises(SolverError) as exc_info:
+        model._solve_eigenproblem()
+
+    assert "Numerical differentiation failed to converge" in str(exc_info.value)
+    assert str(status_code) in str(exc_info.value)

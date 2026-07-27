@@ -272,7 +272,8 @@ class ControlModel:
         if self._pulse_initial is not None and value == self._pulse_initial:
             raise InvalidControlParameterError("pulse_initial and pulse_final values must be different.")
         self._pulse_final = value
-        self._flags["eigenproblem_solved"] = (False# Reset the eigenproblem solved flag if the pulse final value changes
+        self._flags["eigenproblem_solved"] = (False
+                                              # Reset the eigenproblem solved flag if the pulse final value changes
                                               )
 
     @property
@@ -866,9 +867,37 @@ class ControlModel:
         result = jacobian(packed_hamiltonian, x_grid[np.newaxis, :], order=order, initial_step=initial_step,
                           step_direction=step_direction[np.newaxis, :], tolerances=tolerances, )
 
+        success = np.asarray(result.success, dtype=bool)
+        if not np.all(success):
+            status = np.asarray(result.status)
+            error = np.asarray(result.error, dtype=float)
+
+            failed_points = np.any(~success, axis=tuple(range(success.ndim - 1)), )
+
+            failed_indices = np.flatnonzero(failed_points)
+
+            details = []
+            for index in failed_indices[:5]:
+                point_failed = ~success[..., index]
+                statuses = np.unique(status[..., index][point_failed])
+
+                point_errors = error[..., index][point_failed]
+                finite_errors = point_errors[np.isfinite(point_errors)]
+                max_error = float(np.max(finite_errors)) if finite_errors.size else np.nan
+
+                details.append(f"x={x_grid[index]:.6g}: "
+                               f"status={statuses.tolist()}, "
+                               f"max_error={max_error:.3e}")
+
+            raise SolverError("Numerical differentiation failed to converge at "
+                              f"{failed_indices.size} control point(s): " + "; ".join(details))
+
         # result.df shape:
         # (2 * n_elements, 1, n_points)
         derivative = np.asarray(result.df[:, 0, :])
+
+        if not np.all(np.isfinite(derivative)):
+            raise SolverError("Numerical Hamiltonian derivative contains non-finite values.")
 
         dH_flat = derivative[:n_elements] + 1j * derivative[n_elements:]
 
