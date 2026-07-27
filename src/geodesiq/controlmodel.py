@@ -269,8 +269,7 @@ class ControlModel:
         if self._pulse_initial is not None and value == self._pulse_initial:
             raise InvalidControlParameterError("pulse_initial and pulse_final values must be different.")
         self._pulse_final = value
-        self._flags["eigenproblem_solved"] = (False# Reset the eigenproblem solved flag if the pulse final value changes
-                                              )
+        self._flags["eigenproblem_solved"] = False  # Reset the flag if the pulse final value changes
 
     @property
     def initial_state(self) -> int | None:
@@ -407,7 +406,7 @@ class ControlModel:
         if not self._flags["eigenproblem_solved"]:
             self._check_eigensystem_parameters()
             self._solve_eigenproblem()
-        if self._centered_energies is None:
+        if self._centered_energies is None or self._energy_offset is None:
             raise SolverError("Eigenenergies are unavailable after eigensystem solution.")
         return self._centered_energies.copy() + self._energy_offset[:, None]
 
@@ -531,17 +530,20 @@ class ControlModel:
                 f"Control name {candidate_name!r} collides with a stored Hamiltonian parameter.")
 
         if (
-                candidate_pulse_initial is not None and candidate_pulse_final is not None and candidate_pulse_initial == candidate_pulse_final):
+                candidate_pulse_initial is not None and candidate_pulse_final is not None and candidate_pulse_initial
+                == candidate_pulse_final):
             raise InvalidControlParameterError("pulse_initial and pulse_final values must be different.")
 
         # Determine what must be invalidated before committing.
         eigensystem_changed = (
-                candidate_name != self._control_name or candidate_pulse_initial != self._pulse_initial or candidate_pulse_final != self._pulse_final or candidate_num_steps != self._num_steps)
+                candidate_name != self._control_name or candidate_pulse_initial != self._pulse_initial or
+                candidate_pulse_final != self._pulse_final or candidate_num_steps != self._num_steps)
 
         states_changed = (candidate_initial_state != self._initial_state or candidate_final_state != self._final_state)
 
         metric_changed = (
-                states_changed or candidate_alpha != self._alpha or candidate_beta != self._beta or candidate_dia_alpha != self._dia_alpha or candidate_dia_beta != self._dia_beta)
+                states_changed or candidate_alpha != self._alpha or candidate_beta != self._beta or
+                candidate_dia_alpha != self._dia_alpha or candidate_dia_beta != self._dia_beta)
 
         # Everything is valid. Commit atomically.
         self._control_name = candidate_name
@@ -712,9 +714,14 @@ class ControlModel:
             singular = denominator <= tolerance
 
             if np.any(singular):
+                control_pulse = self._control_pulse
+
+                if control_pulse is None:
+                    raise MetricComputationError("Control grid is unavailable for degeneracy detection.")
+
                 indices = np.flatnonzero(singular)
 
-                details = ", ".join(f"x={self._control_pulse[i]:.6g}, "
+                details = ", ".join(f"x={control_pulse[i]:.6g}, "
                                     f"gap={denominator[i]:.3e}, "
                                     f"tol={tolerance[i]:.3e}" for i in indices[:5])
 
@@ -1222,7 +1229,8 @@ class ControlModel:
         num_steps = self.num_steps
 
         if (
-                control_name is None or pulse_initial is None or pulse_final is None or num_steps is None or initial_state is None or final_state is None or alpha is None or beta is None):  # noqa: E501
+                control_name is None or pulse_initial is None or pulse_final is None or num_steps is None or
+                initial_state is None or final_state is None or alpha is None or beta is None):  # noqa: E501
             missing_params = [name for name, value in (("control_name", control_name), ("pulse_initial", pulse_initial),
                                                        ("pulse_final", pulse_final), ("initial_state", initial_state),
                                                        ("final_state", final_state), ("alpha", alpha), ("beta", beta),

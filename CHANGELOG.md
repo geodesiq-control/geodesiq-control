@@ -6,6 +6,8 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-27
+
 ### Removed
 
 - Duplicate code in verification of `filtered_pulse`.

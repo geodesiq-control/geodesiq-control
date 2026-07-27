@@ -126,17 +126,20 @@ class Dynamics:
             psi_target = self._eigenstate(float(control_pulse[-1]), final_index, )
 
         elif isinstance(initial_state, int) and isinstance(final_state, int):
+            dimension = self._hamiltonian_dimension
 
-            validate_state_index(initial_state, self._hamiltonian_dimension, "initial_state")
-            validate_state_index(final_state, self._hamiltonian_dimension, "final_state")
+            if dimension is None:
+                raise ConfigurationError("Hamiltonian dimension is unavailable.")
+
+            validate_state_index(initial_state, dimension, "initial_state")
+            validate_state_index(final_state, dimension, "final_state")
 
             psi_init = self._eigenstate(float(control_pulse[0]), initial_state)
             psi_target = self._eigenstate(float(control_pulse[-1]), final_state)
 
         elif isinstance(initial_state, np.ndarray) and isinstance(final_state, np.ndarray):
-
-            if initial_state.shape[0] != self._hamiltonian_dimension or final_state.shape[
-                0] != self._hamiltonian_dimension:
+            if (initial_state.shape[0] != self._hamiltonian_dimension or final_state.shape[
+                0] != self._hamiltonian_dimension):
                 raise ValidationError(
                     f"Initial and final states must have the same dimension as the ControlModel. Shape of ControlModel:"
                     f" {(self._hamiltonian_dimension, self._hamiltonian_dimension)}."

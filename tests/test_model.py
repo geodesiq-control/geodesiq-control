@@ -44,7 +44,7 @@ def variable_dimension_hamiltonian(lam: float, dimension: int, ) -> np.ndarray:
 
 
 def hamiltonian(lam: float, **_: Any) -> np.ndarray:
-    return np.array([[lam, 1.0], [1.0, -lam], ], dtype=float)
+    return np.array([[lam, 1.0], [1.0, -lam], ], dtype=float, )
 
 
 # ---------------------------------------------------------------------------
@@ -1322,6 +1322,7 @@ class TestDiabaticMetricPath:
 # Test mutability of the model with changing the parameters
 # ---------------------------------------------------------------------------
 
+
 class TestMutability:
     def test_parameter_change_keeps_diabatic_list(self):
         model = ControlModel(lz_hamiltonian, lz_partial)
@@ -1379,13 +1380,14 @@ class TestMutability:
 # Test initial and final indices
 # ---------------------------------------------------------------------------
 
+
 class TestIndices:
     @pytest.mark.parametrize(("initial_state", "final_state"), [(2, 0), (0, 2), (2, 2)], )
     def test_out_of_range_control_state_indices_raise(self, initial_state: int, final_state: int, ) -> None:
         model = ControlModel(hamiltonian)
 
         model.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=initial_state,
-                          final_state=final_state, alpha=2.0, beta=2.0, dia_alpha=1, dia_beta=2)
+                          final_state=final_state, alpha=2.0, beta=2.0, dia_alpha=1, dia_beta=2, )
 
         with pytest.raises(ValidationError, match="must be between", ):
             model.solve_problem()
@@ -1395,6 +1397,6 @@ class TestIndices:
         model = ControlModel(hamiltonian)
 
         model.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=initial_state,
-                          final_state=final_state, alpha=2.0, beta=2.0, dia_alpha=1, dia_beta=2)
+                          final_state=final_state, alpha=2.0, beta=2.0, dia_alpha=1, dia_beta=2, )
 
         model.solve_problem()
