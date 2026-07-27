@@ -401,6 +401,53 @@ class TestSetControl:
             bare_ham.set_control(control_name="lam", pulse_initial=1.0, pulse_final=1.0, initial_state=0, alpha=2.0,
                                  beta=2.0, num_steps=33, )
 
+    def test_set_control_is_atomic_on_validation_failure(self, ham_with_partial: ControlModel) -> None:
+        model = ham_with_partial
+        model.set_control(control_name="lam", pulse_initial=-2.0, pulse_final=2.0, initial_state=0, final_state=0,
+                          alpha=2.0, beta=2.0, num_steps=65, )
+
+        before = (model.control_name, model.pulse_initial, model.pulse_final, model.initial_state, model.final_state,
+                  model.alpha, model.beta, model.dia_alpha, model.dia_beta, model.num_steps,)
+
+        with pytest.raises(InvalidControlParameterError, match="Alpha", ):
+            model.set_control(control_name="new_control", pulse_initial=-10.0, pulse_final=10.0, initial_state=1,
+                              final_state=1, alpha=np.inf, beta=4.0, num_steps=129, )
+
+        after = (model.control_name, model.pulse_initial, model.pulse_final, model.initial_state, model.final_state,
+                 model.alpha, model.beta, model.dia_alpha, model.dia_beta, model.num_steps,)
+
+        assert after == before
+
+    def test_set_control_is_atomic_when_endpoints_are_equal(self, ham_with_partial: ControlModel) -> None:
+        model = ham_with_partial
+        model.set_control(control_name="lam", pulse_initial=-2.0, pulse_final=2.0, initial_state=0, alpha=2.0, beta=2.0,
+                          num_steps=65, )
+
+        before_initial = model.pulse_initial
+        before_final = model.pulse_final
+
+        with pytest.raises(InvalidControlParameterError, match="must be different", ):
+            model.set_control(pulse_initial=5.0, pulse_final=5.0, )
+
+        assert model.pulse_initial == before_initial
+        assert model.pulse_final == before_final
+
+    def test_set_control_commits_valid_configuration(self, ham_with_partial: ControlModel) -> None:
+        model = ham_with_partial
+        model.set_control(control_name="lam", pulse_initial=-3.0, pulse_final=4.0, initial_state=0, final_state=1,
+                          alpha=2.0, beta=3.0, dia_alpha=1.0, dia_beta=2.0, num_steps=129, )
+
+        assert model.control_name == "lam"
+        assert model.pulse_initial == -3.0
+        assert model.pulse_final == 4.0
+        assert model.initial_state == 0
+        assert model.final_state == 1
+        assert model.alpha == 2.0
+        assert model.beta == 3.0
+        assert model.dia_alpha == 1.0
+        assert model.dia_beta == 2.0
+        assert model.num_steps == 129
+
 
 # ---------------------------------------------------------------------------
 # _check_control_parameters

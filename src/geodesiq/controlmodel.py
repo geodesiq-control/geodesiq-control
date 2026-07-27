@@ -229,8 +229,7 @@ class ControlModel:
     def control_name(self, name: str | None) -> None:
         if name is None:  # Keep the previous value
             return
-        if not isinstance(name, str) or not name.strip():
-            raise InvalidControlParameterError("Control name must be a non-empty string.")
+        name = self._validate_control_name(name)
         if name in self._parameters:
             raise InvalidControlParameterError(f"Control name {name!r} collides with a stored Hamiltonian parameter.")
         if name == self._control_name:  # Keep the previous value
@@ -246,12 +245,7 @@ class ControlModel:
     def pulse_initial(self, value: float | None) -> None:
         if value is None:  # Keep the previous value
             return
-
-        if not isinstance(value, (int, float, np.integer, np.floating)) or isinstance(value, bool):
-            raise InvalidControlParameterError("pulse_initial value must be a number.")
-        value = float(value)
-        if not np.isfinite(value):
-            raise InvalidControlParameterError("pulse_initial value must be finite.")
+        value = self._validate_pulse_value(value, "pulse_initial")
         if value == self._pulse_initial:
             return
         if self._pulse_final is not None and value == self._pulse_final:
@@ -269,18 +263,13 @@ class ControlModel:
     def pulse_final(self, value: float | None) -> None:
         if value is None:  # Keep the previous value
             return
-        if not isinstance(value, (int, float, np.integer, np.floating)) or isinstance(value, bool):
-            raise InvalidControlParameterError("pulse_final value must be a number.")
-        value = float(value)
-        if not np.isfinite(value):
-            raise InvalidControlParameterError("pulse_final value must be finite.")
+        value = self._validate_pulse_value(value, "pulse_final")
         if value == self._pulse_final:
             return
         if self._pulse_initial is not None and value == self._pulse_initial:
             raise InvalidControlParameterError("pulse_initial and pulse_final values must be different.")
         self._pulse_final = value
-        self._flags["eigenproblem_solved"] = (False
-                                              # Reset the eigenproblem solved flag if the pulse final value changes
+        self._flags["eigenproblem_solved"] = (False# Reset the eigenproblem solved flag if the pulse final value changes
                                               )
 
     @property
@@ -291,12 +280,7 @@ class ControlModel:
     def initial_state(self, value: int | None) -> None:
         if value is None:  # Keep the previous value
             return
-
-        if not isinstance(value, (int, np.integer)) or isinstance(value, bool):
-            raise InvalidControlParameterError("Initial state index must be an integer.")
-        value = int(value)
-        if value < 0:
-            raise InvalidControlParameterError("Initial state index must be non-negative.")
+        value = self._validate_state_index(value, "Initial")
         if value == self._initial_state:
             return
 
@@ -321,12 +305,7 @@ class ControlModel:
     def final_state(self, value: int | None) -> None:
         if value is None:  # Keep the previous value
             return
-
-        if not isinstance(value, (int, np.integer)) or isinstance(value, bool):
-            raise InvalidControlParameterError("Final state index must be an integer.")
-        value = int(value)
-        if value < 0:
-            raise InvalidControlParameterError("Final state index must be non-negative.")
+        value = self._validate_state_index(value, "Final")
         if value == self._final_state:
             return
 
@@ -347,11 +326,7 @@ class ControlModel:
     def alpha(self, value: float | None) -> None:
         if value is None:  # Keep the previous value
             return
-        if not isinstance(value, (int, float, np.integer, np.floating)) or isinstance(value, bool):
-            raise InvalidControlParameterError("Alpha must be a number.")
-        value = float(value)
-        if not np.isfinite(value) or value < 0:
-            raise InvalidControlParameterError("Alpha must be a finite non-negative number.")
+        value = self._validate_exponent(value, "Alpha")
         if value == self._alpha:
             return
 
@@ -366,11 +341,7 @@ class ControlModel:
     def beta(self, value: float | None) -> None:
         if value is None:  # Keep the previous value
             return
-        if not isinstance(value, (int, float, np.integer, np.floating)) or isinstance(value, bool):
-            raise InvalidControlParameterError("Beta must be a number.")
-        value = float(value)
-        if not np.isfinite(value) or value < 0:
-            raise InvalidControlParameterError("Beta must be a finite non-negative number.")
+        value = self._validate_exponent(value, "Beta")
         if value == self._beta:
             return
 
@@ -385,11 +356,7 @@ class ControlModel:
     def dia_alpha(self, value: float | None) -> None:
         if value is None:  # Keep the previous value
             return
-        if not isinstance(value, (int, float, np.integer, np.floating)) or isinstance(value, bool):
-            raise InvalidControlParameterError("Diabatic alpha must be a number.")
-        value = float(value)
-        if not np.isfinite(value) or value < 0:
-            raise InvalidControlParameterError("Diabatic alpha must be a finite non-negative number.")
+        value = self._validate_exponent(value, "Diabatic alpha")
         if value == self._dia_alpha:
             return
 
@@ -404,11 +371,7 @@ class ControlModel:
     def dia_beta(self, value: float | None) -> None:
         if value is None:  # Keep the previous value
             return
-        if not isinstance(value, (int, float, np.integer, np.floating)) or isinstance(value, bool):
-            raise InvalidControlParameterError("Diabatic beta must be a number.")
-        value = float(value)
-        if not np.isfinite(value) or value < 0:
-            raise InvalidControlParameterError("Diabatic beta must be a finite non-negative number.")
+        value = self._validate_exponent(value, "Diabatic beta")
         if value == self._dia_beta:
             return
 
@@ -423,9 +386,7 @@ class ControlModel:
     def num_steps(self, value: int | None) -> None:
         if value is None:  # Keep the previous value
             return
-        if not isinstance(value, (int, np.integer)) or isinstance(value, bool) or int(value) < 3:
-            raise InvalidControlParameterError("Number of steps must be an integer >= 3 to support interpolation.")
-        value = int(value)
+        value = self._validate_num_steps(value)
         if value == self._num_steps:
             return
 
@@ -529,31 +490,85 @@ class ControlModel:
             a default of ``2**10 + 1`` is used.
         """
 
-        candidate_name = self.control_name if control_name is None else control_name
+        # Build and validate the complete candidate configuration first.
+        candidate_name = (self._control_name if control_name is None else self._validate_control_name(control_name))
+
+        candidate_pulse_initial = (
+            self._pulse_initial if pulse_initial is None else self._validate_pulse_value(pulse_initial,
+                                                                                         "pulse_initial"))
+
+        candidate_pulse_final = (
+            self._pulse_final if pulse_final is None else self._validate_pulse_value(pulse_final, "pulse_final"))
+
+        candidate_initial_state = (
+            self._initial_state if initial_state is None else self._validate_state_index(initial_state, "Initial"))
+
+        candidate_final_state = (
+            self._final_state if final_state is None else self._validate_state_index(final_state, "Final"))
+
+        # Preserve the existing behavior on first configuration.
+        if candidate_final_state is None and candidate_initial_state is not None:
+            candidate_final_state = candidate_initial_state
+
+        candidate_alpha = (self._alpha if alpha is None else self._validate_exponent(alpha, "Alpha"))
+
+        candidate_beta = (self._beta if beta is None else self._validate_exponent(beta, "Beta"))
+
+        candidate_dia_alpha = (
+            self._dia_alpha if dia_alpha is None else self._validate_exponent(dia_alpha, "Diabatic alpha"))
+
+        candidate_dia_beta = (
+            self._dia_beta if dia_beta is None else self._validate_exponent(dia_beta, "Diabatic beta"))
+
+        if num_steps is None:
+            candidate_num_steps = self._num_steps if self._num_steps is not None else 2 ** 10 + 1
+        else:
+            candidate_num_steps = self._validate_num_steps(num_steps)
+
+        # Cross-parameter validation.
         if candidate_name is not None and candidate_name in self._parameters:
             raise InvalidControlParameterError(
                 f"Control name {candidate_name!r} collides with a stored Hamiltonian parameter.")
 
-        # Update the final endpoint first when needed to avoid transient equality during range changes.
-        self.control_name = control_name
-        if pulse_initial is not None and pulse_final is not None and pulse_initial == self._pulse_final:
-            self.pulse_final = pulse_final
-            self.pulse_initial = pulse_initial
-        else:
-            self.pulse_initial = pulse_initial
-            self.pulse_final = pulse_final
-        self.initial_state = initial_state
-        self.final_state = final_state
-        self.alpha = alpha
-        self.beta = beta
-        self.dia_alpha = dia_alpha
-        self.dia_beta = dia_beta
+        if (
+                candidate_pulse_initial is not None and candidate_pulse_final is not None and candidate_pulse_initial == candidate_pulse_final):
+            raise InvalidControlParameterError("pulse_initial and pulse_final values must be different.")
 
-        # Keep explicit user value; otherwise lazily initialize to default on first configuration.
-        if num_steps is None and self._num_steps is None:
-            self.num_steps = 2 ** 10 + 1
-        else:
-            self.num_steps = num_steps
+        # Determine what must be invalidated before committing.
+        eigensystem_changed = (
+                candidate_name != self._control_name or candidate_pulse_initial != self._pulse_initial or candidate_pulse_final != self._pulse_final or candidate_num_steps != self._num_steps)
+
+        states_changed = (candidate_initial_state != self._initial_state or candidate_final_state != self._final_state)
+
+        metric_changed = (
+                states_changed or candidate_alpha != self._alpha or candidate_beta != self._beta or candidate_dia_alpha != self._dia_alpha or candidate_dia_beta != self._dia_beta)
+
+        # Everything is valid. Commit atomically.
+        self._control_name = candidate_name
+        self._pulse_initial = candidate_pulse_initial
+        self._pulse_final = candidate_pulse_final
+        self._initial_state = candidate_initial_state
+        self._final_state = candidate_final_state
+        self._alpha = candidate_alpha
+        self._beta = candidate_beta
+        self._dia_alpha = candidate_dia_alpha
+        self._dia_beta = candidate_dia_beta
+        self._num_steps = candidate_num_steps
+
+        # Invalidate caches only after the successful commit.
+        if eigensystem_changed:
+            self._flags["eigenproblem_solved"] = False
+
+        if states_changed:
+            self._flags["dia_list_computed"] = (
+                    candidate_initial_state is not None and candidate_initial_state == candidate_final_state)
+            self._dia_list = None
+
+        if metric_changed:
+            self._flags["metric_computed"] = False
+
+        if eigensystem_changed or metric_changed:
+            self._pulse = None
 
     def solve_problem(self, pulse_accuracy: int = 1000, solver: Callable[..., Any] | None = None,
                       solver_kwargs: dict[str, Any] | None = None, metric_integrator: Callable[..., Any] | None = None,
@@ -1279,3 +1294,57 @@ class ControlModel:
 
     def __repr__(self) -> str:
         return self._generate_summary()
+
+    @staticmethod
+    def _validate_control_name(name: Any) -> str:
+        if not isinstance(name, str) or not name.strip():
+            raise InvalidControlParameterError("Control name must be a non-empty string.")
+        return name
+
+    @staticmethod
+    def _validate_pulse_value(value: Any, name: str) -> float:
+        if not isinstance(value, (int, float, np.integer, np.floating)) or isinstance(value, bool):
+            raise InvalidControlParameterError(f"{name} value must be a number.")
+
+        value = float(value)
+
+        if not np.isfinite(value):
+            raise InvalidControlParameterError(f"{name} value must be finite.")
+
+        return value
+
+    @staticmethod
+    def _validate_state_index(index: Any, name: str) -> int:
+        if not isinstance(index, (int, np.integer)) or isinstance(index, bool):
+            raise InvalidControlParameterError(f"{name} state index must be an integer.")
+
+        index = int(index)
+
+        if index < 0:
+            raise InvalidControlParameterError(f"{name} state index must be non-negative.")
+
+        return index
+
+    @staticmethod
+    def _validate_exponent(value: Any, name: str) -> float:
+        if not isinstance(value, (int, float, np.integer, np.floating)) or isinstance(value, bool):
+            raise InvalidControlParameterError(f"{name} must be a number.")
+
+        value = float(value)
+
+        if not np.isfinite(value):
+            raise InvalidControlParameterError(f"{name} must be a finite number.")
+
+        return value
+
+    @staticmethod
+    def _validate_num_steps(value: Any) -> int:
+        if not isinstance(value, (int, np.integer)) or isinstance(value, bool):
+            raise InvalidControlParameterError("Number of steps must be an integer >= 3.")
+
+        value = int(value)
+
+        if value < 3:
+            raise InvalidControlParameterError("Number of steps must be an integer >= 3.")
+
+        return value
