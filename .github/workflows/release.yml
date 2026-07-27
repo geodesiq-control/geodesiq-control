@@ -143,6 +143,14 @@ jobs:
           cd /tmp
 
           "$GITHUB_WORKSPACE/.venv-wheel/bin/python" -W error - <<'PY'
+          import warnings
+          warnings.simplefilter("error")
+          warnings.filterwarnings(
+              "ignore",
+              message="matplotlib not found: Graphics will not work.",
+              category=UserWarning,
+              module=r"qutip(\..*)?",
+          )
           import geodesiq
 
           print(f"Successfully imported geodesiq from {geodesiq.__file__}")
