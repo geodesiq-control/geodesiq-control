@@ -64,7 +64,18 @@ python dev/bump_version.py 1.2.3
 
 The script accepts PEP 440 versions, rejects non-increasing versions, validates the changelog, supports dry runs, and updates `_meta.py` and `CHANGELOG.md` with rollback protection.
 
-After the version bump is merged into `main`, create and push the matching tag:
+After running the version-bump script:
 
-After running the script, commit the changes, push to `dev`, and open a pull request into `main` to trigger the release workflow.
+1. Review the changes to `src/geodesiq/_meta.py` and `CHANGELOG.md`.
+2. Commit the changes to `dev` and push them.
+3. Open a pull request from `dev` into `main`.
+4. Once the pull request is merged and CI succeeds on `main`, the `Release` workflow automatically:
+   * reads the package version;
+   * verifies that the corresponding `v<version>` tag does not already exist;
+   * creates the `v<version>` tag;
+   * creates the GitHub release.
+
+The `Publish` workflow then runs after a successful release and publishes the package to PyPI.
+
+Do not manually create or push the release tag.
 
