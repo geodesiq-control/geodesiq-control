@@ -1,4 +1,5 @@
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Callable
@@ -272,8 +273,7 @@ class ControlModel:
         if self._pulse_initial is not None and value == self._pulse_initial:
             raise InvalidControlParameterError("pulse_initial and pulse_final values must be different.")
         self._pulse_final = value
-        self._flags["eigenproblem_solved"] = (False
-                                              # Reset the eigenproblem solved flag if the pulse final value changes
+        self._flags["eigenproblem_solved"] = (False# Reset the eigenproblem solved flag if the pulse final value changes
                                               )
 
     @property
@@ -476,8 +476,7 @@ class ControlModel:
     @property
     def parameters(self) -> Mapping[str, Any]:
         """Return a read-only copy of the Hamiltonian parameters."""
-        return MappingProxyType(
-            {key: value.copy() if isinstance(value, np.ndarray) else value for key, value in self._parameters.items()})
+        return MappingProxyType(deepcopy(self._parameters))
 
     def set_control(self, control_name: str | None = None, pulse_initial: float | None = None,
                     pulse_final: float | None = None, initial_state: int | None = None, final_state: int | None = None,

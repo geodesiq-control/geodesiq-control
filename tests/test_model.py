@@ -43,6 +43,10 @@ def variable_dimension_hamiltonian(lam: float, dimension: int, ) -> np.ndarray:
     return np.array([[lam, 1.0, 0.0], [1.0, -lam, 0.5], [0.0, 0.5, 2.0], ])
 
 
+def hamiltonian(lam: float, **_: Any) -> np.ndarray:
+    return np.array([[lam, 1.0], [1.0, -lam], ], dtype=float)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -307,6 +311,46 @@ class TestGetParameters:
         model = ControlModel(simple_hamiltonian)
 
         assert len(model.parameters) == 0
+
+    def test_parameters_numpy_array_is_copied(self):
+        model = ControlModel(simple_hamiltonian)
+
+        model.set_parameters(values=np.array([1.0, 2.0]), )
+
+        params = model.parameters
+        params["values"][0] = 100.0
+
+        assert model.parameters["values"][0] == 1.0
+
+    def test_parameters_nested_numpy_array_is_copied(self):
+        model = ControlModel(hamiltonian)
+
+        model.set_parameters(config={"values": np.array([1.0, 2.0]), })
+
+        params = model.parameters
+        params["config"]["values"][0] = 100.0
+
+        assert model.parameters["config"]["values"][0] == 1.0
+
+    def test_parameters_nested_dictionary_is_copied(self):
+        model = ControlModel(hamiltonian)
+
+        model.set_parameters(config={"solver": {"tolerance": 1e-8, }})
+
+        params = model.parameters
+        params["config"]["solver"]["tolerance"] = 1.0
+
+        assert model.parameters["config"]["solver"]["tolerance"] == 1e-8
+
+    def test_parameters_nested_list_is_copied(self):
+        model = ControlModel(hamiltonian)
+
+        model.set_parameters(config={"values": [1.0, 2.0, 3.0], })
+
+        params = model.parameters
+        params["config"]["values"][0] = 100.0
+
+        assert model.parameters["config"]["values"][0] == 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -1251,7 +1295,6 @@ class TestMutability:
         assert model._dia_list is dia_list
 
     def test_state_change_invalidates_diabatic_list(self):
-
         def hamiltonian(lam, t):
             return np.array([[lam, t, 0], [t, -lam, 1], [0, 1, 0]])
 
