@@ -5,6 +5,7 @@ from geodesiq._utils import build_diab
 # build_diab()
 # ---------------------------------------------------------------------------
 
+
 class TestBuildDiab:
     def test_build_diab_sets_zero_inside_transition_window(self):
         diad = build_diab(initial_state=1, final_state=3, dim=5)

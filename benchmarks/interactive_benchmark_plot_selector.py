@@ -75,14 +75,8 @@ DEFAULT_SELECTOR_COLUMNS = ["geodesiq_version", "python_version", "platform", "p
 # Placeholder shown for missing / NaN metadata values in dropdowns.
 NA_LABEL = "<NA>"
 
-__all__ = [
-    "DEFAULT_SELECTOR_COLUMNS",
-    "CascadingSelector",
-    "SelectedDataSet",
-    "_build_dual_benchmark_figure",
-    "launch_selector",
-    "load_history",
-]
+__all__ = ["DEFAULT_SELECTOR_COLUMNS", "CascadingSelector", "SelectedDataSet", "_build_dual_benchmark_figure",
+           "launch_selector", "load_history", ]
 
 
 # ---------------------------------------------------------------------------
@@ -430,7 +424,7 @@ def launch_selector(df_or_path: pd.DataFrame | str | Path = "results/benchmark_h
                              std_checkbox, widgets.HBox([panel_a, panel_b],
                                                         layout=widgets.Layout(width="100%", gap="20px",
                                                                               justify_content="flex-start",
-                                                                              align_items="flex-start")), output, ])
+                                                                              align_items="flex-start"), ), output, ])
 
     display(controls)
     update()

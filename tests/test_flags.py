@@ -7,6 +7,7 @@ from geodesiq._utils import Flags
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def simple_flags():
     """A Flags instance with three flags: A → B → C."""
@@ -20,6 +21,7 @@ def simple_flags():
 # ---------------------------------------------------------------------------
 # add()
 # ---------------------------------------------------------------------------
+
 
 class TestAdd:
     def test_add_single_flag_default_value(self):
@@ -67,6 +69,7 @@ class TestAdd:
 # get() / __getitem__
 # ---------------------------------------------------------------------------
 
+
 class TestGet:
     def test_get_existing_flag(self, simple_flags):
         assert simple_flags.get("A") is True
@@ -88,6 +91,7 @@ class TestGet:
 # ---------------------------------------------------------------------------
 # set() / __setitem__
 # ---------------------------------------------------------------------------
+
 
 class TestSet:
     def test_set_value(self):
@@ -116,6 +120,7 @@ class TestSet:
 # ---------------------------------------------------------------------------
 # Hierarchical propagation
 # ---------------------------------------------------------------------------
+
 
 class TestPropagation:
     def test_parent_false_propagates_to_child(self, simple_flags):
@@ -181,6 +186,7 @@ class TestPropagation:
 # all()
 # ---------------------------------------------------------------------------
 
+
 class TestAll:
     def test_all_true_when_all_flags_up(self, simple_flags):
         assert simple_flags.all() is True
@@ -201,6 +207,7 @@ class TestAll:
 # ---------------------------------------------------------------------------
 # Verbose output
 # ---------------------------------------------------------------------------
+
 
 class TestVerbose:
     def test_get_prints_when_verbose(self, capsys):
@@ -240,6 +247,7 @@ class TestVerbose:
 # ---------------------------------------------------------------------------
 # __repr__
 # ---------------------------------------------------------------------------
+
 
 class TestRepr:
     def test_repr_includes_flag_names_and_parent_info(self):

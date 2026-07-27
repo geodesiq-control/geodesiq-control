@@ -16,6 +16,7 @@ from geodesiq import ControlModel
 # Internal ControlModel builders
 # ---------------------------------------------------------------------------
 
+
 def _lz_H_dH(coupling: float = 0.5):
     """2×2 Landau-Zener Hamiltonian  H(λ) = λ·σ_z + coupling·σ_x."""
     D = np.array([[1.0, 0.0], [0.0, -1.0]])
@@ -78,6 +79,7 @@ def _chain_H_dH(N: int, coupling: float = 0.5, seed: int = 42):
 # ---------------------------------------------------------------------------
 # Public factory
 # ---------------------------------------------------------------------------
+
 
 def make_ham(dim: int = 2, num_steps: int = 2 ** 8 + 1, analytical_partial: bool = True, adiabatic: bool = True,
              pulse_initial: float = -5.0, pulse_final: float = 5.0, alpha: float = 2.0, beta: float = 2.0,

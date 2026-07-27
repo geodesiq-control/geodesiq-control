@@ -13,6 +13,7 @@ from geodesiq.pulses import PulseControl
 # Ramp pulse as pytest.fixtures
 # ------------------------------------------------------------
 
+
 @pytest.fixture
 def sample_pulse_data():
     """Generates a simple linear ramp for deterministic testing."""
@@ -30,35 +31,9 @@ def default_pulse(sample_pulse_data):
 
 
 # ------------------------------------------------------------
-# Testing the __call__ method
-# ------------------------------------------------------------
-
-def test_call_returns_self_if_method_none(default_pulse):
-    """If method=None, __call__ should return the instance itself."""
-    result = default_pulse()
-    assert result is default_pulse
-
-
-def test_call_routes_to_discretized(sample_pulse_data):
-    """Verify __call__ successfully forwards arguments to discretized_pulse."""
-    pulse, duration = sample_pulse_data
-    new_times, approx_sol = PulseControl(pulse, duration, method="discretized", pulse_kwargs={"linear_steps": 10})()
-    assert len(new_times) == 10
-    assert len(approx_sol) == 10
-
-
-def test_call_raises_validation_error_on_unknown_method(sample_pulse_data):
-    """__call__ should catch invalid methods before execution."""
-    pulse, duration = sample_pulse_data
-    pc = PulseControl(pulse, duration, method="invalid_method_name")
-
-    with pytest.raises(ValidationError, match="Unknown method"):
-        pc()
-
-
-# ------------------------------------------------------------
 # Testing discretized_pulse and fourier_spectrum methods
 # ------------------------------------------------------------
+
 
 def test_discretized_pulse_bounds(default_pulse):
     """Ensure discretization keeps the original boundaries of the pulse time."""
@@ -92,6 +67,7 @@ def test_fourier_spectrum_small_size(sample_pulse_data):
 # Testing plot_pulse method
 # ------------------------------------------------------------
 
+
 def test_plot_pulse_without_showing(default_pulse):
     """Verify plotting logic executes and returns Matplotlib objects without blocking."""
     fig, ax = default_pulse.plot_pulse(show=False)
@@ -122,6 +98,7 @@ def test_plot_pulse_with_show_invokes_matplotlib_show(default_pulse, monkeypatch
 # ------------------------------------------------------------
 # Testing export_pulse method
 # ------------------------------------------------------------
+
 
 def test_export_pulse_as_npz(default_pulse, tmp_path):
     """Verify .npz file export works seamlessly using a temporary test directory."""
@@ -198,6 +175,7 @@ def test_export_pulse_strips_leading_dot(default_pulse, tmp_path):
 # Testing filtered_pulse method
 # ------------------------------------------------------------
 
+
 def test_filtered_pulse_returns_correct_shapes(default_pulse):
     """Verify filtered_pulse returns arrays of correct shape."""
     cutoff_freq = 0.1
@@ -250,31 +228,24 @@ def test_filtered_pulse_preserves_time_array(default_pulse):
     np.testing.assert_array_equal(times, default_pulse._pulse_times)
 
 
+def test_filter_order_bool(default_pulse):
+    with pytest.raises(ValidationError, match="filter_order must be a positive integer"):
+        default_pulse.filtered_pulse(cutoff_freq=0.1, filter_order=True)
+
+
 # ------------------------------------------------------------
 # Testing initialization and attributes
 # ------------------------------------------------------------
 
+
 def test_pulse_control_initialization(sample_pulse_data):
     """Verify PulseControl initializes correctly with all parameters."""
     pulse, duration = sample_pulse_data
-    method = "discretized"
-    pulse_args = (5,)
-    pulse_kwargs = {"linear_steps": 5}
 
-    pc = PulseControl(pulse=pulse, duration=duration, method=method, pulse_args=pulse_args, pulse_kwargs=pulse_kwargs)
+    pc = PulseControl(pulse=pulse, duration=duration)
 
     assert pc._duration == duration
-    assert pc._method == method
-    assert pc._pulse_args == pulse_args
-    assert pc._pulse_kwargs == pulse_kwargs
     np.testing.assert_array_equal(pc._pulse, pulse)
-
-
-def test_pulse_control_default_method_none(sample_pulse_data):
-    """Verify PulseControl defaults to method=None."""
-    pulse, duration = sample_pulse_data
-    pc = PulseControl(pulse=pulse, duration=duration)
-    assert pc._method is None
 
 
 def test_pulse_control_pulse_times_generation(sample_pulse_data):
@@ -291,12 +262,3 @@ def test_pulse_control_pulse_times_generation(sample_pulse_data):
     # Should be uniformly spaced
     differences = np.diff(pc._pulse_times)
     np.testing.assert_array_almost_equal(differences, differences[0] * np.ones_like(differences))
-
-
-def test_pulse_control_empty_pulse_args_kwargs(sample_pulse_data):
-    """Verify PulseControl handles None pulse_args and pulse_kwargs correctly."""
-    pulse, duration = sample_pulse_data
-    pc = PulseControl(pulse=pulse, duration=duration, pulse_args=None, pulse_kwargs=None)
-
-    assert pc._pulse_args == ()
-    assert pc._pulse_kwargs == {}

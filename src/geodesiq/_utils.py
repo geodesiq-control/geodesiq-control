@@ -1,4 +1,9 @@
+from collections.abc import Mapping, Sequence
+from typing import Any
+
 import numpy as np
+
+from .exceptions import ValidationError
 
 
 class Flags:
@@ -180,3 +185,44 @@ def build_diab(initial_state: int, final_state: int, dim: int) -> np.ndarray:
                 diad_list[j, i] = 1
 
     return diad_list
+
+
+# -----------------------------------
+# Compare values
+# -----------------------------------
+def values_equal(a: Any, b: Any) -> bool:
+    # NumPy arrays
+    if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+        try:
+            return np.array_equal(a, b, equal_nan=True)
+        except (TypeError, ValueError):
+            return False
+
+    # Dictionaries
+    if isinstance(a, Mapping) and isinstance(b, Mapping):
+        return a.keys() == b.keys() and all(values_equal(a[key], b[key]) for key in a)
+
+    # Lists / tuples
+    if isinstance(a, Sequence) and isinstance(b, Sequence) and not isinstance(a, (str, bytes)):
+        return len(a) == len(b) and all(values_equal(x, y) for x, y in zip(a, b, strict=True))
+
+    # Scalars, including NaN
+    try:
+        if np.isscalar(a) and np.isscalar(b) and np.isnan(a) and np.isnan(b):
+            return True
+    except TypeError:
+        pass
+
+    return a == b
+
+
+def validate_state_index(index: int, dimension: int, name: str) -> int:
+    if not isinstance(index, (int, np.integer)) or isinstance(index, bool):
+        raise ValidationError(f"{name} must be an integer.")
+
+    index = int(index)
+
+    if not 0 <= index < dimension:
+        raise ValidationError(f"{name} must be between 0 and {dimension - 1}, got {index}.")
+
+    return index

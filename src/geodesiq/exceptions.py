@@ -3,6 +3,7 @@ from ._meta import PACKAGE_NAME
 
 class GeodesiQError(Exception):
     """Base exception for all package errors."""
+
     _prefix = f"[{PACKAGE_NAME}]"
 
     def __init__(self, message: str = ""):

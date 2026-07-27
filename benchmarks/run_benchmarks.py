@@ -74,6 +74,7 @@ PULSE_ACCURACIES = [50, 100, 250, 500, 1000, 2000]
 # Timing primitives
 # ---------------------------------------------------------------------------
 
+
 def _calibrate_n(fn: Callable, target_s: float = _CALIBRATION_TARGET_S) -> int:
     """Return ``n`` so that ``n × cost_per_call ≈ target_s`` (clamped to [1, 100])."""
     t0 = time.perf_counter()
@@ -96,6 +97,7 @@ def _stats(times: list[float]) -> dict:
 # ---------------------------------------------------------------------------
 # Stage-level benchmarking
 # ---------------------------------------------------------------------------
+
 
 def benchmark_ham(ham: ControlModel, pulse_accuracy: int = 1000, n_repeat: int = _DEFAULT_N_REPEAT, ) -> dict[
     str, dict]:
@@ -174,6 +176,7 @@ def benchmark_ham(ham: ControlModel, pulse_accuracy: int = 1000, n_repeat: int =
 # Row builder
 # ---------------------------------------------------------------------------
 
+
 def _make_rows(scenario: str, sweep_var: str, sweep_val: float | int | str, variant: str,
                stage_results: dict[str, dict], meta: dict, ) -> list[dict]:
     rows: list[dict] = []
@@ -188,6 +191,7 @@ def _make_rows(scenario: str, sweep_var: str, sweep_val: float | int | str, vari
 # Machine / run metadata
 # ---------------------------------------------------------------------------
 
+
 def _machine_info() -> dict:
     return {"geodesiq_version": geodesiq.__version__, "python_version": sys.version.split()[0],
             "platform": platform.platform(), "cpu_count": os.cpu_count() or 1, "processor": platform.processor(),
@@ -197,6 +201,7 @@ def _machine_info() -> dict:
 # ---------------------------------------------------------------------------
 # Individual scenarios
 # ---------------------------------------------------------------------------
+
 
 def run_dim_scaling(meta: dict, n_repeat: int) -> list[dict]:
     """
@@ -295,6 +300,7 @@ SCENARIOS: dict[str, Callable[..., list[dict]]] = {"dim_scaling": run_dim_scalin
 # Orchestration
 # ---------------------------------------------------------------------------
 
+
 def run_all(scenarios: list[str] | None = None, n_repeat: int = _DEFAULT_N_REPEAT, ) -> pd.DataFrame:
     """
     Run the selected (or all) scenarios and return a tidy
@@ -357,6 +363,7 @@ def save_results(df: pd.DataFrame) -> Path:
 # ---------------------------------------------------------------------------
 # CLI entry-point
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     import argparse

@@ -13,6 +13,7 @@ from geodesiq.exceptions import ValidationError
 # Real ControlModel() fixtures
 # ------------------------------------------------------------
 
+
 def lz_hamiltonian(lam: float, delta: float = 1.0) -> np.ndarray:
     """Simple 2-level Landau-Zener Hamiltonian."""
     return np.array([[lam, delta], [delta, -lam]], dtype=float)
@@ -21,8 +22,8 @@ def lz_hamiltonian(lam: float, delta: float = 1.0) -> np.ndarray:
 def _build_solved_model() -> ControlModel:
     model = ControlModel(lz_hamiltonian)
     model.set_parameters(delta=1.0)
-    model.set_control(control_name="lam", pulse_initial=1.0, pulse_final=3.0, initial_state=0, final_state=1,
-                      alpha=2.0, beta=2.0, dia_alpha=2.0, dia_beta=2.0, num_steps=33, )
+    model.set_control(control_name="lam", pulse_initial=1.0, pulse_final=3.0, initial_state=0, final_state=1, alpha=2.0,
+                      beta=2.0, dia_alpha=2.0, dia_beta=2.0, num_steps=33, )
     model.solve_problem(pulse_accuracy=3)
     return model
 
@@ -51,13 +52,14 @@ def varying_dynamics():
 # Testing initialization and internal method _get_ham()
 # ------------------------------------------------------------
 
+
 def test_initialization(real_model):
     """Verify attributes are correctly extracted from the ControlModel object."""
     duration = 5.0
     dyn = Dynamics(duration=duration, model=real_model)
 
     assert dyn._duration == 5.0
-    assert len(dyn._pulse_times) == len(real_model._control_sol)
+    assert len(dyn._pulse_times) == len(real_model.control_sol)
     assert dyn._pulse_times[-1] == 5.0  # Check proper scaling of time array
 
 
@@ -76,17 +78,23 @@ def test_get_ham_interpolation(varying_dynamics):
     np.testing.assert_allclose(H_qobj.full(), expected)
 
 
-def test_initialization_requires_solved_model(real_model):
-    """Dynamics should reject ControlModel objects missing solved-control fields."""
-    real_model._control_sol = None
+@pytest.mark.parametrize("duration", [0, -1, -1.5, np.nan, np.inf, -np.inf, True, False, "1.0", None, 1 + 2j, ], )
+def test_invalid_duration_raises_validation_error(real_model, duration: Any) -> None:
+    with pytest.raises(ValidationError, match="duration must be a finite positive number", ):
+        Dynamics(duration=duration, model=real_model)
 
-    with pytest.raises(ValidationError, match="requires a solved ControlModel"):
-        Dynamics(duration=1.0, model=real_model)
+
+@pytest.mark.parametrize("duration", [1, 1.5, np.int64(2), np.float64(2.5), ], )
+def test_valid_duration_is_accepted(real_model, duration: Any) -> None:
+    dynamics = Dynamics(duration=duration, model=real_model)
+
+    assert dynamics._duration == float(duration)
 
 
 # ------------------------------------------------------------
 # Testing gate and state transfer fidelity
 # ------------------------------------------------------------
+
 
 def test_time_evolution_operator(default_dynamics):
     """Ensure the propagator computes successfully and returns expected elements."""
@@ -240,3 +248,20 @@ def test_average_gate_fidelity_invalid_gate_type(default_dynamics):
     """Invalid gate types should raise a ValidationError."""
     with pytest.raises(ValidationError, match="Gate must be a Qobj or a list of Qobj instances"):
         default_dynamics.average_gate_fidelity(gate=cast(Any, [qt.identity(2), np.eye(2)]), target_gate=qt.identity(2))
+
+
+# ---------------------------------------------------------------------------
+# Test initial and final indices
+# ---------------------------------------------------------------------------
+
+class TestIndices:
+    @pytest.mark.parametrize(("initial_state", "final_state"), [(2, 0), (0, 2), (2, 2)], )
+    def test_out_of_range_control_state_indices_raise(self, default_dynamics, initial_state: int,
+                                                      final_state: int, ) -> None:
+        with pytest.raises(ValidationError, match="must be between", ):
+            default_dynamics.state_fidelity(initial_state=initial_state, final_state=final_state)
+
+    @pytest.mark.parametrize(("initial_state", "final_state"), [(0, 0), (0, 1), (1, 0), (1, 1), ], )
+    def test_valid_control_state_indices_are_accepted(self, default_dynamics, initial_state: int,
+                                                      final_state: int, ) -> None:
+        default_dynamics.state_fidelity(initial_state=initial_state, final_state=final_state)

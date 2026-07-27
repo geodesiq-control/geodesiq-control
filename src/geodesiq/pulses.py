@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Tuple, Any
 
 import numpy as np
 import scipy as sp
@@ -22,8 +22,7 @@ class PulseControl:
     shape and its Fourier spectrum.
     """
 
-    def __init__(self, pulse: np.ndarray, duration: float, method: Optional[str] = None,
-                 pulse_args: Optional[tuple] = None, pulse_kwargs: Optional[dict] = None):
+    def __init__(self, pulse: np.ndarray, duration: float):
         """
         Initialize the PulseControl object with the control pulse and the rescaled time array as inputs.
 
@@ -35,10 +34,6 @@ class PulseControl:
             Control pulse values corresponding to the rescaled time array.
         duration: float
             Duration of the control pulse (t_f).
-        pulse_args: tuple
-            Positional arguments for the pulse synthesis (e.g., duration, filter parameters).
-        pulse_kwargs: dict
-            Keyword arguments for the pulse synthesis (e.g., duration, filter parameters).
         """
 
         values = np.asarray(pulse)
@@ -59,19 +54,10 @@ class PulseControl:
         duration = float(duration)
         if not np.isfinite(duration) or duration <= 0:
             raise ValidationError("duration must be a finite positive number.")
-        if method is not None and not isinstance(method, str):
-            raise ValidationError("method must be a string or None.")
-        if pulse_args is not None and not isinstance(pulse_args, tuple):
-            raise ValidationError("pulse_args must be a tuple or None.")
-        if pulse_kwargs is not None and not isinstance(pulse_kwargs, dict):
-            raise ValidationError("pulse_kwargs must be a dictionary or None.")
 
         self._pulse = values.copy()
         self._duration = duration
         self._pulse_times = np.linspace(0.0, duration, values.size, dtype=float)
-        self._method = method
-        self._pulse_args = pulse_args if pulse_args is not None else ()
-        self._pulse_kwargs = dict(pulse_kwargs) if pulse_kwargs is not None else {}
 
     @property
     def pulse(self) -> np.ndarray:
@@ -87,39 +73,6 @@ class PulseControl:
     def duration(self) -> float:
         """Total pulse duration."""
         return self._duration
-
-    def __call__(self):
-        """
-        Call the appropriate pulse processing method based on stored arguments.
-
-        Returns
-        -------
-        output: Any
-            Result from the called method.
-
-        Raises
-        ------
-        MissingArgsError
-            If no method is specified
-        ValidationError
-            If the method name is not recognized
-        """
-
-        if self._method is None:
-            return self  # Return object if no specific method was given
-
-        # if not self._pulse_args:
-        #     raise MissingArgsError("No pulse arguments specified.")
-
-        # Map method names to actual methods
-        methods = {'discretized': self.discretized_pulse, 'fourier': self.fourier_spectrum,
-                   'filtered': self.filtered_pulse, 'plot': self.plot_pulse, 'export': self.export_pulse, }
-
-        if self._method not in methods:
-            raise ValidationError(f"Unknown method: {self._method}. Available methods: {list(methods.keys())}")
-
-        method = methods[self._method]
-        return method(*self._pulse_args, **self._pulse_kwargs)
 
     # ------------------------------------------------------------
     #               Methods of PulseControl class
@@ -144,7 +97,7 @@ class PulseControl:
 
         """
 
-        piecewise_linear = interp1d(self._pulse_times, self._pulse, kind='linear', fill_value="extrapolate")
+        piecewise_linear = interp1d(self._pulse_times, self._pulse, kind="linear", fill_value="extrapolate")
 
         new_s = np.linspace(self._pulse_times[0], self._pulse_times[-1], linear_steps)
         approx_sol = np.asarray(piecewise_linear(new_s))
@@ -220,7 +173,7 @@ class PulseControl:
         if cutoff_freq <= 0:
             raise ValidationError(f"Cutoff frequency must be positive. Given: {cutoff_freq}")
 
-        if not isinstance(filter_order, int) or filter_order < 1:
+        if not (isinstance(filter_order, int) and not isinstance(filter_order, bool)) or filter_order < 1:
             raise ValidationError("filter_order must be a positive integer.")
 
         # Compute the sampling rate from the rescaled time array
@@ -228,9 +181,6 @@ class PulseControl:
 
         sampling_rate = 1.0 / dt
         nyquist_freq = sampling_rate / 2.0
-
-        if cutoff_freq <= 0:
-            raise ValidationError(f"Cutoff frequency must be positive. Given: {cutoff_freq}")
 
         if cutoff_freq >= nyquist_freq:
             raise ValidationError(f"cutoff_freq must be smaller than the Nyquist frequency {nyquist_freq:.5g}.")
@@ -241,9 +191,9 @@ class PulseControl:
         # Apply the filter to the pulse using filtfilt for zero-phase filtering
         filtered_pulse = sp.signal.sosfiltfilt(sos, self._pulse)
 
-        return self._pulse_times, filtered_pulse
+        return self._pulse_times.copy(), filtered_pulse
 
-    def plot_pulse(self, show: bool = True, **plot_kwargs) -> "Tuple[Figure, Axes]":
+    def plot_pulse(self, show: bool = True, **plot_kwargs: Any) -> "Tuple[Figure, Axes]":
         """
         Plot the (real-time) control pulse.
 
@@ -277,7 +227,7 @@ class PulseControl:
 
         return fig, ax
 
-    def export_pulse(self, filename: str, file_extension: str = 'npz', overwrite: bool = False):
+    def export_pulse(self, filename: str, file_extension: str = "npz", overwrite: bool = False) -> None:
         """
         Export (real-time) pulse data to a (npz, txt, csv) file.
 
@@ -292,7 +242,7 @@ class PulseControl:
         """
 
         # Remove possible file_extension starting with a dot
-        if file_extension.startswith('.'):
+        if file_extension.startswith("."):
             file_extension = file_extension[1:]
 
         output_path = Path(filename)
@@ -306,12 +256,12 @@ class PulseControl:
             raise IOErrorGeodesiQ(f"File already exists (choose overwrite=True to remove safety check.): {output_path}")
 
         # Save data depending on users preference
-        if file_extension == 'npz':
+        if file_extension == "npz":
             np.savez(output_path, times=t, pulse=pulse)
-        elif file_extension == 'txt':
+        elif file_extension == "txt":
             txt_data: np.ndarray = np.column_stack((t, pulse))
             np.savetxt(output_path, txt_data, delimiter=",", header="t,pulse", comments="", fmt="%.8f")
-        elif file_extension == 'csv':
+        elif file_extension == "csv":
             csv_data = np.column_stack((t, pulse))
             np.savetxt(output_path, csv_data, delimiter=",", header="t,pulse", comments="", fmt="%.8f")
         else:
