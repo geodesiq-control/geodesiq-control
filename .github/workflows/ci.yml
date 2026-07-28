@@ -59,10 +59,13 @@ jobs:
   #      - name: Check formatting
   #        run: uv run ruff format --check .
 
-  quick-test:
-    name: Quick tests
-    if: github.event_name == 'push'
+  coverage:
+    name: Tests and coverage
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
       - uses: actions/checkout@v7
@@ -79,8 +82,21 @@ jobs:
       - name: Sync environment
         run: uv sync --only-group test
 
-      - name: Run tests
-        run: uv run pytest -q
+      - name: Run tests with coverage
+        run: uv run pytest -q --cov=geodesiq --cov-report=term-missing --cov-report=xml:coverage.xml
+
+      - name: Upload coverage to Coveralls
+        uses: coverallsapp/github-action@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          file: coverage.xml
+          format: cobertura
+
+      - name: Upload coverage to Qlty
+        uses: qltysh/qlty-action/coverage@v2
+        with:
+          oidc: true
+          files: coverage.xml
 
   compatibility-tests:
     name: ${{ matrix.os }} / Python ${{ matrix.python-version }}

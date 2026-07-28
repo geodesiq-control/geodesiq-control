@@ -6,6 +6,11 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-28
+
+## Added
+- Badges for PyPI, Python version, GitHub Actions CI status, code coverage, license and maintenability.
+
 ## [0.1.2] - 2026-07-27
 
 ### Removed
