@@ -10,6 +10,7 @@
 [![Build Status](https://github.com/geodesiq-control/geodesiq-control/actions/workflows/ci.yml/badge.svg)](https://github.com/geodesiq-control/geodesiq-control/actions/workflows/ci.yml)
 [![Maintainability](https://qlty.sh/gh/geodesiq-control/projects/geodesiq-control/maintainability.svg)](https://qlty.sh/gh/geodesiq-control/projects/geodesiq-control)
 [![Code Coverage](https://qlty.sh/gh/geodesiq-control/projects/geodesiq-control/coverage.svg)](https://qlty.sh/gh/geodesiq-control/projects/geodesiq-control)
+[![Coverage Status](https://coveralls.io/repos/github/geodesiq-control/geodesiq-control/badge.svg?branch=dev)](https://coveralls.io/github/geodesiq-control/geodesiq-control?branch=dev)
 [![PyPI - License](https://img.shields.io/pypi/l/geodesiq)](https://opensource.org/license/lgpl-2-1)
 [![PyPi Downloads](https://img.shields.io/pypi/dm/geodesiq?label=downloads%20%7C%20pip&logo=PyPI)](https://pypi.org/project/geodesiq)
 

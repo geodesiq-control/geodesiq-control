@@ -59,10 +59,13 @@ jobs:
   #      - name: Check formatting
   #        run: uv run ruff format --check .
 
-  quick-test:
-    name: Quick tests
-    if: github.event_name == 'push'
+  coverage:
+    name: Tests and coverage
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
       - uses: actions/checkout@v7
@@ -88,6 +91,12 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           file: coverage.xml
           format: cobertura
+
+      - name: Upload coverage to Qlty
+        uses: qltysh/qlty-action/coverage@v2
+        with:
+          oidc: true
+          files: coverage.xml
 
   compatibility-tests:
     name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
