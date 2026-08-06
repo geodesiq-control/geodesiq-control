@@ -40,7 +40,7 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.14"
+          python-version: "3.10"
 
       - name: Install uv
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
@@ -183,7 +183,7 @@ jobs:
   pr-gate:
     name: PR gate
     if: always() && github.event_name == 'pull_request'
-    needs: [ validate-pr-source, quality, compatibility-tests, build-package ]
+    needs: [ validate-pr-source, quality, coverage, compatibility-tests, build-package ]
     runs-on: ubuntu-latest
 
     steps:
@@ -191,10 +191,11 @@ jobs:
         env:
           SOURCE_RESULT: ${{ needs.validate-pr-source.result }}
           QUALITY_RESULT: ${{ needs.quality.result }}
+          COVERAGE_RESULT: ${{ needs.coverage.result }}
           TEST_RESULT: ${{ needs.compatibility-tests.result }}
           BUILD_RESULT: ${{ needs.build-package.result }}
         run: |
-          for result in "$SOURCE_RESULT" "$QUALITY_RESULT" "$TEST_RESULT" "$BUILD_RESULT"; do
+          for result in "$SOURCE_RESULT" "$QUALITY_RESULT" "$COVERAGE_RESULT" "$TEST_RESULT" "$BUILD_RESULT"; do
             if [ "$result" != "success" ]; then
               echo "A required PR job did not succeed: $result"
               exit 1
