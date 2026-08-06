@@ -124,13 +124,13 @@ jobs:
           PY
 
       - name: Sync build environment
-        run: uv sync --only-group build
+        run: uv sync --no-default-groups --only-group build
 
       - name: Build distributions
-        run: uv run python -m build
+        run: uv run --no-sync python -m build
 
       - name: Check distributions
-        run: uv run twine check --strict dist/*
+        run: uv run --no-sync twine check --strict dist/*
 
       - name: Create isolated test environment
         run: uv venv .venv-wheel --python 3.14
