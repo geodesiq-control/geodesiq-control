@@ -12,7 +12,7 @@
 [![Code Coverage](https://qlty.sh/gh/geodesiq-control/projects/geodesiq-control/coverage.svg)](https://qlty.sh/gh/geodesiq-control/projects/geodesiq-control)
 [![Coverage Status](https://coveralls.io/repos/github/geodesiq-control/geodesiq-control/badge.svg?branch=dev)](https://coveralls.io/github/geodesiq-control/geodesiq-control?branch=dev)
 [![PyPI - License](https://img.shields.io/pypi/l/geodesiq)](https://opensource.org/license/lgpl-2-1)
-[![PyPi Downloads](https://img.shields.io/pypi/dm/geodesiq?label=downloads%20%7C%20pip&logo=PyPI)](https://pypi.org/project/geodesiq)
+[![PyPI Downloads](https://api.pepy.tech/badge/geodesiq/month?left_text=downloads%20%7C%20pip)](https://pypi.org/project/geodesiq/)
 
 [//]: # ([![Coverage Status]&#40;https://img.shields.io/coveralls/qutip/qutip.svg?logo=Coveralls&#41;]&#40;https://coveralls.io/r/qutip/qutip&#41;)
 [//]: # ([![Maintainability]&#40;https://api.codeclimate.com/v1/badges/df502674f1dfa1f1b67a/maintainability&#41;]&#40;https://codeclimate.com/github/qutip/qutip/maintainability&#41;)
