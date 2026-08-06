@@ -771,7 +771,7 @@ class ControlModel:
             locations = self._control_pulse[metric <= tolerance]
             sample = ", ".join(f"{value:.6g}" for value in locations[:3])
             warnings.warn("Metric tensor is zero or numerically singular" + (
-                f" near control value(s) {sample}." if sample else "."), NumericalStabilityWarning)
+                f" near control value(s) {sample}." if sample else "."), NumericalStabilityWarning, stacklevel=2)
 
         dx = float(np.abs(self._control_pulse[1] - self._control_pulse[0]))
         metric_values = np.sqrt(metric)
