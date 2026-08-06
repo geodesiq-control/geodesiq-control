@@ -12,6 +12,7 @@ from scipy.interpolate import PchipInterpolator
 from ._utils import Flags, build_diab, values_equal, validate_state_index
 from .exceptions import (ImmutableConfigurationError, InvalidControlParameterError, MissingControlParameterError,
                          SolverError, ValidationError, MetricComputationError, )
+from .warnings import NumericalStabilityWarning
 from .pulses import PulseControl
 
 
@@ -761,10 +762,14 @@ class ControlModel:
         if np.any(metric < -tolerance):
             raise MetricComputationError("Metric tensor contains negative values.")
         metric = np.maximum(metric, 0.0)
+
+        if not np.any(metric > tolerance):
+            raise MetricComputationError("Metric tensor always is zero or numerically singular")
+
         if np.any(metric <= tolerance):
             locations = self._control_pulse[metric <= tolerance]
             sample = ", ".join(f"{value:.6g}" for value in locations[:3])
-            raise MetricComputationError("Metric tensor is zero or numerically singular" + (
+            raise NumericalStabilityWarning("Metric tensor is zero or numerically singular" + (
                 f" near control value(s) {sample}." if sample else "."))
 
         dx = float(np.abs(self._control_pulse[1] - self._control_pulse[0]))

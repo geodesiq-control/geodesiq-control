@@ -25,8 +25,9 @@ def fidelity_vs_time(durations, model, alpha=2, beta=2):
             fidelities.append(dynamics.state_fidelity())
 
         return np.array(fidelities)
-    except gq.MetricComputationError:
-        print("MetricComputationError: Fidelity computation failed for alpha={}, beta={}".format(alpha, beta))
+    except gq.NumericalStabilityWarning as e:
+        print(e)
+        print("NumericalStabilityWarning: Fidelity computation failed for alpha={}, beta={}".format(alpha, beta))
 
 
 def optimal_fidelity_time_map(durations, model, alphas, betas, n_jobs=-1):
@@ -63,4 +64,4 @@ alphas = np.linspace(0, 4, 7)
 betas = np.linspace(0, 4, 7)
 
 # fidelity_vs_time(durations_2d, dqd_model, alpha=3 + 1 / 3, beta=4)
-optimal_fidelities, best_times = optimal_fidelity_time_map(durations_2d, dqd_model, alphas, betas, n_jobs=-1)
+optimal_fidelities, best_times = optimal_fidelity_time_map(durations_2d, dqd_model, alphas, betas, n_jobs=1)
