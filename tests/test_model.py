@@ -7,6 +7,7 @@ from scipy.integrate import solve_ivp
 from geodesiq import (ControlModel, ImmutableConfigurationError, InvalidControlParameterError,
                       MissingControlParameterError, SolverError, ValidationError, )
 from geodesiq.pulses import PulseControl
+from geodesiq.warnings import NumericalStabilityWarning
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +46,14 @@ def variable_dimension_hamiltonian(lam: float, dimension: int, ) -> np.ndarray:
 
 def hamiltonian(lam: float, **_: Any) -> np.ndarray:
     return np.array([[lam, 1.0], [1.0, -lam], ], dtype=float, )
+
+
+def singular_metric_hamiltonian(lam: float) -> np.ndarray:
+    return np.array([[lam ** 2, 1.0], [1.0, -lam ** 2]], dtype=float)
+
+
+def singular_metric_partial(lam: float) -> np.ndarray:
+    return np.array([[2.0 * lam, 0.0], [0.0, -2.0 * lam]], dtype=float)
 
 
 # ---------------------------------------------------------------------------
@@ -856,6 +865,21 @@ class TestComputeMetricTensor:
     def test_a_tilde_positive(self, configured_ham):
         configured_ham.solve_problem()
         assert configured_ham._a_tilde > 0
+
+    def test_metric_tensor_warns_when_zero_or_numerically_singular(self):
+        model = ControlModel(singular_metric_hamiltonian, partial_H_func=singular_metric_partial)
+        model.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0,
+                          beta=2.0, num_steps=65, )
+
+        config = model._check_control_parameters()
+        model._solve_eigenproblem(config)
+
+        with pytest.warns(NumericalStabilityWarning, match="Metric tensor is zero or numerically singular"):
+            model._compute_metric_tensor(config)
+
+        assert model._metric_tensor is not None
+        assert np.any(model._metric_tensor == 0.0)
+        assert np.any(model._metric_tensor > 0.0)
 
 
 # ---------------------------------------------------------------------------

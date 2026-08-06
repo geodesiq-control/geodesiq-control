@@ -63,7 +63,7 @@ def degenerate_partial(lam: float, ) -> np.ndarray:
     return np.array([[1.0, 0.0], [0.0, -1.0], ], dtype=float, )
 
 
-def dqd_hamiltonian(eps, U, tc, Ez, dEz, dEx):
+def dqd_hamiltonian(eps: float, U: float, tc: float, Ez: float, dEz: float, dEx: float):
     ham = np.array([[U - eps, 0, -tc, tc, 0], [0, Ez, dEx, -dEx, 0], [-tc, dEx, dEz, 0, dEx], [tc, -dEx, 0, -dEz, -dEx],
                     [0, 0, dEx, -dEx, -Ez]])
     return ham
