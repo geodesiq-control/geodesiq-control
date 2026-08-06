@@ -3,6 +3,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Callable
+import warnings
 
 import numpy as np
 from scipy.differentiate import jacobian
@@ -764,13 +765,13 @@ class ControlModel:
         metric = np.maximum(metric, 0.0)
 
         if not np.any(metric > tolerance):
-            raise MetricComputationError("Metric tensor always is zero or numerically singular")
+            raise MetricComputationError("Metric tensor is always zero or numerically singular")
 
         if np.any(metric <= tolerance):
             locations = self._control_pulse[metric <= tolerance]
             sample = ", ".join(f"{value:.6g}" for value in locations[:3])
-            raise NumericalStabilityWarning("Metric tensor is zero or numerically singular" + (
-                f" near control value(s) {sample}." if sample else "."))
+            warnings.warn("Metric tensor is zero or numerically singular" + (
+                f" near control value(s) {sample}." if sample else "."), NumericalStabilityWarning)
 
         dx = float(np.abs(self._control_pulse[1] - self._control_pulse[0]))
         metric_values = np.sqrt(metric)
