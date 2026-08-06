@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="images/geodesiq_logo.png" alt="Logo"/>
+  <img
+    src="https://raw.githubusercontent.com/geodesiq-control/geodesiq-control/main/images/geodesiq_logo.png"
+    alt="geodesiq logo"
+  />
 </p>
 
 # `geodesiq`: Geometric optimal control
@@ -9,7 +12,6 @@
 
 [![Build Status](https://github.com/geodesiq-control/geodesiq-control/actions/workflows/ci.yml/badge.svg)](https://github.com/geodesiq-control/geodesiq-control/actions/workflows/ci.yml)
 [![Maintainability](https://qlty.sh/gh/geodesiq-control/projects/geodesiq-control/maintainability.svg)](https://qlty.sh/gh/geodesiq-control/projects/geodesiq-control)
-[![Code Coverage](https://qlty.sh/gh/geodesiq-control/projects/geodesiq-control/coverage.svg)](https://qlty.sh/gh/geodesiq-control/projects/geodesiq-control)
 [![Coverage Status](https://coveralls.io/repos/github/geodesiq-control/geodesiq-control/badge.svg?branch=dev)](https://coveralls.io/github/geodesiq-control/geodesiq-control?branch=dev)
 [![PyPI - License](https://img.shields.io/pypi/l/geodesiq)](https://opensource.org/license/lgpl-2-1)
 [![PyPI Downloads](https://api.pepy.tech/badge/geodesiq/month?left_text=downloads%20%7C%20pip)](https://pypi.org/project/geodesiq/)
