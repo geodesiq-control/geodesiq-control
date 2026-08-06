@@ -41,7 +41,7 @@ class ControlModel:
     for the control pulse, and synthesize the control pulse based on the solution of the optimization problem.
     """
 
-    _SINGULARITY_RTOL = 1e-12
+    _SINGULARITY_RTOL = 1e-20
     _SINGULARITY_ATOL = 1e-14
 
     def __init__(self, H_func: Callable[..., np.ndarray], partial_H_func: Callable[..., np.ndarray] | None = None,
