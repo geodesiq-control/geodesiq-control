@@ -63,6 +63,12 @@ def degenerate_partial(lam: float, ) -> np.ndarray:
     return np.array([[1.0, 0.0], [0.0, -1.0], ], dtype=float, )
 
 
+def dqd_hamiltonian(eps, U, tc, Ez, dEz, dEx):
+    ham = np.array([[U - eps, 0, -tc, tc, 0], [0, Ez, dEx, -dEx, 0], [-tc, dEx, dEz, 0, dEx], [tc, -dEx, 0, -dEz, -dEx],
+                    [0, 0, dEx, -dEx, -Ez]])
+    return ham
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -215,6 +221,20 @@ def test_numerical_derivative_rejects_failed_jacobian(monkeypatch, status_code: 
 
     assert "Numerical differentiation failed to converge" in str(exc_info.value)
     assert str(status_code) in str(exc_info.value)
+
+
+@pytest.mark.parametrize(("alpha", "beta"), [(2, 4), (10 / 3, 4), (4, 4), ], )
+def test_dqd_model_singularity(alpha: float, beta: float, ) -> None:
+    dqd_model = ControlModel(dqd_hamiltonian)
+
+    U, tc, Ez, dEz, dEx = 10, 1, .9, .1, .01
+    eps0, epsf = 15, 0
+
+    dqd_model.set_parameters(U=U, tc=tc, Ez=Ez, dEz=dEz, dEx=dEx)
+    dqd_model.set_control(control_name='eps', pulse_initial=eps0, pulse_final=epsf, initial_state=0)
+
+    dqd_model.set_control(alpha=alpha, beta=beta)
+    dqd_model.solve_problem(pulse_accuracy=100)
 
 
 # ---------------------------------------------------------------------------

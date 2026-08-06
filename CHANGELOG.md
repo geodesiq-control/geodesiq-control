@@ -6,9 +6,26 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-08-06
+
+## Added
+
+- `ControlModel` now raises a `MetricComputationError` when the metric tensor is never larger than the _SINGULARITY_RTOL
+  threshold, indicating that the metric tensor is always close to zero.
+- Test to verify that the DQD model do not raise a `MetricComputationError` when the metric tensor is close to zero at
+  some point, but not always.
+
+## Changed
+
+- Relax the _SINGULARITY_RTOL from 1e-12 to 1e-20, so values closer to zero are accepted.
+- Instead of returning a `MetricComputationError` when the metric tensor is close to zero at some point, now the
+  `ControlModel` will raise a `NumericalStabilityWarning` with a message indicating that the metric tensor is close to
+  zero at some point.
+
 ## [0.1.3] - 2026-07-28
 
 ## Added
+
 - Badges for PyPI, Python version, GitHub Actions CI status, code coverage, license and maintenability.
 
 ## [0.1.2] - 2026-07-27
