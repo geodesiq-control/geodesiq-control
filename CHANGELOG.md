@@ -6,6 +6,13 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-08-06
+
+## Fixed
+
+- `README.md` badges for PyPI, and logo image.
+- Correctly raise `NumericalStabilityWarning` as a warning, instead of raising it as an exception.
+
 ## [0.1.4] - 2026-08-06
 
 ## Added
