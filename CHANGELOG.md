@@ -12,7 +12,7 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 - `ControlModel` now raises a `MetricComputationError` when the metric tensor is never larger than the _SINGULARITY_RTOL
   threshold, indicating that the metric tensor is always close to zero.
-- Test to verify that the DQD model do not raise a `MetricComputationError` when the metric tensor is close to zero at
+- Test to verify that the DQD model does not raise a `MetricComputationError` when the metric tensor is close to zero at
   some point, but not always.
 
 ## Changed
