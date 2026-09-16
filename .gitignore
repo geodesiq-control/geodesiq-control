@@ -218,3 +218,5 @@ uv.lock
 */.coverage
 
 reviews/*
+
+draft/*
