@@ -90,7 +90,7 @@ class PulseControl:
 
         Returns
         -------
-        new_s: np.ndarray
+        new_time: np.ndarray
             Rescaled time array for the piecewise linear approximation.
         approx_sol: np.ndarray
             Control pulse values corresponding to the new rescaled time array for the piecewise linear approximation.
@@ -99,10 +99,10 @@ class PulseControl:
 
         piecewise_linear = interp1d(self._pulse_times, self._pulse, kind="linear", fill_value="extrapolate")
 
-        new_s = np.linspace(self._pulse_times[0], self._pulse_times[-1], linear_steps)
-        approx_sol = np.asarray(piecewise_linear(new_s))
+        new_time = np.linspace(self._pulse_times[0], self._pulse_times[-1], linear_steps)
+        approx_sol = np.asarray(piecewise_linear(new_time))
 
-        return new_s, approx_sol
+        return new_time, approx_sol
 
     def fourier_spectrum(self, window_len: int = 256, hop: int = 32) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """

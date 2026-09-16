@@ -9,6 +9,7 @@ import numpy as np
 from scipy.differentiate import jacobian
 from scipy.integrate import romb, solve_ivp
 from scipy.interpolate import PchipInterpolator
+import matplotlib.pyplot as plt
 
 from ._utils import Flags, build_diab, values_equal, validate_state_index
 from .exceptions import (ImmutableConfigurationError, InvalidControlParameterError, MissingControlParameterError,
@@ -1081,9 +1082,12 @@ class ControlModel:
         return _EigensystemParameters(control_name=control_name, pulse_initial=pulse_initial, pulse_final=pulse_final,
                                       num_steps=num_steps, )
 
-    def plot_eigenvalues(self, fig: Any = None, ax: Any = None, legend: bool = True,
+    def plot_eigenvalues(self, fig: plt.Figure | None, ax: Any = None, legend: bool = True,
                          legend_kwargs: dict[str, Any] | None = None, xlabel: str | None = None,
-                         ylabel: str | None = None, title: str | None = None, **plot_kwargs: Any, ) -> tuple[Any, Any]:
+                         ylabel: str | None = None, title: str | None = None, **plot_kwargs: Any, ) -> tuple[
+                                                                                                           plt.Figure
+                                                                                                           |
+                                                                                                           plt.SubFigure, plt.Axes] | None:
         """
         Plot ControlModel eigenvalues as a function of the control parameter.
 
@@ -1113,31 +1117,31 @@ class ControlModel:
         control_name = config.control_name
 
         if ax is None:
-            import matplotlib.pyplot as plt
-
             if fig is None:
                 fig, ax = plt.subplots()
-            else:
+            elif isinstance(fig, plt.Figure):
                 ax = fig.add_subplot(111)
-        elif fig is None:
+
+        if isinstance(ax, plt.Axes):
             fig = ax.figure
+            for level in range(self.eigenenergies.shape[1]):
+                ax.plot(self._control_pulse, self.eigenenergies[:, level], label=f"E{level}", **plot_kwargs)
 
-        for level in range(self.eigenenergies.shape[1]):
-            ax.plot(self._control_pulse, self.eigenenergies[:, level], label=f"E{level}", **plot_kwargs)
+            ax.set_xlabel(control_name if xlabel is None else xlabel)
+            ax.set_ylabel("Energy" if ylabel is None else ylabel)
+            ax.set_title("Hamiltonian eigenenergies" if title is None else title)
 
-        ax.set_xlabel(control_name if xlabel is None else xlabel)
-        ax.set_ylabel("Energy" if ylabel is None else ylabel)
-        ax.set_title("Hamiltonian eigenenergies" if title is None else title)
+            if legend:
+                ax.legend(**(legend_kwargs or {}))
 
-        if legend:
-            ax.legend(**(legend_kwargs or {}))
+            return fig, ax
+        else:
+            return None
 
-        return fig, ax
-
-    def plot_metric_tensor(self, fig: Any = None, ax: Any = None, legend: bool = True,
+    def plot_metric_tensor(self, fig: plt.Figure | None = None, ax: plt.Axes | None = None, legend: bool = True,
                            legend_kwargs: dict[str, Any] | None = None, xlabel: str | None = None,
                            ylabel: str | None = None, title: str | None = None, **plot_kwargs: Any, ) -> tuple[
-        Any, Any]:
+                                                                                                             plt.Figure | plt.SubFigure, plt.Axes] | None:
         """
         Plot the metric tensor (G tensor) as a function of the control parameter.
 
@@ -1178,25 +1182,24 @@ class ControlModel:
             raise ValidationError("Metric tensor can not be None.")
 
         if ax is None:
-            import matplotlib.pyplot as plt
-
             if fig is None:
                 fig, ax = plt.subplots()
-            else:
+            elif isinstance(fig, plt.Figure):
                 ax = fig.add_subplot(111)
-        elif fig is None:
+
+        if isinstance(ax, plt.Axes):
             fig = ax.figure
+            ax.plot(self._control_pulse, self._metric_tensor, label="G", **plot_kwargs)
 
-        ax.plot(self._control_pulse, self._metric_tensor, label="G", **plot_kwargs)
+            ax.set_xlabel(control_name if xlabel is None else xlabel)
+            ax.set_ylabel("G tensor" if ylabel is None else ylabel)
+            ax.set_title("G tensor" if title is None else title)
 
-        ax.set_xlabel(control_name if xlabel is None else xlabel)
-        ax.set_ylabel("G tensor" if ylabel is None else ylabel)
-        ax.set_title("G tensor" if title is None else title)
+            if legend:
+                ax.legend(**(legend_kwargs or {}))
 
-        if legend:
-            ax.legend(**(legend_kwargs or {}))
-
-        return fig, ax
+            return fig, ax
+        return None
 
     def synthesize_pulse(self, duration: float) -> PulseControl:
         """
