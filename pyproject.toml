@@ -68,6 +68,7 @@ bench = [
     "pandas>=2.0",
     "pyarrow>=15",
     "tqdm>=4.68",
+    "qutip_qtrl>=0.2.0"
 ]
 notebooks = [
     "ipykernel==6.29.5", # Pinned because newer releases have caused ipywidgets regressions.
@@ -86,6 +87,7 @@ dev = [
     { include-group = "build" },
     { include-group = "bench" },
     { include-group = "notebooks" },
+    "scienceplots>=2.2.2",
 ]
 
 [tool.hatch.version]
