@@ -47,7 +47,9 @@ class ControlModel:
     _SINGULARITY_RTOL = 1e-20
     _SINGULARITY_ATOL = 1e-14
 
-    def __init__(self, H_func: Callable[..., np.ndarray], partial_H_func: Callable[..., np.ndarray] | None = None,
+    def __init__(self,
+                 H_func: Callable[..., np.ndarray],
+                 partial_H_func: Callable[..., np.ndarray] | None = None,
                  _flags_verbose: bool = False, ) -> None:
         """
         Initialize the ControlModel class with the Hamiltonian function and its partial derivative (if provided).
@@ -448,10 +450,17 @@ class ControlModel:
         """Return a read-only copy of the Hamiltonian parameters."""
         return MappingProxyType(deepcopy(self._parameters))
 
-    def set_control(self, control_name: str | None = None, pulse_initial: float | None = None,
-                    pulse_final: float | None = None, initial_state: int | None = None, final_state: int | None = None,
-                    alpha: float | None = None, beta: float | None = None, dia_alpha: float | None = None,
-                    dia_beta: float | None = None, num_steps: int | None = None, ) -> None:
+    def set_control(self,
+                    control_name: str | None = None,
+                    pulse_initial: float | None = None,
+                    pulse_final: float | None = None,
+                    initial_state: int | None = None,
+                    final_state: int | None = None,
+                    alpha: float | None = None,
+                    beta: float | None = None,
+                    dia_alpha: float | None = None,
+                    dia_beta: float | None = None,
+                    num_steps: int | None = None, ) -> None:
         """
         Set the control parameters for the optimization problem. This method allows you to specify the control
         parameters such as the name of the control parameter, the initial and final values of the control pulse, ....
@@ -575,8 +584,11 @@ class ControlModel:
         if eigensystem_changed or metric_changed:
             self._pulse = None
 
-    def solve_problem(self, pulse_accuracy: int = 1000, solver: Callable[..., Any] | None = None,
-                      solver_kwargs: dict[str, Any] | None = None, metric_integrator: Callable[..., Any] | None = None,
+    def solve_problem(self,
+                      pulse_accuracy: int = 1000,
+                      solver: Callable[..., Any] | None = None,
+                      solver_kwargs: dict[str, Any] | None = None,
+                      metric_integrator: Callable[..., Any] | None = None,
                       metric_integrator_kwargs: dict[str, Any] | None = None, ) -> None:
         """
         Solve the optimization problem to find the optimal control pulse. This method computes the metric tensor based
@@ -616,7 +628,9 @@ class ControlModel:
 
         self._solve_ode(pulse_accuracy)
 
-    def _configure_integration(self, solver: Callable[..., Any] | None, solver_kwargs: dict[str, Any] | None,
+    def _configure_integration(self,
+                               solver: Callable[..., Any] | None,
+                               solver_kwargs: dict[str, Any] | None,
                                metric_integrator: Callable[..., Any] | None,
                                metric_integrator_kwargs: dict[str, Any] | None, ) -> None:
         if solver_kwargs is not None and not isinstance(solver_kwargs, dict):
@@ -704,7 +718,11 @@ class ControlModel:
         self._matrix_elements = matrix_elements
         self._flags["eigenproblem_solved"] = True
 
-    def _metric_ratio(self, numerator: np.ndarray, denominator: np.ndarray, alpha: float, beta: float,
+    def _metric_ratio(self,
+                      numerator: np.ndarray,
+                      denominator: np.ndarray,
+                      alpha: float,
+                      beta: float,
                       transition: tuple[int, int], ) -> np.ndarray:
         if alpha > 0:
             if self._centered_energies is None:
@@ -1082,12 +1100,15 @@ class ControlModel:
         return _EigensystemParameters(control_name=control_name, pulse_initial=pulse_initial, pulse_final=pulse_final,
                                       num_steps=num_steps, )
 
-    def plot_eigenvalues(self, fig: plt.Figure | None, ax: Any = None, legend: bool = True,
-                         legend_kwargs: dict[str, Any] | None = None, xlabel: str | None = None,
-                         ylabel: str | None = None, title: str | None = None, **plot_kwargs: Any, ) -> tuple[
-                                                                                                           plt.Figure
-                                                                                                           |
-                                                                                                           plt.SubFigure, plt.Axes] | None:
+    def plot_eigenvalues(self,
+                         fig: plt.Figure | plt.SubFigure | None = None,
+                         ax: plt.Axes | None = None,
+                         legend: bool = True,
+                         legend_kwargs: dict[str, Any] | None = None,
+                         xlabel: str | None = None,
+                         ylabel: str | None = None,
+                         title: str | None = None,
+                         **plot_kwargs: Any, ) -> tuple[plt.Figure | plt.SubFigure, plt.Axes] | None:
         """
         Plot ControlModel eigenvalues as a function of the control parameter.
 
@@ -1124,6 +1145,10 @@ class ControlModel:
 
         if isinstance(ax, plt.Axes):
             fig = ax.figure
+
+            if self._control_pulse is None:
+                raise RuntimeError("Control pulse has not been initialized.")
+
             for level in range(self.eigenenergies.shape[1]):
                 ax.plot(self._control_pulse, self.eigenenergies[:, level], label=f"E{level}", **plot_kwargs)
 
@@ -1138,10 +1163,15 @@ class ControlModel:
         else:
             return None
 
-    def plot_metric_tensor(self, fig: plt.Figure | None = None, ax: plt.Axes | None = None, legend: bool = True,
-                           legend_kwargs: dict[str, Any] | None = None, xlabel: str | None = None,
-                           ylabel: str | None = None, title: str | None = None, **plot_kwargs: Any, ) -> tuple[
-                                                                                                             plt.Figure | plt.SubFigure, plt.Axes] | None:
+    def plot_metric_tensor(self,
+                           fig: plt.Figure | plt.SubFigure | None = None,
+                           ax: plt.Axes | None = None,
+                           legend: bool = True,
+                           legend_kwargs: dict[str, Any] | None = None,
+                           xlabel: str | None = None,
+                           ylabel: str | None = None,
+                           title: str | None = None,
+                           **plot_kwargs: Any, ) -> tuple[plt.Figure | plt.SubFigure, plt.Axes] | None:
         """
         Plot the metric tensor (G tensor) as a function of the control parameter.
 
