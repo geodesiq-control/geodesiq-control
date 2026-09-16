@@ -1147,7 +1147,9 @@ class ControlModel:
             fig = ax.figure
 
             if self._control_pulse is None:
-                raise RuntimeError("Control pulse has not been initialized.")
+                self._solve_eigenproblem(config)
+
+            assert self._control_pulse is not None
 
             for level in range(self.eigenenergies.shape[1]):
                 ax.plot(self._control_pulse, self.eigenenergies[:, level], label=f"E{level}", **plot_kwargs)
