@@ -165,8 +165,13 @@ class ControlModel:
         if not np.all(np.isfinite(matrix)):  # Non-finite values
             raise ValidationError("partial_H_func must return a matrix with finite values.")
 
-        hamiltonian_temp = self.H_func(*args, **{**self._parameters, **kwargs})
-        if np.shape(matrix) != hamiltonian_temp.shape:
+        if self._hamiltonian_dimension is None:
+            hamiltonian_temp = self.H_func(*args, **{**self._parameters, **kwargs})
+            dim_temp = hamiltonian_temp.shape[0]
+        else:
+            dim_temp = self._hamiltonian_dimension
+
+        if np.shape(matrix)[0] != dim_temp:
             raise ValidationError("partial_H_func must return a matrix with the same shape as H_func.")
 
         return matrix
@@ -708,12 +713,13 @@ class ControlModel:
         if self._flag_numerical_partial_H:
             full_partial_H = self._compute_numerical_partial_H()
         else:
-            full_partial_H = np.array(
-                [self._call_partial_hamiltonian(**self._evaluation_kwargs(lam)) for lam in self._control_pulse])
+            full_partial_H = np.stack(
+                [self._call_partial_hamiltonian(**self._evaluation_kwargs(value)) for value in self._control_pulse])
 
-        matrix_elements = np.abs(
-            np.einsum("...ij,...jk,...kl->...il", eigenvectors.conj().transpose(0, 2, 1), full_partial_H,
-                      eigenvectors, ))
+        # matrix_elements = np.abs(
+        #     np.einsum("...ij,...jk,...kl->...il", eigenvectors.conj().transpose(0, 2, 1), full_partial_H,
+        #               eigenvectors, ))
+        matrix_elements = np.abs(eigenvectors.conj().transpose(0, 2, 1) @ full_partial_H @ eigenvectors)
         if not np.all(np.isfinite(matrix_elements)):
             raise SolverError("Hamiltonian derivative matrix elements contain non-finite values.")
         self._matrix_elements = matrix_elements

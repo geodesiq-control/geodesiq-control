@@ -87,6 +87,7 @@ dev = [
     { include-group = "build" },
     { include-group = "bench" },
     { include-group = "notebooks" },
+    "line-profiler>=5.0.2",
     "scienceplots>=2.2.2",
 ]
 
