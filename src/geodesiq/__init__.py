@@ -9,9 +9,10 @@ from .exceptions import (ComputationError, ConfigurationError, GeodesiQError, Im
                          MissingControlParameterError, SolverError, ValidationError, )
 from .pulses import PulseControl
 from .warnings import ExperimentalFeatureWarning, GeodesiQWarning, NumericalStabilityWarning, PerformanceWarning
+from .decompose_hamiltonian import decompose_hamiltonian
 
 __all__ = ["ControlModel", "PulseControl", "Dynamics", "about", "GeodesiQError", "ValidationError",
            "ConfigurationError", "ComputationError", "SolverError", "IOErrorGeodesiQ", "MissingControlParameterError",
            "ImmutableConfigurationError", "InvalidControlParameterError", "MetricComputationError", "MissingArgsError",
            "GeodesiQWarning", "NumericalStabilityWarning", "PerformanceWarning", "ExperimentalFeatureWarning",
-           "__version__", ]
+           "decompose_hamiltonian", "__version__", ]

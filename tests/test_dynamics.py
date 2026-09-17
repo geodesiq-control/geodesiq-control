@@ -198,12 +198,12 @@ def test_state_fidelity_integer_state_indices(default_dynamics):
 
 
 def test_state_fidelity_raises_when_mesolve_returns_no_final_state(default_dynamics, monkeypatch):
-    """A mesolve result without final_state should raise a ValidationError."""
+    """A sesolve result without final_state should raise a ValidationError."""
 
     class DummyResult:
         final_state = None
 
-    monkeypatch.setattr(qt, "mesolve", lambda *args, **kwargs: DummyResult())
+    monkeypatch.setattr(qt, "sesolve", lambda *args, **kwargs: DummyResult())
 
     with pytest.raises(ValidationError, match="did not return a final state"):
         default_dynamics.state_fidelity(initial_state=qt.basis(2, 0), final_state=qt.basis(2, 1))
@@ -256,12 +256,16 @@ def test_average_gate_fidelity_invalid_gate_type(default_dynamics):
 
 class TestIndices:
     @pytest.mark.parametrize(("initial_state", "final_state"), [(2, 0), (0, 2), (2, 2)], )
-    def test_out_of_range_control_state_indices_raise(self, default_dynamics, initial_state: int,
+    def test_out_of_range_control_state_indices_raise(self,
+                                                      default_dynamics,
+                                                      initial_state: int,
                                                       final_state: int, ) -> None:
         with pytest.raises(ValidationError, match="must be between", ):
             default_dynamics.state_fidelity(initial_state=initial_state, final_state=final_state)
 
     @pytest.mark.parametrize(("initial_state", "final_state"), [(0, 0), (0, 1), (1, 0), (1, 1), ], )
-    def test_valid_control_state_indices_are_accepted(self, default_dynamics, initial_state: int,
+    def test_valid_control_state_indices_are_accepted(self,
+                                                      default_dynamics,
+                                                      initial_state: int,
                                                       final_state: int, ) -> None:
         default_dynamics.state_fidelity(initial_state=initial_state, final_state=final_state)
