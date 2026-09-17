@@ -174,8 +174,8 @@ def decompose_hamiltonian(H_func: Callable[[float], qt.Qobj | np.ndarray],
     full_matrix = np.column_stack([_hermitian_to_real_vector(H) for H in samples])
     full_norm = np.linalg.norm(full_matrix)
 
-    relative_residual_error = discarded_norm / residual_norm if residual_norm > 0 else 0.0
-    relative_total_error = discarded_norm / full_norm if full_norm > 0 else 0.0
+    relative_residual_error = float(discarded_norm / residual_norm if residual_norm > 0 else 0.0)
+    relative_total_error = float(discarded_norm / full_norm if full_norm > 0 else 0.0)
 
     return HamiltonianDecomposition(times=times, H_d=H_d, H_controls=H_controls, coefficients=coefficients,
                                     singular_values=singular_values, rank=rank,
