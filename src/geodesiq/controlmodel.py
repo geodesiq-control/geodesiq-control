@@ -49,30 +49,63 @@ class ControlModel:
     _SINGULARITY_ATOL = 1e-14
 
     def __init__(self,
-                 H_func: Callable[..., np.ndarray],
+                 H_func: Callable[..., np.ndarray] | None = None,
                  partial_H_func: Callable[..., np.ndarray] | None = None,
-                 _flags_verbose: bool = False, ) -> None:
+                 _flags_verbose: bool = False,
+                 *,
+                 H_d: np.ndarray | None = None,
+                 H_c: np.ndarray | None = None, ) -> None:
         """
-        Initialize the ControlModel class with the Hamiltonian function and its partial derivative (if provided).
+        Initialize the ControlModel from either a Hamiltonian function or constant drift and control matrices.
 
         Parameters
         ----------
-        H_func : Callable[..., np.ndarray]
+        H_func : Callable[..., np.ndarray] | None
             A function that takes the control parameter and other parameters as input and returns the Hamiltonian
             matrix as a numpy array. The function should be defined such that it can accept the control parameter as a
-            keyword argument, e.g., H_func(lambda=..., param1=..., param2=..., ...).
+            keyword argument, e.g., H_func(lambda=..., param1=..., param2=..., ...). Provide either ``H_func`` or the
+            pair ``H_d`` and ``H_c``.
         partial_H_func : Callable[..., np.ndarray] | None
             An optional function that takes the control parameter and other parameters as input and returns the partial
             derivative of the Hamiltonian with respect to the control parameter as a numpy array.
             If this function is not provided, the class will compute the numerical partial derivative.
+        H_d, H_c : np.ndarray | None
+            Constant drift and control Hamiltonians defining the affine model
+            ``H(control) = H_d + control * H_c``. Both matrices must be finite, Hermitian, square, and have the same
+            shape. In this mode the derivative is exactly ``H_c`` and ``set_parameters`` is unavailable.
         """
-        if not callable(H_func):
-            raise ValidationError("H_func must be callable.")
-        if partial_H_func is not None and not callable(partial_H_func):
-            raise ValidationError("partial_H_func must be callable when provided.")
+        affine_requested = H_d is not None or H_c is not None
 
-        self._H_func = H_func
-        self._partial_H_func = partial_H_func
+        if affine_requested:
+            if H_d is None or H_c is None:
+                raise ValidationError("Both H_d and H_c must be provided for an affine Hamiltonian.")
+            if H_func is not None or partial_H_func is not None:
+                raise ValidationError("Provide either H_func/partial_H_func or H_d/H_c, not both.")
+
+            drift = self._validate_constant_hamiltonian(H_d, "H_d")
+            control = self._validate_constant_hamiltonian(H_c, "H_c")
+            if control.shape != drift.shape:
+                raise ValidationError("H_c must have the same shape as H_d.")
+
+            dtype = np.result_type(drift.dtype, control.dtype)
+            self._H_d: np.ndarray | None = np.asarray(drift, dtype=dtype)
+            self._H_c: np.ndarray | None = np.asarray(control, dtype=dtype)
+            self._H_func: Callable[..., np.ndarray] | None = None
+            self._partial_H_func: Callable[..., np.ndarray] | None = None
+            self._affine_hamiltonian = True
+            self._hamiltonian_dimension: int | None = drift.shape[0]
+        else:
+            if H_func is None or not callable(H_func):
+                raise ValidationError("H_func must be callable when H_d and H_c are not provided.")
+            if partial_H_func is not None and not callable(partial_H_func):
+                raise ValidationError("partial_H_func must be callable when provided.")
+
+            self._H_func = H_func
+            self._partial_H_func = partial_H_func
+            self._H_d = None
+            self._H_c = None
+            self._affine_hamiltonian = False
+            self._hamiltonian_dimension = None
 
         # Initialize flags needed to track the state of the computations
         self._flags = Flags(_verbose=_flags_verbose)
@@ -81,10 +114,7 @@ class ControlModel:
         self._flags.add("metric_computed", parents=["eigenproblem_solved", "dia_list_computed"])
         self._flags.add("ode_solved", parent="metric_computed")
 
-        if self._partial_H_func is not None:
-            self._flag_numerical_partial_H = False
-        else:
-            self._flag_numerical_partial_H = True
+        self._flag_numerical_partial_H = not self._affine_hamiltonian and self._partial_H_func is None
 
         # Initialize parameters and control settings
         self._parameters: dict[str, Any] = {}
@@ -121,14 +151,17 @@ class ControlModel:
         self._metric_integrator = romb
         self._metric_integrator_kwargs: dict[str, Any] = {}
         self._previous_pulse_accuracy: int | None = None  # To track changes in pulse accuracy for ODE solving
-        self._hamiltonian_dimension: int | None = None
 
     @property
     def hamiltonian_dimension(self) -> int | None:
         return self._hamiltonian_dimension
 
     def _call_hamiltonian(self, *args: Any, **kwargs: Any) -> np.ndarray:
-        matrix = np.asarray(self.H_func(*args, **{**self._parameters, **kwargs}))
+        H_func = self.H_func
+        if H_func is None:
+            raise ImmutableConfigurationError(
+                "Direct H_func evaluation is unavailable when H_d and H_c define the Hamiltonian.")
+        matrix = np.asarray(H_func(*args, **{**self._parameters, **kwargs}))
 
         if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
             raise ValidationError(f"H_func must return a 2D square matrix, got shape {matrix.shape}.")
@@ -166,7 +199,10 @@ class ControlModel:
             raise ValidationError("partial_H_func must return a matrix with finite values.")
 
         if self._hamiltonian_dimension is None:
-            hamiltonian_temp = self.H_func(*args, **{**self._parameters, **kwargs})
+            H_func = self.H_func
+            if H_func is None:
+                raise MissingControlParameterError("H_func is not configured.")
+            hamiltonian_temp = H_func(*args, **{**self._parameters, **kwargs})
             dim_temp = hamiltonian_temp.shape[0]
         else:
             dim_temp = self._hamiltonian_dimension
@@ -180,6 +216,18 @@ class ControlModel:
         # Return the ControlModel function if the object is called directly, allowing for easy evaluation of the
         #   ControlModel at specific control values
         # Runtime kwargs override stored defaults for explicit one-off evaluations.
+        if self._affine_hamiltonian:
+            if len(args) == 1 and not kwargs:
+                return self.evaluate_hamiltonian(args[0])
+
+            control_name = self.control_name
+            if not args and control_name is not None and set(kwargs) == {control_name}:
+                return self.evaluate_hamiltonian(kwargs[control_name])
+
+            raise InvalidControlParameterError(
+                "Affine models must be evaluated with one positional control value or with the configured "
+                "control_name as the only keyword argument.")
+
         return self._call_hamiltonian(*args, **kwargs)
 
     def _evaluation_kwargs(self, control_value: float) -> dict[str, Any]:
@@ -197,16 +245,30 @@ class ControlModel:
     def evaluate_hamiltonian(self, control_value: float) -> np.ndarray:
         """Evaluate and validate the Hamiltonian at one control value."""
 
+        if not isinstance(control_value, (int, float, np.integer, np.floating)) or isinstance(control_value, bool):
+            raise InvalidControlParameterError("Control value must be a finite real number.")
+
+        control_value = float(control_value)
+        if not np.isfinite(control_value):
+            raise InvalidControlParameterError("Control value must be finite.")
+
+        if self._affine_hamiltonian:
+            assert self._H_d is not None
+            assert self._H_c is not None
+            return self._H_d + control_value * self._H_c
+
         return self._call_hamiltonian(**self._evaluation_kwargs(control_value))
 
     # Setters and getters are defined for the critical attributes of the ControlModel class, so we have control over how
     # the user modifies them. It is important that the correct flags are updated when these attributes are changed
     @property
-    def H_func(self) -> Callable[..., np.ndarray]:
+    def H_func(self) -> Callable[..., np.ndarray] | None:
         return self._H_func
 
     @H_func.setter
     def H_func(self, func: Callable[..., np.ndarray]) -> None:
+        if self._affine_hamiltonian:
+            raise ImmutableConfigurationError("H_func cannot be set when the Hamiltonian is defined by H_d and H_c.")
         if self._H_func is None:
             if not callable(func):
                 raise ValidationError("H_func must be callable.")
@@ -221,6 +283,9 @@ class ControlModel:
 
     @partial_H_func.setter
     def partial_H_func(self, func: Callable[..., np.ndarray]) -> None:
+        if self._affine_hamiltonian:
+            raise ImmutableConfigurationError(
+                "partial_H_func cannot be set when the Hamiltonian is defined by H_d and H_c.")
         if self._partial_H_func is None:
             if not callable(func):
                 raise ValidationError("partial_H_func must be callable.")
@@ -231,6 +296,21 @@ class ControlModel:
             raise ImmutableConfigurationError(
                 "partial_H_func is already set and cannot be changed. If you want to change it,"
                 " please create a new instance of the ControlModel class.")
+
+    @property
+    def H_d(self) -> np.ndarray | None:
+        """Return a copy of the constant drift Hamiltonian, if configured."""
+        return None if self._H_d is None else self._H_d.copy()
+
+    @property
+    def H_c(self) -> np.ndarray | None:
+        """Return a copy of the constant control Hamiltonian, if configured."""
+        return None if self._H_c is None else self._H_c.copy()
+
+    @property
+    def affine_hamiltonian(self) -> bool:
+        """Whether the model uses ``H(control) = H_d + control * H_c``."""
+        return self._affine_hamiltonian
 
     @property
     def control_name(self) -> str | None:
@@ -438,6 +518,11 @@ class ControlModel:
         e.g., set_parameters(param1=value1, param2=value2, ...), and they will be stored. If a single parameter is
         updated, others will not be affected.
         """
+
+        if self._affine_hamiltonian:
+            raise ImmutableConfigurationError(
+                "set_parameters() is unavailable when constant H_d and H_c matrices are supplied. "
+                "Construct a new ControlModel to change parameters absorbed into these matrices.")
 
         if self.control_name in parameters:
             raise InvalidControlParameterError(
@@ -686,7 +771,12 @@ class ControlModel:
             config = self._check_eigensystem_parameters()
 
         self._control_pulse = np.linspace(config.pulse_initial, config.pulse_final, num=config.num_steps, dtype=float, )
-        full_hamiltonian = np.stack([self.evaluate_hamiltonian(value) for value in self._control_pulse])
+        if self._affine_hamiltonian:
+            assert self._H_d is not None
+            assert self._H_c is not None
+            full_hamiltonian = self._H_d[None, :, :] + self._control_pulse[:, None, None] * self._H_c[None, :, :]
+        else:
+            full_hamiltonian = np.stack([self.evaluate_hamiltonian(value) for value in self._control_pulse])
         dimension = full_hamiltonian.shape[1]
 
         energy_offset = np.trace(full_hamiltonian, axis1=1, axis2=2) / dimension
@@ -710,15 +800,15 @@ class ControlModel:
         self._centered_energies = energies
         self._energy_offset = energy_offset
 
-        if self._flag_numerical_partial_H:
+        if self._affine_hamiltonian:
+            assert self._H_c is not None
+            full_partial_H = self._H_c
+        elif self._flag_numerical_partial_H:
             full_partial_H = self._compute_numerical_partial_H()
         else:
             full_partial_H = np.stack(
                 [self._call_partial_hamiltonian(**self._evaluation_kwargs(value)) for value in self._control_pulse])
 
-        # matrix_elements = np.abs(
-        #     np.einsum("...ij,...jk,...kl->...il", eigenvectors.conj().transpose(0, 2, 1), full_partial_H,
-        #               eigenvectors, ))
         matrix_elements = np.abs(eigenvectors.conj().transpose(0, 2, 1) @ full_partial_H @ eigenvectors)
         if not np.all(np.isfinite(matrix_elements)):
             raise SolverError("Hamiltonian derivative matrix elements contain non-finite values.")
@@ -1312,8 +1402,16 @@ class ControlModel:
         the optimization problem. The summary can be used for logging, debugging, or displaying the current state of the
         ControlModel object.
         """
-        hamiltonian_params = (", ".join(
-            f"{key}: {value}" for key, value in self._parameters.items()) if self._parameters else "❌ not set")
+        if self._affine_hamiltonian:
+            hamiltonian_description = "✅ affine (H_d + control * H_c)"
+            partial_hamiltonian_description = "✅ exact constant H_c"
+            hamiltonian_params = "absorbed into H_d and H_c"
+        else:
+            hamiltonian_description = "✅ function" if self.H_func is not None else "❌ not set"
+            partial_hamiltonian_description = (
+                "✅ function" if self.partial_H_func is not None else "numerical derivative")
+            hamiltonian_params = (", ".join(
+                f"{key}: {value}" for key, value in self._parameters.items()) if self._parameters else "❌ not set")
         alpha_beta = (f"({self.alpha if self.alpha is not None else '❌ not set'}, "
                       f"{self.beta if self.beta is not None else '❌ not set'})")
         diabatic_alpha_beta = ("("
@@ -1322,8 +1420,8 @@ class ControlModel:
                                ")")
 
         summary_lines = ["------------------ ControlModel Control Summary ------------------",
-                         f"Hamiltonian: {'✅ set' if self.H_func is not None else '❌ not set'}",
-                         f"Partial Hamiltonian: {'✅ set' if self.partial_H_func is not None else '❌ not set'}",
+                         f"Hamiltonian: {hamiltonian_description}",
+                         f"Partial Hamiltonian: {partial_hamiltonian_description}",
                          f"Hamiltonian parameters: {hamiltonian_params}",
                          f"Control name → {self.control_name if self.control_name is not None else '❌ not set'}",
                          f"Pulse initial → {self.pulse_initial if self.pulse_initial is not None else '❌ not set'}",
@@ -1358,6 +1456,22 @@ class ControlModel:
         if not isinstance(name, str) or not name.strip():
             raise InvalidControlParameterError("Control name must be a non-empty string.")
         return name
+
+    @staticmethod
+    def _validate_constant_hamiltonian(matrix: Any, name: str) -> np.ndarray:
+        """Validate and detach a constant Hamiltonian matrix."""
+        array = np.asarray(matrix)
+
+        if array.ndim != 2 or array.shape[0] != array.shape[1]:
+            raise ValidationError(f"{name} must be a 2D square matrix, got shape {array.shape}.")
+        if not np.issubdtype(array.dtype, np.number):
+            raise ValidationError(f"{name} must contain numeric values.")
+        if not np.all(np.isfinite(array)):
+            raise ValidationError(f"{name} must contain only finite values.")
+        if not np.allclose(array, array.T.conj()):
+            raise ValidationError(f"{name} must be Hermitian.")
+
+        return array.copy()
 
     @staticmethod
     def _validate_pulse_value(value: Any, name: str) -> float:

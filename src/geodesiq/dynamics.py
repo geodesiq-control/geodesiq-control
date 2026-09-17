@@ -58,7 +58,17 @@ class Dynamics:
         self._duration: float = duration
         self._pulse_times: np.ndarray = duration * np.linspace(0.0, 1.0, len(self._control_sol))
 
-        self._qevo = decompose_hamiltonian(self._get_ham, self._pulse_times, drift="mean", rtol=1e-10).qobjevo()
+        if model.affine_hamiltonian:
+            H_d = model.H_d
+            H_c = model.H_c
+
+            if H_d is None or H_c is None:
+                raise ConfigurationError("Affine ControlModel is missing its constant drift or control Hamiltonian.")
+
+            self._qevo = qt.QobjEvo([qt.Qobj(H_d) / self._hbar, [qt.Qobj(H_c) / self._hbar, self._control_sol]],
+                                    tlist=self._pulse_times, order=3, )
+        else:
+            self._qevo = decompose_hamiltonian(self._get_ham, self._pulse_times, drift="mean", rtol=1e-10).qobjevo()
 
     def _eigenstate(self, control_value: float, state_index: int) -> qt.Qobj:
         hamiltonian = qt.Qobj(self.evaluate_hamiltonian(control_value))
@@ -77,7 +87,7 @@ class Dynamics:
         """
         Compute the time evolution operator using the pulse ControlModel.
         """
-        pulse_times: np.ndarray = np.asarray(self._pulse_times, dtype=float).tolist()
+        pulse_times: list[float] = np.asarray(self._pulse_times, dtype=float).tolist()
         propagator = qt.propagator(self._qevo, pulse_times)
         if isinstance(propagator, list):
             return propagator
