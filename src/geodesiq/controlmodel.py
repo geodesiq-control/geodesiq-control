@@ -593,6 +593,7 @@ class ControlModel:
         """
 
         # Build and validate the complete candidate configuration first.
+        # ToDo: With affine Hamiltonians, we could allow the user to set the control_name to None
         candidate_name = (self._control_name if control_name is None else self._validate_control_name(control_name))
 
         candidate_pulse_initial = (
