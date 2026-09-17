@@ -10,6 +10,7 @@ from scipy.differentiate import jacobian
 from scipy.integrate import romb, solve_ivp
 from scipy.interpolate import PchipInterpolator
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure, SubFigure
 
 from ._utils import Flags, build_diab, values_equal, validate_state_index
 from .exceptions import (ImmutableConfigurationError, InvalidControlParameterError, MissingControlParameterError,
@@ -1101,14 +1102,14 @@ class ControlModel:
                                       num_steps=num_steps, )
 
     def plot_eigenvalues(self,
-                         fig: plt.Figure | plt.SubFigure | None = None,
+                         fig: Figure | SubFigure | None = None,
                          ax: plt.Axes | None = None,
                          legend: bool = True,
                          legend_kwargs: dict[str, Any] | None = None,
                          xlabel: str | None = None,
                          ylabel: str | None = None,
                          title: str | None = None,
-                         **plot_kwargs: Any, ) -> tuple[plt.Figure | plt.SubFigure, plt.Axes] | None:
+                         **plot_kwargs: Any, ) -> tuple[Figure | SubFigure, plt.Axes] | None:
         """
         Plot ControlModel eigenvalues as a function of the control parameter.
 
@@ -1140,7 +1141,7 @@ class ControlModel:
         if ax is None:
             if fig is None:
                 fig, ax = plt.subplots()
-            elif isinstance(fig, plt.Figure):
+            elif isinstance(fig, plt.Figure) or isinstance(fig, SubFigure):
                 ax = fig.add_subplot(111)
 
         if isinstance(ax, plt.Axes):
@@ -1161,19 +1162,20 @@ class ControlModel:
             if legend:
                 ax.legend(**(legend_kwargs or {}))
 
+            assert fig is not None
             return fig, ax
         else:
             return None
 
     def plot_metric_tensor(self,
-                           fig: plt.Figure | plt.SubFigure | None = None,
+                           fig: Figure | SubFigure | None = None,
                            ax: plt.Axes | None = None,
                            legend: bool = True,
                            legend_kwargs: dict[str, Any] | None = None,
                            xlabel: str | None = None,
                            ylabel: str | None = None,
                            title: str | None = None,
-                           **plot_kwargs: Any, ) -> tuple[plt.Figure | plt.SubFigure, plt.Axes] | None:
+                           **plot_kwargs: Any, ) -> tuple[Figure | SubFigure, plt.Axes] | None:
         """
         Plot the metric tensor (G tensor) as a function of the control parameter.
 
@@ -1216,7 +1218,7 @@ class ControlModel:
         if ax is None:
             if fig is None:
                 fig, ax = plt.subplots()
-            elif isinstance(fig, plt.Figure):
+            elif isinstance(fig, plt.Figure) or isinstance(fig, SubFigure):
                 ax = fig.add_subplot(111)
 
         if isinstance(ax, plt.Axes):
@@ -1230,6 +1232,7 @@ class ControlModel:
             if legend:
                 ax.legend(**(legend_kwargs or {}))
 
+            assert fig is not None
             return fig, ax
         return None
 
