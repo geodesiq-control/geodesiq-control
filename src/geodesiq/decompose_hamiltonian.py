@@ -11,10 +11,10 @@ def _hermitian_to_real_vector(H: np.ndarray) -> np.ndarray:
     upper = np.triu_indices(d, 1)
     n_upper = len(upper[0])
 
-    vector = np.empty(d ** 2, dtype=float)
+    vector = np.empty(d**2, dtype=float)
     vector[:d] = np.diag(H).real
-    vector[d:d + n_upper] = np.sqrt(2.0) * H[upper].real
-    vector[d + n_upper:] = np.sqrt(2.0) * H[upper].imag
+    vector[d : d + n_upper] = np.sqrt(2.0) * H[upper].real
+    vector[d + n_upper :] = np.sqrt(2.0) * H[upper].imag
 
     return vector
 
@@ -28,7 +28,7 @@ def _real_vector_to_hermitian(vector: np.ndarray, d: int) -> np.ndarray:
     upper = np.triu_indices(d, 1)
     n_upper = len(upper[0])
 
-    values = (vector[d:d + n_upper] + 1j * vector[d + n_upper:]) / np.sqrt(2.0)
+    values = (vector[d : d + n_upper] + 1j * vector[d + n_upper :]) / np.sqrt(2.0)
 
     H[upper] = values
     H[(upper[1], upper[0])] = values.conj()
@@ -63,13 +63,15 @@ class HamiltonianDecomposition:
         return H
 
 
-def decompose_hamiltonian(H_func: Callable[[float], qt.Qobj | np.ndarray],
-                          times: np.ndarray,
-                          drift: Literal["mean", "first", "zero"] | qt.Qobj | np.ndarray = "mean",
-                          rank: int | None = None,
-                          rtol: float = 1e-10,
-                          atol: float = 0.0,
-                          hermitian_tol: float = 1e-10, ) -> HamiltonianDecomposition:
+def decompose_hamiltonian(
+    H_func: Callable[[float], qt.Qobj | np.ndarray],
+    times: np.ndarray,
+    drift: Literal["mean", "first", "zero"] | qt.Qobj | np.ndarray = "mean",
+    rank: int | None = None,
+    rtol: float = 1e-10,
+    atol: float = 0.0,
+    hermitian_tol: float = 1e-10,
+) -> HamiltonianDecomposition:
     """
     Numerically decompose a time-dependent Hamiltonian as
 
@@ -177,7 +179,13 @@ def decompose_hamiltonian(H_func: Callable[[float], qt.Qobj | np.ndarray],
     relative_residual_error = float(discarded_norm / residual_norm if residual_norm > 0 else 0.0)
     relative_total_error = float(discarded_norm / full_norm if full_norm > 0 else 0.0)
 
-    return HamiltonianDecomposition(times=times, H_d=H_d, H_controls=H_controls, coefficients=coefficients,
-                                    singular_values=singular_values, rank=rank,
-                                    relative_residual_error=relative_residual_error,
-                                    relative_total_error=relative_total_error, )
+    return HamiltonianDecomposition(
+        times=times,
+        H_d=H_d,
+        H_controls=H_controls,
+        coefficients=coefficients,
+        singular_values=singular_values,
+        rank=rank,
+        relative_residual_error=relative_residual_error,
+        relative_total_error=relative_total_error,
+    )

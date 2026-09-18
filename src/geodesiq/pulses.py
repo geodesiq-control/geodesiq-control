@@ -214,7 +214,8 @@ class PulseControl:
             import matplotlib.pyplot as plt
         except ImportError as exc:
             raise ImportError(
-                "matplotlib is required for plot_pulse. Install it with: pip install geodesiq[plot]") from exc
+                "matplotlib is required for plot_pulse. Install it with: pip install geodesiq[plot]"
+            ) from exc
 
         fig, ax = plt.subplots()
         ax.plot(self._pulse_times, self._pulse, **plot_kwargs)
@@ -266,6 +267,7 @@ class PulseControl:
             np.savetxt(output_path, csv_data, delimiter=",", header="t,pulse", comments="", fmt="%.8f")
         else:
             raise MissingArgsError(
-                f"Unsupported data_type '{file_extension}'. Supported types are: 'npz', 'txt', and 'csv'. ")
+                f"Unsupported data_type '{file_extension}'. Supported types are: 'npz', 'txt', and 'csv'. "
+            )
 
         print(f"[{PACKAGE_NAME}] File saved as '{output_path}' type.")

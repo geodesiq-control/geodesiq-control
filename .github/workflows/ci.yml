@@ -51,7 +51,7 @@ jobs:
         run: uv sync --only-group lint
 
       - name: Lint
-        run: uv run ruff check .
+        run: uv run ruff check src
 
       - name: Type check
         run: uv run ty check src

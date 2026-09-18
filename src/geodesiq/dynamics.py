@@ -28,7 +28,8 @@ class Dynamics:
         # Attributes of the ControlModel instance
         if model.control_pulse is None or model.control_sol is None:
             raise ConfigurationError(
-                "Control pulse is unavailable. Solve the ControlModel before computing the dynamics.")
+                "Control pulse is unavailable. Solve the ControlModel before computing the dynamics."
+            )
 
         self._control_pulse: np.ndarray = np.asarray(model.control_pulse, dtype=float)
         self._control_sol: np.ndarray = np.asarray(model.control_sol, dtype=float)
@@ -65,8 +66,11 @@ class Dynamics:
             if H_d is None or H_c is None:
                 raise ConfigurationError("Affine ControlModel is missing its constant drift or control Hamiltonian.")
 
-            self._qevo = qt.QobjEvo([qt.Qobj(H_d) / self._hbar, [qt.Qobj(H_c) / self._hbar, self._control_sol]],
-                                    tlist=self._pulse_times, order=3, )
+            self._qevo = qt.QobjEvo(
+                [qt.Qobj(H_d) / self._hbar, [qt.Qobj(H_c) / self._hbar, self._control_sol]],
+                tlist=self._pulse_times,
+                order=3,
+            )
         else:
             self._qevo = decompose_hamiltonian(self._get_ham, self._pulse_times, drift="mean", rtol=1e-10).qobjevo()
 
@@ -93,10 +97,12 @@ class Dynamics:
             return propagator
         return [propagator]
 
-    def state_fidelity(self,
-                       initial_state: Optional[np.ndarray | int | qt.Qobj] = None,
-                       final_state: Optional[np.ndarray | int | qt.Qobj] = None,
-                       c_ops: Optional[List[qt.Qobj] | List[np.ndarray]] = None, ) -> float:
+    def state_fidelity(
+        self,
+        initial_state: Optional[np.ndarray | int | qt.Qobj] = None,
+        final_state: Optional[np.ndarray | int | qt.Qobj] = None,
+        c_ops: Optional[List[qt.Qobj] | List[np.ndarray]] = None,
+    ) -> float:
         """
         Compute the state transfer fidelity with Lindblad master equation. Depending on whether initial/final states are
         explicitly given, then the time evolution is constructed. If integers of None are given then eigenstate
@@ -123,7 +129,8 @@ class Dynamics:
 
         if control_pulse is None:
             raise ConfigurationError(
-                "Control pulse is unavailable. Solve the ControlModel before computing the dynamics.")
+                "Control pulse is unavailable. Solve the ControlModel before computing the dynamics."
+            )
 
         pulse_times: list[float] = np.asarray(self._pulse_times, dtype=float).tolist()
 
@@ -132,11 +139,19 @@ class Dynamics:
             final_index = self._final_state
 
             if initial_index is None or final_index is None:
-                raise ConfigurationError("Initial and final state indices must be configured in the ControlModel "
-                                         "when no explicit states are provided.")
+                raise ConfigurationError(
+                    "Initial and final state indices must be configured in the ControlModel "
+                    "when no explicit states are provided."
+                )
 
-            psi_init = self._eigenstate(float(control_pulse[0]), initial_index, )
-            psi_target = self._eigenstate(float(control_pulse[-1]), final_index, )
+            psi_init = self._eigenstate(
+                float(control_pulse[0]),
+                initial_index,
+            )
+            psi_target = self._eigenstate(
+                float(control_pulse[-1]),
+                final_index,
+            )
 
         elif isinstance(initial_state, int) and isinstance(final_state, int):
             dimension = self._hamiltonian_dimension
@@ -151,12 +166,15 @@ class Dynamics:
             psi_target = self._eigenstate(float(control_pulse[-1]), final_state)
 
         elif isinstance(initial_state, np.ndarray) and isinstance(final_state, np.ndarray):
-            if (initial_state.shape[0] != self._hamiltonian_dimension or final_state.shape[
-                0] != self._hamiltonian_dimension):
+            if (
+                initial_state.shape[0] != self._hamiltonian_dimension
+                or final_state.shape[0] != self._hamiltonian_dimension
+            ):
                 raise ValidationError(
                     f"Initial and final states must have the same dimension as the ControlModel. Shape of ControlModel:"
                     f" {(self._hamiltonian_dimension, self._hamiltonian_dimension)}."
-                    f" Shape of initial state: {initial_state.shape}")
+                    f" Shape of initial state: {initial_state.shape}"
+                )
 
             psi_init = qt.Qobj(initial_state)
             psi_target = qt.Qobj(final_state)
@@ -166,7 +184,8 @@ class Dynamics:
         else:
             raise ValidationError(
                 "Initial and final states must be either integers, numpy arrays with correct dimensions or Qobj "
-                "instances.")
+                "instances."
+            )
 
         options = {"store_final_state": True, "store_states": False}
 
@@ -183,10 +202,9 @@ class Dynamics:
 
         return state_fidelity
 
-    def average_gate_fidelity(self,
-                              gate: Optional[qt.Qobj | List[qt.Qobj]] = None,
-                              target_gate: Optional[qt.Qobj | np.ndarray] = None
-                              ) -> List[float]:
+    def average_gate_fidelity(
+        self, gate: Optional[qt.Qobj | List[qt.Qobj]] = None, target_gate: Optional[qt.Qobj | np.ndarray] = None
+    ) -> List[float]:
         """
         Compute average gate fidelity given the pulsed time evolution operator in the explicit real-time duration given.
 

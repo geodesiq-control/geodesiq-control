@@ -21,4 +21,3 @@ class PerformanceWarning(GeodesiQWarning):
 
 class ExperimentalFeatureWarning(GeodesiQWarning):
     """Feature is experimental and API/behavior may change."""
-
