@@ -54,7 +54,7 @@ jobs:
         run: uv run ruff check .
 
       - name: Type check
-        run: uv run mypy src
+        run: uv run ty check src
 
   #      - name: Check formatting
   #        run: uv run ruff format --check .

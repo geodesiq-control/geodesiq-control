@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import TYPE_CHECKING, Tuple, Any
+from typing import TYPE_CHECKING, Any, Tuple
 
 import numpy as np
 import scipy as sp

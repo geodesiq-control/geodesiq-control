@@ -1,9 +1,8 @@
-import numpy as np
-
-from tqdm.auto import tqdm
 import itertools
 
+import numpy as np
 from joblib import Parallel, delayed
+from tqdm.auto import tqdm
 
 import geodesiq as gq
 

@@ -1,22 +1,28 @@
+import warnings
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Callable
-import warnings
 
+import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.figure import Figure, SubFigure
 from scipy.differentiate import jacobian
 from scipy.integrate import romb, solve_ivp
 from scipy.interpolate import PchipInterpolator
-import matplotlib.pyplot as plt
-from matplotlib.figure import Figure, SubFigure
 
-from ._utils import Flags, build_diab, values_equal, validate_state_index
-from .exceptions import (ImmutableConfigurationError, InvalidControlParameterError, MissingControlParameterError,
-                         SolverError, ValidationError, MetricComputationError, )
-from .warnings import NumericalStabilityWarning
+from ._utils import Flags, build_diab, validate_state_index, values_equal
+from .exceptions import (
+    ImmutableConfigurationError,
+    InvalidControlParameterError,
+    MetricComputationError,
+    MissingControlParameterError,
+    SolverError,
+    ValidationError,
+)
 from .pulses import PulseControl
+from .warnings import NumericalStabilityWarning
 
 
 @dataclass(frozen=True)

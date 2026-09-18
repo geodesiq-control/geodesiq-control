@@ -9,7 +9,6 @@ from geodesiq import ControlModel
 from geodesiq.dynamics import Dynamics
 from geodesiq.exceptions import ConfigurationError, ValidationError
 
-
 # ------------------------------------------------------------
 # Real ControlModel() fixtures
 # ------------------------------------------------------------

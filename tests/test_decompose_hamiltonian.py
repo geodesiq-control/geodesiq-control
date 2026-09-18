@@ -1,9 +1,10 @@
+from typing import Any, cast
+
 import numpy as np
 import pytest
 import qutip as qt
 
 from geodesiq.decompose_hamiltonian import decompose_hamiltonian
-from typing import Any, cast
 
 
 def _reference_components() -> tuple[np.ndarray, np.ndarray, np.ndarray]:

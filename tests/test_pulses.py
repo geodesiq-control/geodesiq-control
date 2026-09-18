@@ -8,7 +8,6 @@ from matplotlib.figure import Figure
 from geodesiq.exceptions import ValidationError
 from geodesiq.pulses import PulseControl
 
-
 # ------------------------------------------------------------
 # Ramp pulse as pytest.fixtures
 # ------------------------------------------------------------

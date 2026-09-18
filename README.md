@@ -99,7 +99,7 @@ Use the following checks before submitting changes:
 
 ```bash
 uv run ruff check .
-uv run mypy
+uv run ty check src
 uv run pytest
 uv run python -m build
 ```

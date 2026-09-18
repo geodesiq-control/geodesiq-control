@@ -4,11 +4,16 @@ import numpy as np
 import pytest
 from scipy.integrate import solve_ivp
 
-from geodesiq import (ControlModel, ImmutableConfigurationError, InvalidControlParameterError,
-                      MissingControlParameterError, SolverError, ValidationError, )
+from geodesiq import (
+    ControlModel,
+    ImmutableConfigurationError,
+    InvalidControlParameterError,
+    MissingControlParameterError,
+    SolverError,
+    ValidationError,
+)
 from geodesiq.pulses import PulseControl
 from geodesiq.warnings import NumericalStabilityWarning
-
 
 # ---------------------------------------------------------------------------
 # Helpers – simple 2×2 Landau-Zener model:  H = [[lam, delta], [delta, -lam]]

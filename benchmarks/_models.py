@@ -11,7 +11,6 @@ import numpy as np
 
 from geodesiq import ControlModel
 
-
 # ---------------------------------------------------------------------------
 # Internal ControlModel builders
 # ---------------------------------------------------------------------------

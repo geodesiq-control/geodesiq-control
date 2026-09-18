@@ -1,12 +1,12 @@
-from typing import List, Optional
+from typing import Any, List, Optional, cast
 
 import numpy as np
 import qutip as qt
 
 from ._utils import validate_state_index
 from .controlmodel import ControlModel
-from .exceptions import ValidationError, ConfigurationError
 from .decompose_hamiltonian import decompose_hamiltonian
+from .exceptions import ConfigurationError, ValidationError
 
 
 class Dynamics:
@@ -33,7 +33,7 @@ class Dynamics:
         self._control_pulse: np.ndarray = np.asarray(model.control_pulse, dtype=float)
         self._control_sol: np.ndarray = np.asarray(model.control_sol, dtype=float)
 
-        self.evaluate_hamiltonian = model.evaluate_hamiltonian
+        self.evaluate_hamiltonian = lambda control_value: model.evaluate_hamiltonian(float(control_value))
         self._initial_state: int | None = model.initial_state
         self._final_state: int | None = model.final_state
         self._hamiltonian_dimension: int | None = model.hamiltonian_dimension
@@ -88,7 +88,7 @@ class Dynamics:
         Compute the time evolution operator using the pulse ControlModel.
         """
         pulse_times: list[float] = np.asarray(self._pulse_times, dtype=float).tolist()
-        propagator = qt.propagator(self._qevo, pulse_times)
+        propagator = qt.propagator(self._qevo, cast(Any, pulse_times))
         if isinstance(propagator, list):
             return propagator
         return [propagator]
@@ -171,9 +171,9 @@ class Dynamics:
         options = {"store_final_state": True, "store_states": False}
 
         if c_ops:
-            result = qt.mesolve(self._qevo, psi_init, pulse_times, c_ops=c_ops, options=options)
+            result = qt.mesolve(self._qevo, psi_init, cast(Any, pulse_times), c_ops=cast(Any, c_ops), options=options)
         else:
-            result = qt.sesolve(self._qevo, psi_init, pulse_times, options=options)
+            result = qt.sesolve(self._qevo, psi_init, cast(Any, pulse_times), options=options)
 
         psi_f = result.final_state
         if psi_f is None:

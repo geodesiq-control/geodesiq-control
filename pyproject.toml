@@ -52,8 +52,8 @@ test = [
     "pytest-cov>=5,<7",
 ]
 lint = [
-    "mypy>=1.10",
-    "ruff>=0.11",
+    "ruff>=0.15.20",
+    "ty>=0.0.82",
 ]
 build = [
     "build>=1.2",
@@ -74,7 +74,7 @@ notebooks = [
     "ipykernel==6.29.5", # Pinned because newer releases have caused ipywidgets regressions.
     "ipympl>=0.10.0",
     "joblib>=1.5.2",
-    "jupyterlab>=4.5.8",
+    "jupyterlab>=4.6.3",
     "jupyterlab-execute-time>=3.3.0",
     "theme-darcula>=4.0.0",
     "tqdm>=4.68.2",
@@ -87,7 +87,12 @@ dev = [
     { include-group = "build" },
     { include-group = "bench" },
     { include-group = "notebooks" },
+    "jupyterlab-code-formatter>=3.1.0",
+    "jupyterlab-lsp>=5.3.0",
     "line-profiler>=5.0.2",
+    "notebook-intelligence>=5.4.0",
+    "python-lsp-ruff>=2.3.4",
+    "python-lsp-server>=1.15.0",
     "scienceplots>=2.2.2",
 ]
 
@@ -131,22 +136,12 @@ addopts = "-q --cov=geodesiq --cov-report=term-missing --cov-fail-under=70"
 target-version = "py310"
 line-length = 120
 src = ["src"]
-extend-exclude = [
-    "dev",
-    "examples",
-]
-
 
 [tool.ruff.lint]
-select = ["E", "F", "B"]
+select = ["E", "F", "B", "I"]
 
-[tool.mypy]
-python_version = "3.10"
-files = ["src"]
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
 
-warn_unused_ignores = true
-warn_redundant_casts = true
-disallow_untyped_defs = true
-ignore_missing_imports = true
-check_untyped_defs = true
-no_implicit_optional = true
