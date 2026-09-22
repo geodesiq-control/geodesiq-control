@@ -34,6 +34,7 @@ dependencies = [
     "numpy>=1.23",
     "scipy>=1.15",
     "qutip>=5.0.4",
+    "matplotlib>=3.9",
 ]
 
 [project.urls]
@@ -42,9 +43,6 @@ Documentation = "https://github.com/geodesiq-control/geodesiq-control/tree/main/
 Repository = "https://github.com/geodesiq-control/geodesiq-control"
 Issues = "https://github.com/geodesiq-control/geodesiq-control/issues"
 Changelog = "https://github.com/geodesiq-control/geodesiq-control/blob/main/CHANGELOG.md"
-
-[project.optional-dependencies]
-plot = ["matplotlib>=3.9"]
 
 [dependency-groups]
 test = [
@@ -64,7 +62,6 @@ bench = [
     "filelock>=3.15",
     "ipython>=8.0",
     "ipywidgets>=8.1",
-    "matplotlib>=3.9",
     "pandas>=2.0",
     "pyarrow>=15",
     "tqdm>=4.68",

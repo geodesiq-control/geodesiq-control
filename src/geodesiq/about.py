@@ -45,8 +45,6 @@ def about() -> None:
     print(f"Numpy Version:      {_module_version('numpy')}")
     print(f"Scipy Version:      {_module_version('scipy')}")
     print(f"QuTiP Version:      {_module_version('qutip')}")
-
-    print("\nOptional Dependencies:")
     print(f"Matplotlib Version: {_module_version('matplotlib')}")
 
     print()

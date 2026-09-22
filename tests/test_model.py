@@ -34,8 +34,9 @@ LZ_H_C = np.array([[1.0, 0.0], [0.0, -1.0]])
 
 
 def _get_pyplot():
-    """Lazy matplotlib import so plotting tests can be skipped when optional dependency is missing."""
-    matplotlib = pytest.importorskip("matplotlib")
+    """Lazy matplotlib import for plotting tests."""
+    import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 

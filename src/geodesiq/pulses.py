@@ -210,12 +210,7 @@ class PulseControl:
             Figure and axes for the construction of a custom plot.
 
         """
-        try:
-            import matplotlib.pyplot as plt
-        except ImportError as exc:
-            raise ImportError(
-                "matplotlib is required for plot_pulse. Install it with: pip install geodesiq[plot]"
-            ) from exc
+        import matplotlib.pyplot as plt
 
         fig, ax = plt.subplots()
         ax.plot(self._pulse_times, self._pulse, **plot_kwargs)
