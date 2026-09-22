@@ -124,7 +124,7 @@ jobs:
           PY
 
       - name: Sync build environment
-        run: uv sync --no-default-groups --group build
+        run: uv sync --only-group build
 
       - name: Build distributions
         run: uv run --no-sync python -m build

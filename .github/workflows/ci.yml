@@ -57,7 +57,7 @@ jobs:
         run: uv run --no-sync ty check src
 
   #      - name: Check formatting
-  #        run: uv run --no-sync lint ruff format --check .
+  #        run: uv run --no-sync lint ruff format --check src
 
   coverage:
     name: Tests and coverage
@@ -127,7 +127,7 @@ jobs:
         run: uv sync --no-default-groups --group test
 
       - name: Run full test suite
-        run: uv run --no-sync pytest
+        run: uv run --no-sync pytest --no-cov
 
   build-package:
     name: Build package
@@ -148,7 +148,7 @@ jobs:
           enable-cache: true
 
       - name: Sync environment
-        run: uv sync --no-default-groups --group build
+        run: uv sync --only-group build
 
       - name: Build distributions
         run: uv run --no-sync python -m build
