@@ -48,16 +48,16 @@ jobs:
           enable-cache: true
 
       - name: Sync environment
-        run: uv sync --only-group lint
+        run: uv sync --no-default-groups --group lint
 
       - name: Lint
-        run: uv run --only-group lint ruff check src
+        run: uv run --no-sync ruff check src
 
       - name: Type check
-        run: uv run --only-group lint ty check src
+        run: uv run --no-sync ty check src
 
   #      - name: Check formatting
-  #        run: uv run --only-group lint ruff format --check .
+  #        run: uv run --no-sync lint ruff format --check .
 
   coverage:
     name: Tests and coverage
@@ -80,10 +80,10 @@ jobs:
           enable-cache: true
 
       - name: Sync environment
-        run: uv sync --only-group test
+        run: uv sync --no-default-groups --group test
 
       - name: Run tests with coverage
-        run: uv run --only-group test pytest -q --cov=geodesiq --cov-report=term-missing --cov-report=xml:coverage.xml
+        run: uv run --no-sync pytest -q --cov=geodesiq --cov-report=term-missing --cov-report=xml:coverage.xml
 
       - name: Upload coverage to Coveralls
         uses: coverallsapp/github-action@v2
@@ -124,10 +124,10 @@ jobs:
           cache-suffix: ${{ matrix.os }}-py${{ matrix.python-version }}
 
       - name: Sync environment
-        run: uv sync --only-group test
+        run: uv sync --no-default-groups --group test
 
       - name: Run full test suite
-        run: uv run --only-group test pytest
+        run: uv run --no-sync pytest
 
   build-package:
     name: Build package
@@ -148,13 +148,13 @@ jobs:
           enable-cache: true
 
       - name: Sync environment
-        run: uv sync --only-group build
+        run: uv sync --no-default-groups --group build
 
       - name: Build distributions
-        run: uv run --only-group build python -m build
+        run: uv run --no-sync python -m build
 
       - name: Check distributions
-        run: uv run --only-group build twine check --strict dist/*
+        run: uv run --no-sync twine check --strict dist/*
 
       - name: Create isolated test environment
         run: uv venv .venv-wheel --python 3.14

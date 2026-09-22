@@ -124,13 +124,13 @@ jobs:
           PY
 
       - name: Sync build environment
-        run: uv sync --only-group build
+        run: uv sync --no-default-groups --group build
 
       - name: Build distributions
-        run: uv run --only-group build python -m build
+        run: uv run --no-sync python -m build
 
       - name: Check distributions
-        run: uv run --only-group build twine check --strict dist/*
+        run: uv run --no-sync twine check --strict dist/*
 
       - name: Store distributions for publishing
         uses: actions/upload-artifact@v4
