@@ -6,6 +6,8 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-22
+
 ## Added
 
 - Added the possibility to use affine Hamiltonian control, where the Hamiltonian is expressed as a linear combination
