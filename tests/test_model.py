@@ -100,7 +100,7 @@ def configured_ham(ham_with_partial):
 @pytest.fixture
 def configured_affine_ham(affine_ham):
     """A fully configured affine ControlModel."""
-    affine_ham.set_control(control_name="lam", pulse_initial=-5.0, pulse_final=5.0, initial_state=0, alpha=2.0,
+    affine_ham.set_control(pulse_initial=-5.0, pulse_final=5.0, initial_state=0, alpha=2.0,
                            beta=2.0, num_steps=2 ** 8 + 1, )
     return affine_ham
 
@@ -212,6 +212,36 @@ class TestAffineHamiltonian:
 
         np.testing.assert_allclose(configured_affine_ham.eigenenergies, callable_model.eigenenergies)
         np.testing.assert_allclose(configured_affine_ham._matrix_elements, callable_model._matrix_elements)
+
+    def test_affine_problem_solves_without_control_name(self, affine_ham):
+        affine_ham.set_control(pulse_initial=-2.0, pulse_final=2.0, initial_state=0, alpha=2.0, beta=2.0, num_steps=65)
+
+        affine_ham.solve_problem(pulse_accuracy=20)
+
+        assert affine_ham.control_name is None
+        assert affine_ham._flags["ode_solved"] is True
+
+    def test_affine_plot_defaults_to_generic_xlabel_when_control_name_missing(self, affine_ham):
+        plt = _get_pyplot()
+        affine_ham.set_control(pulse_initial=-2.0, pulse_final=2.0, initial_state=0, alpha=2.0, beta=2.0, num_steps=65)
+
+        result = affine_ham.plot_eigenvalues()
+        assert result is not None
+        fig, ax = result
+
+        assert ax.get_xlabel() == "control"
+        plt.close(fig)
+
+    def test_affine_metric_plot_defaults_to_generic_xlabel_when_control_name_missing(self, affine_ham):
+        plt = _get_pyplot()
+        affine_ham.set_control(pulse_initial=-2.0, pulse_final=2.0, initial_state=0, alpha=2.0, beta=2.0, num_steps=65)
+
+        result = affine_ham.plot_metric_tensor()
+        assert result is not None
+        fig, ax = result
+
+        assert ax.get_xlabel() == "control"
+        plt.close(fig)
 
     def test_affine_eigenproblem_does_not_call_scalar_evaluator(self, configured_affine_ham, monkeypatch):
         def unexpected_scalar_evaluation(*args, **kwargs):

@@ -27,7 +27,7 @@ from .warnings import NumericalStabilityWarning
 
 @dataclass(frozen=True)
 class _EigensystemParameters:
-    control_name: str
+    control_name: str | None
     pulse_initial: float
     pulse_final: float
     num_steps: int
@@ -1306,21 +1306,27 @@ class ControlModel:
         pulse_final = self.pulse_final
         num_steps = self.num_steps
 
-        if control_name is None or pulse_initial is None or pulse_final is None or num_steps is None:
-            missing_params = [
-                name
-                for name, value in (
-                    ("control_name", control_name),
-                    ("pulse_initial", pulse_initial),
-                    ("pulse_final", pulse_final),
-                    ("num_steps", num_steps),
-                )
-                if value is None
-            ]
+        missing_params = [
+            name
+            for name, value in (
+                ("pulse_initial", pulse_initial),
+                ("pulse_final", pulse_final),
+                ("num_steps", num_steps),
+            )
+            if value is None
+        ]
+        if not self._affine_hamiltonian and control_name is None:
+            missing_params.insert(0, "control_name")
+
+        if missing_params:
             raise MissingControlParameterError(
                 f"Missing control parameters for eigensystem: {', '.join(missing_params)}. "
                 "Please set them using set_control(...)."
             )
+
+        assert pulse_initial is not None
+        assert pulse_final is not None
+        assert num_steps is not None
 
         return _EigensystemParameters(
             control_name=control_name,
@@ -1366,7 +1372,7 @@ class ControlModel:
             ``(fig, ax)`` with the generated plot.
         """
         config = self._check_eigensystem_parameters()
-        control_name = config.control_name
+        control_name = config.control_name or "control"
 
         if ax is None:
             if fig is None:
@@ -1383,7 +1389,7 @@ class ControlModel:
             assert self._control_pulse is not None
 
             for level in range(self.eigenenergies.shape[1]):
-                ax.plot(self._control_pulse, self.eigenenergies[:, level], label=f"E{level}", **plot_kwargs)
+                ax.plot(self._control_pulse, self.eigenenergies[:, level].real, label=f"E{level}", **plot_kwargs)
 
             ax.set_xlabel(control_name if xlabel is None else xlabel)
             ax.set_ylabel("Energy" if ylabel is None else ylabel)
@@ -1439,7 +1445,7 @@ class ControlModel:
         config = self._check_control_parameters()
         self._solve_eigenproblem(config)
         self._compute_metric_tensor(config)
-        control_name = config.control_name
+        control_name = config.control_name or "control"
 
         if self._control_pulse is None:
             raise ValidationError("Control pulse can not be None.")
@@ -1505,19 +1511,18 @@ class ControlModel:
         num_steps = self.num_steps
 
         if (
-            control_name is None
-            or pulse_initial is None
+            pulse_initial is None
             or pulse_final is None
             or num_steps is None
             or initial_state is None
             or final_state is None
             or alpha is None
             or beta is None
+            or (not self._affine_hamiltonian and control_name is None)
         ):  # noqa: E501
             missing_params = [
                 name
                 for name, value in (
-                    ("control_name", control_name),
                     ("pulse_initial", pulse_initial),
                     ("pulse_final", pulse_final),
                     ("initial_state", initial_state),
@@ -1528,10 +1533,20 @@ class ControlModel:
                 )
                 if value is None
             ]
+            if not self._affine_hamiltonian and control_name is None:
+                missing_params.insert(0, "control_name")
             raise MissingControlParameterError(
                 f"Missing control parameters: {', '.join(missing_params)}. Please set them using set_control"
                 f"({', '.join(f'{name}=<...>' for name in missing_params)})."
             )
+
+        assert pulse_initial is not None
+        assert pulse_final is not None
+        assert initial_state is not None
+        assert final_state is not None
+        assert alpha is not None
+        assert beta is not None
+        assert num_steps is not None
 
         if initial_state != final_state and (dia_alpha is None or dia_beta is None):
             missing_params = [

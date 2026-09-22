@@ -32,7 +32,7 @@ def _build_solved_affine_model() -> ControlModel:
     H_d = np.array([[0.0, 1.0], [1.0, 0.0]])
     H_c = np.array([[1.0, 0.0], [0.0, -1.0]])
     model = ControlModel(H_d=H_d, H_c=H_c)
-    model.set_control(control_name="lam", pulse_initial=1.0, pulse_final=3.0, initial_state=0, final_state=1, alpha=2.0,
+    model.set_control(pulse_initial=1.0, pulse_final=3.0, initial_state=0, final_state=1, alpha=2.0,
                       beta=2.0, dia_alpha=2.0, dia_beta=2.0, num_steps=33, )
     model.solve_problem(pulse_accuracy=5)
     return model
