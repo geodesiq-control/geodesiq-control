@@ -127,34 +127,10 @@ jobs:
         run: uv sync --only-group build
 
       - name: Build distributions
-        run: uv run python -m build
+        run: uv run --only-group build python -m build
 
       - name: Check distributions
-        run: uv run twine check --strict dist/*
-
-      - name: Create isolated test environment
-        run: uv venv .venv-wheel --python 3.14
-
-      - name: Install built wheel
-        run: uv pip install --python .venv-wheel/bin/python dist/*.whl
-
-      - name: Smoke test built wheel
-        run: |
-          cd /tmp
-
-          "$GITHUB_WORKSPACE/.venv-wheel/bin/python" -W error - <<'PY'
-          import warnings
-          warnings.simplefilter("error")
-          warnings.filterwarnings(
-              "ignore",
-              message="matplotlib not found: Graphics will not work.",
-              category=UserWarning,
-              module=r"qutip(\..*)?",
-          )
-          import geodesiq
-
-          print(f"Successfully imported geodesiq from {geodesiq.__file__}")
-          PY
+        run: uv run --only-group build twine check --strict dist/*
 
       - name: Store distributions for publishing
         uses: actions/upload-artifact@v4

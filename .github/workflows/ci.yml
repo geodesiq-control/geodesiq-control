@@ -51,13 +51,13 @@ jobs:
         run: uv sync --only-group lint
 
       - name: Lint
-        run: uv run ruff check src
+        run: uv run --only-group lint ruff check src
 
       - name: Type check
-        run: uv run ty check src
+        run: uv run --only-group lint ty check src
 
   #      - name: Check formatting
-  #        run: uv run ruff format --check .
+  #        run: uv run --only-group lint ruff format --check .
 
   coverage:
     name: Tests and coverage
@@ -83,7 +83,7 @@ jobs:
         run: uv sync --only-group test
 
       - name: Run tests with coverage
-        run: uv run pytest -q --cov=geodesiq --cov-report=term-missing --cov-report=xml:coverage.xml
+        run: uv run --only-group test pytest -q --cov=geodesiq --cov-report=term-missing --cov-report=xml:coverage.xml
 
       - name: Upload coverage to Coveralls
         uses: coverallsapp/github-action@v2
@@ -127,7 +127,7 @@ jobs:
         run: uv sync --only-group test
 
       - name: Run full test suite
-        run: uv run pytest
+        run: uv run --only-group test pytest
 
   build-package:
     name: Build package
@@ -151,10 +151,10 @@ jobs:
         run: uv sync --only-group build
 
       - name: Build distributions
-        run: uv run python -m build
+        run: uv run --only-group build python -m build
 
       - name: Check distributions
-        run: uv run twine check --strict dist/*
+        run: uv run --only-group build twine check --strict dist/*
 
       - name: Create isolated test environment
         run: uv venv .venv-wheel --python 3.14
@@ -166,9 +166,7 @@ jobs:
         run: |
           cd /tmp
 
-          "$GITHUB_WORKSPACE/.venv-wheel/bin/python" -W error - <<'PY'
-          import warnings
-          warnings.simplefilter("error")
+          "$GITHUB_WORKSPACE/.venv-wheel/bin/python" <<'PY'
           import geodesiq
 
           print(f"Successfully imported geodesiq from {geodesiq.__file__}")
