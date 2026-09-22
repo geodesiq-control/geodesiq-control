@@ -191,7 +191,7 @@ def solve_CRAB(H_c,
     goal = best_error <= fid_err_targ
 
     if verbose:
-        print("goal:", best_error <= goal)
+        print("goal:", goal)
         print("error:", best_error)
         print("reason:", result_CRAB.termination_reason)
 
