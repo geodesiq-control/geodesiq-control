@@ -189,10 +189,8 @@ class Dynamics:
 
         options = {"store_final_state": True, "store_states": False}
 
-        if c_ops:
-            result = qt.mesolve(self._qevo, psi_init, cast(Any, pulse_times), c_ops=cast(Any, c_ops), options=options)
-        else:
-            result = qt.sesolve(self._qevo, psi_init, cast(Any, pulse_times), options=options)
+        result = qt.mesolve(self._qevo, psi_init, cast(Any, pulse_times), c_ops=cast(Any, c_ops), options=options)
+
 
         psi_f = result.final_state
         if psi_f is None:

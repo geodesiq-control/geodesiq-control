@@ -262,12 +262,12 @@ def test_state_fidelity_integer_state_indices(default_dynamics):
 
 
 def test_state_fidelity_raises_when_mesolve_returns_no_final_state(default_dynamics, monkeypatch):
-    """A sesolve result without final_state should raise a ValidationError."""
+    """A mesolve result without final_state should raise a ValidationError."""
 
     class DummyResult:
         final_state = None
 
-    monkeypatch.setattr(qt, "sesolve", lambda *args, **kwargs: DummyResult())
+    monkeypatch.setattr(qt, "mesolve", lambda *args, **kwargs: DummyResult())
 
     with pytest.raises(ValidationError, match="did not return a final state"):
         default_dynamics.state_fidelity(initial_state=qt.basis(2, 0), final_state=qt.basis(2, 1))
