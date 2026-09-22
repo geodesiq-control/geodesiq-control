@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import TYPE_CHECKING, Tuple, Any
+from typing import TYPE_CHECKING, Any, Tuple
 
 import numpy as np
 import scipy as sp
@@ -90,7 +90,7 @@ class PulseControl:
 
         Returns
         -------
-        new_s: np.ndarray
+        new_time: np.ndarray
             Rescaled time array for the piecewise linear approximation.
         approx_sol: np.ndarray
             Control pulse values corresponding to the new rescaled time array for the piecewise linear approximation.
@@ -99,10 +99,10 @@ class PulseControl:
 
         piecewise_linear = interp1d(self._pulse_times, self._pulse, kind="linear", fill_value="extrapolate")
 
-        new_s = np.linspace(self._pulse_times[0], self._pulse_times[-1], linear_steps)
-        approx_sol = np.asarray(piecewise_linear(new_s))
+        new_time = np.linspace(self._pulse_times[0], self._pulse_times[-1], linear_steps)
+        approx_sol = np.asarray(piecewise_linear(new_time))
 
-        return new_s, approx_sol
+        return new_time, approx_sol
 
     def fourier_spectrum(self, window_len: int = 256, hop: int = 32) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -210,11 +210,7 @@ class PulseControl:
             Figure and axes for the construction of a custom plot.
 
         """
-        try:
-            import matplotlib.pyplot as plt
-        except ImportError as exc:
-            raise ImportError(
-                "matplotlib is required for plot_pulse. Install it with: pip install geodesiq[plot]") from exc
+        import matplotlib.pyplot as plt
 
         fig, ax = plt.subplots()
         ax.plot(self._pulse_times, self._pulse, **plot_kwargs)
@@ -266,6 +262,7 @@ class PulseControl:
             np.savetxt(output_path, csv_data, delimiter=",", header="t,pulse", comments="", fmt="%.8f")
         else:
             raise MissingArgsError(
-                f"Unsupported data_type '{file_extension}'. Supported types are: 'npz', 'txt', and 'csv'. ")
+                f"Unsupported data_type '{file_extension}'. Supported types are: 'npz', 'txt', and 'csv'. "
+            )
 
         print(f"[{PACKAGE_NAME}] File saved as '{output_path}' type.")

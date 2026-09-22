@@ -28,8 +28,8 @@ If you do not use `uv`, create a virtual environment and install equivalent dev 
 
 ```bash
 uv run pytest
-uv run ruff check .
-uv run mypy
+uv run ruff check src
+uv run ty check src
 uv run python -m build
 uv run python -m twine check dist/*
 ```

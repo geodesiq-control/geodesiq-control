@@ -1,25 +1,33 @@
+import warnings
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Callable
-import warnings
 
+import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.figure import Figure, SubFigure
 from scipy.differentiate import jacobian
 from scipy.integrate import romb, solve_ivp
 from scipy.interpolate import PchipInterpolator
 
-from ._utils import Flags, build_diab, values_equal, validate_state_index
-from .exceptions import (ImmutableConfigurationError, InvalidControlParameterError, MissingControlParameterError,
-                         SolverError, ValidationError, MetricComputationError, )
-from .warnings import NumericalStabilityWarning
+from ._utils import Flags, build_diab, validate_state_index, values_equal
+from .exceptions import (
+    ImmutableConfigurationError,
+    InvalidControlParameterError,
+    MetricComputationError,
+    MissingControlParameterError,
+    SolverError,
+    ValidationError,
+)
 from .pulses import PulseControl
+from .warnings import NumericalStabilityWarning
 
 
 @dataclass(frozen=True)
 class _EigensystemParameters:
-    control_name: str
+    control_name: str | None
     pulse_initial: float
     pulse_final: float
     num_steps: int
@@ -46,29 +54,66 @@ class ControlModel:
     _SINGULARITY_RTOL = 1e-20
     _SINGULARITY_ATOL = 1e-14
 
-    def __init__(self, H_func: Callable[..., np.ndarray], partial_H_func: Callable[..., np.ndarray] | None = None,
-                 _flags_verbose: bool = False, ) -> None:
+    def __init__(
+        self,
+        H_func: Callable[..., np.ndarray] | None = None,
+        partial_H_func: Callable[..., np.ndarray] | None = None,
+        _flags_verbose: bool = False,
+        *,
+        H_d: np.ndarray | None = None,
+        H_c: np.ndarray | None = None,
+    ) -> None:
         """
-        Initialize the ControlModel class with the Hamiltonian function and its partial derivative (if provided).
+        Initialize the ControlModel from either a Hamiltonian function or constant drift and control matrices.
 
         Parameters
         ----------
-        H_func : Callable[..., np.ndarray]
+        H_func : Callable[..., np.ndarray] | None
             A function that takes the control parameter and other parameters as input and returns the Hamiltonian
             matrix as a numpy array. The function should be defined such that it can accept the control parameter as a
-            keyword argument, e.g., H_func(lambda=..., param1=..., param2=..., ...).
+            keyword argument, e.g., H_func(lambda=..., param1=..., param2=..., ...). Provide either ``H_func`` or the
+            pair ``H_d`` and ``H_c``.
         partial_H_func : Callable[..., np.ndarray] | None
             An optional function that takes the control parameter and other parameters as input and returns the partial
             derivative of the Hamiltonian with respect to the control parameter as a numpy array.
             If this function is not provided, the class will compute the numerical partial derivative.
+        H_d, H_c : np.ndarray | None
+            Constant drift and control Hamiltonians defining the affine model
+            ``H(control) = H_d + control * H_c``. Both matrices must be finite, Hermitian, square, and have the same
+            shape. In this mode the derivative is exactly ``H_c`` and ``set_parameters`` is unavailable.
         """
-        if not callable(H_func):
-            raise ValidationError("H_func must be callable.")
-        if partial_H_func is not None and not callable(partial_H_func):
-            raise ValidationError("partial_H_func must be callable when provided.")
+        affine_requested = H_d is not None or H_c is not None
 
-        self._H_func = H_func
-        self._partial_H_func = partial_H_func
+        if affine_requested:
+            if H_d is None or H_c is None:
+                raise ValidationError("Both H_d and H_c must be provided for an affine Hamiltonian.")
+            if H_func is not None or partial_H_func is not None:
+                raise ValidationError("Provide either H_func/partial_H_func or H_d/H_c, not both.")
+
+            drift = self._validate_constant_hamiltonian(H_d, "H_d")
+            control = self._validate_constant_hamiltonian(H_c, "H_c")
+            if control.shape != drift.shape:
+                raise ValidationError("H_c must have the same shape as H_d.")
+
+            dtype = np.result_type(drift.dtype, control.dtype)
+            self._H_d: np.ndarray | None = np.asarray(drift, dtype=dtype)
+            self._H_c: np.ndarray | None = np.asarray(control, dtype=dtype)
+            self._H_func: Callable[..., np.ndarray] | None = None
+            self._partial_H_func: Callable[..., np.ndarray] | None = None
+            self._affine_hamiltonian = True
+            self._hamiltonian_dimension: int | None = drift.shape[0]
+        else:
+            if H_func is None or not callable(H_func):
+                raise ValidationError("H_func must be callable when H_d and H_c are not provided.")
+            if partial_H_func is not None and not callable(partial_H_func):
+                raise ValidationError("partial_H_func must be callable when provided.")
+
+            self._H_func = H_func
+            self._partial_H_func = partial_H_func
+            self._H_d = None
+            self._H_c = None
+            self._affine_hamiltonian = False
+            self._hamiltonian_dimension = None
 
         # Initialize flags needed to track the state of the computations
         self._flags = Flags(_verbose=_flags_verbose)
@@ -77,10 +122,7 @@ class ControlModel:
         self._flags.add("metric_computed", parents=["eigenproblem_solved", "dia_list_computed"])
         self._flags.add("ode_solved", parent="metric_computed")
 
-        if self._partial_H_func is not None:
-            self._flag_numerical_partial_H = False
-        else:
-            self._flag_numerical_partial_H = True
+        self._flag_numerical_partial_H = not self._affine_hamiltonian and self._partial_H_func is None
 
         # Initialize parameters and control settings
         self._parameters: dict[str, Any] = {}
@@ -117,14 +159,18 @@ class ControlModel:
         self._metric_integrator = romb
         self._metric_integrator_kwargs: dict[str, Any] = {}
         self._previous_pulse_accuracy: int | None = None  # To track changes in pulse accuracy for ODE solving
-        self._hamiltonian_dimension: int | None = None
 
     @property
     def hamiltonian_dimension(self) -> int | None:
         return self._hamiltonian_dimension
 
     def _call_hamiltonian(self, *args: Any, **kwargs: Any) -> np.ndarray:
-        matrix = np.asarray(self.H_func(*args, **{**self._parameters, **kwargs}))
+        H_func = self.H_func
+        if H_func is None:
+            raise ImmutableConfigurationError(
+                "Direct H_func evaluation is unavailable when H_d and H_c define the Hamiltonian."
+            )
+        matrix = np.asarray(H_func(*args, **{**self._parameters, **kwargs}))
 
         if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
             raise ValidationError(f"H_func must return a 2D square matrix, got shape {matrix.shape}.")
@@ -134,9 +180,11 @@ class ControlModel:
         if self._hamiltonian_dimension is None:
             self._hamiltonian_dimension = dimension
         elif dimension != self._hamiltonian_dimension:
-            raise ValidationError("The Hamiltonian dimension cannot change after ControlModel "
-                                  f"initialization: expected {self._hamiltonian_dimension}, "
-                                  f"got {dimension}.")
+            raise ValidationError(
+                "The Hamiltonian dimension cannot change after ControlModel "
+                f"initialization: expected {self._hamiltonian_dimension}, "
+                f"got {dimension}."
+            )
 
         if not np.allclose(matrix, matrix.T.conj()):  # Hermitian
             raise ValidationError("H_func must return a Hermitian matrix.")
@@ -161,8 +209,16 @@ class ControlModel:
         if not np.all(np.isfinite(matrix)):  # Non-finite values
             raise ValidationError("partial_H_func must return a matrix with finite values.")
 
-        hamiltonian_temp = self.H_func(*args, **{**self._parameters, **kwargs})
-        if np.shape(matrix) != hamiltonian_temp.shape:
+        if self._hamiltonian_dimension is None:
+            H_func = self.H_func
+            if H_func is None:
+                raise MissingControlParameterError("H_func is not configured.")
+            hamiltonian_temp = H_func(*args, **{**self._parameters, **kwargs})
+            dim_temp = hamiltonian_temp.shape[0]
+        else:
+            dim_temp = self._hamiltonian_dimension
+
+        if np.shape(matrix)[0] != dim_temp:
             raise ValidationError("partial_H_func must return a matrix with the same shape as H_func.")
 
         return matrix
@@ -171,6 +227,19 @@ class ControlModel:
         # Return the ControlModel function if the object is called directly, allowing for easy evaluation of the
         #   ControlModel at specific control values
         # Runtime kwargs override stored defaults for explicit one-off evaluations.
+        if self._affine_hamiltonian:
+            if len(args) == 1 and not kwargs:
+                return self.evaluate_hamiltonian(args[0])
+
+            control_name = self.control_name
+            if not args and control_name is not None and set(kwargs) == {control_name}:
+                return self.evaluate_hamiltonian(kwargs[control_name])
+
+            raise InvalidControlParameterError(
+                "Affine models must be evaluated with one positional control value or with the configured "
+                "control_name as the only keyword argument."
+            )
+
         return self._call_hamiltonian(*args, **kwargs)
 
     def _evaluation_kwargs(self, control_value: float) -> dict[str, Any]:
@@ -188,23 +257,39 @@ class ControlModel:
     def evaluate_hamiltonian(self, control_value: float) -> np.ndarray:
         """Evaluate and validate the Hamiltonian at one control value."""
 
+        if not isinstance(control_value, (int, float, np.integer, np.floating)) or isinstance(control_value, bool):
+            raise InvalidControlParameterError("Control value must be a finite real number.")
+
+        control_value = float(control_value)
+        if not np.isfinite(control_value):
+            raise InvalidControlParameterError("Control value must be finite.")
+
+        if self._affine_hamiltonian:
+            assert self._H_d is not None
+            assert self._H_c is not None
+            return self._H_d + control_value * self._H_c
+
         return self._call_hamiltonian(**self._evaluation_kwargs(control_value))
 
     # Setters and getters are defined for the critical attributes of the ControlModel class, so we have control over how
     # the user modifies them. It is important that the correct flags are updated when these attributes are changed
     @property
-    def H_func(self) -> Callable[..., np.ndarray]:
+    def H_func(self) -> Callable[..., np.ndarray] | None:
         return self._H_func
 
     @H_func.setter
     def H_func(self, func: Callable[..., np.ndarray]) -> None:
+        if self._affine_hamiltonian:
+            raise ImmutableConfigurationError("H_func cannot be set when the Hamiltonian is defined by H_d and H_c.")
         if self._H_func is None:
             if not callable(func):
                 raise ValidationError("H_func must be callable.")
             self._H_func = func
         else:
-            raise ImmutableConfigurationError("H_func is already set and cannot be changed. If you want to change it,"
-                                              " please create a new instance of the ControlModel class.")
+            raise ImmutableConfigurationError(
+                "H_func is already set and cannot be changed. If you want to change it,"
+                " please create a new instance of the ControlModel class."
+            )
 
     @property
     def partial_H_func(self) -> Callable[..., np.ndarray] | None:
@@ -212,6 +297,10 @@ class ControlModel:
 
     @partial_H_func.setter
     def partial_H_func(self, func: Callable[..., np.ndarray]) -> None:
+        if self._affine_hamiltonian:
+            raise ImmutableConfigurationError(
+                "partial_H_func cannot be set when the Hamiltonian is defined by H_d and H_c."
+            )
         if self._partial_H_func is None:
             if not callable(func):
                 raise ValidationError("partial_H_func must be callable.")
@@ -221,7 +310,23 @@ class ControlModel:
         else:
             raise ImmutableConfigurationError(
                 "partial_H_func is already set and cannot be changed. If you want to change it,"
-                " please create a new instance of the ControlModel class.")
+                " please create a new instance of the ControlModel class."
+            )
+
+    @property
+    def H_d(self) -> np.ndarray | None:
+        """Return a copy of the constant drift Hamiltonian, if configured."""
+        return None if self._H_d is None else self._H_d.copy()
+
+    @property
+    def H_c(self) -> np.ndarray | None:
+        """Return a copy of the constant control Hamiltonian, if configured."""
+        return None if self._H_c is None else self._H_c.copy()
+
+    @property
+    def affine_hamiltonian(self) -> bool:
+        """Whether the model uses ``H(control) = H_d + control * H_c``."""
+        return self._affine_hamiltonian
 
     @property
     def control_name(self) -> str | None:
@@ -253,9 +358,10 @@ class ControlModel:
         if self._pulse_final is not None and value == self._pulse_final:
             raise InvalidControlParameterError("pulse_initial and pulse_final values must be different.")
         self._pulse_initial = value
-        self._flags["eigenproblem_solved"] = (False
-                                              # Reset the eigenproblem solved flag if the pulse initial value changes
-                                              )
+        self._flags["eigenproblem_solved"] = (
+            False
+            # Reset the eigenproblem solved flag if the pulse initial value changes
+        )
 
     @property
     def pulse_final(self) -> float | None:
@@ -430,9 +536,16 @@ class ControlModel:
         updated, others will not be affected.
         """
 
+        if self._affine_hamiltonian:
+            raise ImmutableConfigurationError(
+                "set_parameters() is unavailable when constant H_d and H_c matrices are supplied. "
+                "Construct a new ControlModel to change parameters absorbed into these matrices."
+            )
+
         if self.control_name in parameters:
             raise InvalidControlParameterError(
-                f"{self.control_name!r} is the control variable and cannot also be supplied as a fixed parameter.")
+                f"{self.control_name!r} is the control variable and cannot also be supplied as a fixed parameter."
+            )
 
         new_params = {**self._parameters, **parameters}
 
@@ -447,10 +560,19 @@ class ControlModel:
         """Return a read-only copy of the Hamiltonian parameters."""
         return MappingProxyType(deepcopy(self._parameters))
 
-    def set_control(self, control_name: str | None = None, pulse_initial: float | None = None,
-                    pulse_final: float | None = None, initial_state: int | None = None, final_state: int | None = None,
-                    alpha: float | None = None, beta: float | None = None, dia_alpha: float | None = None,
-                    dia_beta: float | None = None, num_steps: int | None = None, ) -> None:
+    def set_control(
+        self,
+        control_name: str | None = None,
+        pulse_initial: float | None = None,
+        pulse_final: float | None = None,
+        initial_state: int | None = None,
+        final_state: int | None = None,
+        alpha: float | None = None,
+        beta: float | None = None,
+        dia_alpha: float | None = None,
+        dia_beta: float | None = None,
+        num_steps: int | None = None,
+    ) -> None:
         """
         Set the control parameters for the optimization problem. This method allows you to specify the control
         parameters such as the name of the control parameter, the initial and final values of the control pulse, ....
@@ -492,60 +614,74 @@ class ControlModel:
         """
 
         # Build and validate the complete candidate configuration first.
-        candidate_name = (self._control_name if control_name is None else self._validate_control_name(control_name))
+        # ToDo: With affine Hamiltonians, we could allow the user to set the control_name to None
+        candidate_name = self._control_name if control_name is None else self._validate_control_name(control_name)
 
         candidate_pulse_initial = (
-            self._pulse_initial if pulse_initial is None else self._validate_pulse_value(pulse_initial,
-                                                                                         "pulse_initial"))
+            self._pulse_initial if pulse_initial is None else self._validate_pulse_value(pulse_initial, "pulse_initial")
+        )
 
         candidate_pulse_final = (
-            self._pulse_final if pulse_final is None else self._validate_pulse_value(pulse_final, "pulse_final"))
+            self._pulse_final if pulse_final is None else self._validate_pulse_value(pulse_final, "pulse_final")
+        )
 
         candidate_initial_state = (
-            self._initial_state if initial_state is None else self._validate_state_index(initial_state, "Initial"))
+            self._initial_state if initial_state is None else self._validate_state_index(initial_state, "Initial")
+        )
 
         candidate_final_state = (
-            self._final_state if final_state is None else self._validate_state_index(final_state, "Final"))
+            self._final_state if final_state is None else self._validate_state_index(final_state, "Final")
+        )
 
         # Preserve the existing behavior on first configuration.
         if candidate_final_state is None and candidate_initial_state is not None:
             candidate_final_state = candidate_initial_state
 
-        candidate_alpha = (self._alpha if alpha is None else self._validate_exponent(alpha, "Alpha"))
+        candidate_alpha = self._alpha if alpha is None else self._validate_exponent(alpha, "Alpha")
 
-        candidate_beta = (self._beta if beta is None else self._validate_exponent(beta, "Beta"))
+        candidate_beta = self._beta if beta is None else self._validate_exponent(beta, "Beta")
 
         candidate_dia_alpha = (
-            self._dia_alpha if dia_alpha is None else self._validate_exponent(dia_alpha, "Diabatic alpha"))
+            self._dia_alpha if dia_alpha is None else self._validate_exponent(dia_alpha, "Diabatic alpha")
+        )
 
-        candidate_dia_beta = (
-            self._dia_beta if dia_beta is None else self._validate_exponent(dia_beta, "Diabatic beta"))
+        candidate_dia_beta = self._dia_beta if dia_beta is None else self._validate_exponent(dia_beta, "Diabatic beta")
 
         if num_steps is None:
-            candidate_num_steps = self._num_steps if self._num_steps is not None else 2 ** 10 + 1
+            candidate_num_steps = self._num_steps if self._num_steps is not None else 2**10 + 1
         else:
             candidate_num_steps = self._validate_num_steps(num_steps)
 
         # Cross-parameter validation.
         if candidate_name is not None and candidate_name in self._parameters:
             raise InvalidControlParameterError(
-                f"Control name {candidate_name!r} collides with a stored Hamiltonian parameter.")
+                f"Control name {candidate_name!r} collides with a stored Hamiltonian parameter."
+            )
 
         if (
-                candidate_pulse_initial is not None and candidate_pulse_final is not None and candidate_pulse_initial
-                == candidate_pulse_final):
+            candidate_pulse_initial is not None
+            and candidate_pulse_final is not None
+            and candidate_pulse_initial == candidate_pulse_final
+        ):
             raise InvalidControlParameterError("pulse_initial and pulse_final values must be different.")
 
         # Determine what must be invalidated before committing.
         eigensystem_changed = (
-                candidate_name != self._control_name or candidate_pulse_initial != self._pulse_initial or
-                candidate_pulse_final != self._pulse_final or candidate_num_steps != self._num_steps)
+            candidate_name != self._control_name
+            or candidate_pulse_initial != self._pulse_initial
+            or candidate_pulse_final != self._pulse_final
+            or candidate_num_steps != self._num_steps
+        )
 
-        states_changed = (candidate_initial_state != self._initial_state or candidate_final_state != self._final_state)
+        states_changed = candidate_initial_state != self._initial_state or candidate_final_state != self._final_state
 
         metric_changed = (
-                states_changed or candidate_alpha != self._alpha or candidate_beta != self._beta or
-                candidate_dia_alpha != self._dia_alpha or candidate_dia_beta != self._dia_beta)
+            states_changed
+            or candidate_alpha != self._alpha
+            or candidate_beta != self._beta
+            or candidate_dia_alpha != self._dia_alpha
+            or candidate_dia_beta != self._dia_beta
+        )
 
         # Everything is valid. Commit atomically.
         self._control_name = candidate_name
@@ -565,7 +701,8 @@ class ControlModel:
 
         if states_changed:
             self._flags["dia_list_computed"] = (
-                    candidate_initial_state is not None and candidate_initial_state == candidate_final_state)
+                candidate_initial_state is not None and candidate_initial_state == candidate_final_state
+            )
             self._dia_list = None
 
         if metric_changed:
@@ -574,9 +711,14 @@ class ControlModel:
         if eigensystem_changed or metric_changed:
             self._pulse = None
 
-    def solve_problem(self, pulse_accuracy: int = 1000, solver: Callable[..., Any] | None = None,
-                      solver_kwargs: dict[str, Any] | None = None, metric_integrator: Callable[..., Any] | None = None,
-                      metric_integrator_kwargs: dict[str, Any] | None = None, ) -> None:
+    def solve_problem(
+        self,
+        pulse_accuracy: int = 1000,
+        solver: Callable[..., Any] | None = None,
+        solver_kwargs: dict[str, Any] | None = None,
+        metric_integrator: Callable[..., Any] | None = None,
+        metric_integrator_kwargs: dict[str, Any] | None = None,
+    ) -> None:
         """
         Solve the optimization problem to find the optimal control pulse. This method computes the metric tensor based
         on the energies and matrix elements of the ControlModel, and then solves the ODE for the control pulse using the
@@ -607,17 +749,25 @@ class ControlModel:
             raise InvalidControlParameterError("pulse_accuracy must be an integer >= 3.")
         config = self._check_control_parameters()
 
-        self._configure_integration(solver=solver, solver_kwargs=solver_kwargs, metric_integrator=metric_integrator,
-                                    metric_integrator_kwargs=metric_integrator_kwargs, )
+        self._configure_integration(
+            solver=solver,
+            solver_kwargs=solver_kwargs,
+            metric_integrator=metric_integrator,
+            metric_integrator_kwargs=metric_integrator_kwargs,
+        )
 
         self._solve_eigenproblem(config)
         self._compute_metric_tensor(config)
 
         self._solve_ode(pulse_accuracy)
 
-    def _configure_integration(self, solver: Callable[..., Any] | None, solver_kwargs: dict[str, Any] | None,
-                               metric_integrator: Callable[..., Any] | None,
-                               metric_integrator_kwargs: dict[str, Any] | None, ) -> None:
+    def _configure_integration(
+        self,
+        solver: Callable[..., Any] | None,
+        solver_kwargs: dict[str, Any] | None,
+        metric_integrator: Callable[..., Any] | None,
+        metric_integrator_kwargs: dict[str, Any] | None,
+    ) -> None:
         if solver_kwargs is not None and not isinstance(solver_kwargs, dict):
             raise ValidationError("solver_kwargs must be a dictionary.")
         if metric_integrator_kwargs is not None and not isinstance(metric_integrator_kwargs, dict):
@@ -626,7 +776,8 @@ class ControlModel:
         selected_metric_integrator = self._metric_integrator if metric_integrator is None else metric_integrator
         selected_solver_kwargs = self._solver_kwargs if solver_kwargs is None else dict(solver_kwargs)
         selected_metric_kwargs = (
-            self._metric_integrator_kwargs if metric_integrator_kwargs is None else dict(metric_integrator_kwargs))
+            self._metric_integrator_kwargs if metric_integrator_kwargs is None else dict(metric_integrator_kwargs)
+        )
         if not callable(selected_solver):
             raise ValidationError("solver must be a callable integration function.")
 
@@ -664,8 +815,18 @@ class ControlModel:
         if config is None:
             config = self._check_eigensystem_parameters()
 
-        self._control_pulse = np.linspace(config.pulse_initial, config.pulse_final, num=config.num_steps, dtype=float, )
-        full_hamiltonian = np.stack([self.evaluate_hamiltonian(value) for value in self._control_pulse])
+        self._control_pulse = np.linspace(
+            config.pulse_initial,
+            config.pulse_final,
+            num=config.num_steps,
+            dtype=float,
+        )
+        if self._affine_hamiltonian:
+            assert self._H_d is not None
+            assert self._H_c is not None
+            full_hamiltonian = self._H_d[None, :, :] + self._control_pulse[:, None, None] * self._H_c[None, :, :]
+        else:
+            full_hamiltonian = np.stack([self.evaluate_hamiltonian(value) for value in self._control_pulse])
         dimension = full_hamiltonian.shape[1]
 
         energy_offset = np.trace(full_hamiltonian, axis1=1, axis2=2) / dimension
@@ -676,7 +837,8 @@ class ControlModel:
             for label, index in (("initial_state", config.initial_state), ("final_state", config.final_state)):
                 if index >= dimension:
                     raise InvalidControlParameterError(
-                        f"{label}={index} is out of range for a {dimension}-dimensional Hamiltonian.")
+                        f"{label}={index} is out of range for a {dimension}-dimensional Hamiltonian."
+                    )
 
         try:
             energies, eigenvectors = np.linalg.eigh(hamiltonian_centered)
@@ -689,29 +851,37 @@ class ControlModel:
         self._centered_energies = energies
         self._energy_offset = energy_offset
 
-        if self._flag_numerical_partial_H:
+        if self._affine_hamiltonian:
+            assert self._H_c is not None
+            full_partial_H = self._H_c
+        elif self._flag_numerical_partial_H:
             full_partial_H = self._compute_numerical_partial_H()
         else:
-            full_partial_H = np.array(
-                [self._call_partial_hamiltonian(**self._evaluation_kwargs(lam)) for lam in self._control_pulse])
+            full_partial_H = np.stack(
+                [self._call_partial_hamiltonian(**self._evaluation_kwargs(value)) for value in self._control_pulse]
+            )
 
-        matrix_elements = np.abs(
-            np.einsum("...ij,...jk,...kl->...il", eigenvectors.conj().transpose(0, 2, 1), full_partial_H,
-                      eigenvectors, ))
+        matrix_elements = np.abs(eigenvectors.conj().transpose(0, 2, 1) @ full_partial_H @ eigenvectors)
         if not np.all(np.isfinite(matrix_elements)):
             raise SolverError("Hamiltonian derivative matrix elements contain non-finite values.")
         self._matrix_elements = matrix_elements
         self._flags["eigenproblem_solved"] = True
 
-    def _metric_ratio(self, numerator: np.ndarray, denominator: np.ndarray, alpha: float, beta: float,
-                      transition: tuple[int, int], ) -> np.ndarray:
+    def _metric_ratio(
+        self,
+        numerator: np.ndarray,
+        denominator: np.ndarray,
+        alpha: float,
+        beta: float,
+        transition: tuple[int, int],
+    ) -> np.ndarray:
         if alpha > 0:
             if self._centered_energies is None:
                 raise MetricComputationError("Eigenenergies are unavailable for degeneracy detection.")
 
             bandwidth = np.ptp(self._centered_energies, axis=1)
 
-            tolerance = (self._SINGULARITY_ATOL + self._SINGULARITY_RTOL * bandwidth)
+            tolerance = self._SINGULARITY_ATOL + self._SINGULARITY_RTOL * bandwidth
 
             singular = denominator <= tolerance
 
@@ -723,15 +893,20 @@ class ControlModel:
 
                 indices = np.flatnonzero(singular)
 
-                details = ", ".join(f"x={control_pulse[i]:.6g}, "
-                                    f"gap={denominator[i]:.3e}, "
-                                    f"tol={tolerance[i]:.3e}" for i in indices[:5])
+                details = ", ".join(
+                    f"x={control_pulse[i]:.6g}, gap={denominator[i]:.3e}, tol={tolerance[i]:.3e}" for i in indices[:5]
+                )
 
-                raise MetricComputationError("Degenerate or near-degenerate energy gap encountered "
-                                             f"for transition {transition}: {details}")
+                raise MetricComputationError(
+                    f"Degenerate or near-degenerate energy gap encountered for transition {transition}: {details}"
+                )
 
-        with np.errstate(divide="ignore", invalid="ignore", over="ignore", ):
-            ratio = numerator ** beta / denominator ** alpha
+        with np.errstate(
+            divide="ignore",
+            invalid="ignore",
+            over="ignore",
+        ):
+            ratio = numerator**beta / denominator**alpha
 
         return np.asarray(ratio, dtype=float)
 
@@ -754,7 +929,8 @@ class ControlModel:
         metric = np.asarray(self._metric_tensor, dtype=float)
         if metric.ndim != 1 or metric.shape != self._control_pulse.shape:
             raise MetricComputationError(
-                f"Metric tensor must have shape {self._control_pulse.shape}; received {metric.shape}.")
+                f"Metric tensor must have shape {self._control_pulse.shape}; received {metric.shape}."
+            )
         if not np.all(np.isfinite(metric)):
             raise MetricComputationError("Metric tensor contains NaN or infinite values.")
 
@@ -770,8 +946,12 @@ class ControlModel:
         if np.any(metric <= tolerance):
             locations = self._control_pulse[metric <= tolerance]
             sample = ", ".join(f"{value:.6g}" for value in locations[:3])
-            warnings.warn("Metric tensor is zero or numerically singular" + (
-                f" near control value(s) {sample}." if sample else "."), NumericalStabilityWarning, stacklevel=2)
+            warnings.warn(
+                "Metric tensor is zero or numerically singular"
+                + (f" near control value(s) {sample}." if sample else "."),
+                NumericalStabilityWarning,
+                stacklevel=2,
+            )
 
         dx = float(np.abs(self._control_pulse[1] - self._control_pulse[0]))
         metric_values = np.sqrt(metric)
@@ -783,13 +963,15 @@ class ControlModel:
             if power_minus_one <= 0 or (power_minus_one & (power_minus_one - 1)) != 0:
                 raise InvalidControlParameterError(
                     f"num_steps={n_samples} is incompatible with romb. Use num_steps=2**k+1, "
-                    "or pass a different metric_integrator to solve_problem(...).")
+                    "or pass a different metric_integrator to solve_problem(...)."
+                )
 
         try:
             result = self._metric_integrator(metric_values, dx=dx, **self._metric_integrator_kwargs)
         except TypeError as exc:
             raise ValidationError(
-                "Invalid metric_integrator call: ensure it accepts arguments like (values, dx=..., **kwargs).") from exc
+                "Invalid metric_integrator call: ensure it accepts arguments like (values, dx=..., **kwargs)."
+            ) from exc
         try:
             self._a_tilde = float(result)
         except (TypeError, ValueError) as exc:
@@ -814,9 +996,13 @@ class ControlModel:
                 adiabatic = bool(self._dia_list[m, n])
                 denominator = np.abs(self._centered_energies[:, n] - self._centered_energies[:, m])
                 numerator = self._matrix_elements[:, m, n]
-                metric += self._metric_ratio(numerator, denominator,
-                                             alpha=config.alpha if adiabatic else config.dia_alpha,
-                                             beta=config.beta if adiabatic else config.dia_beta, transition=(m, n), )
+                metric += self._metric_ratio(
+                    numerator,
+                    denominator,
+                    alpha=config.alpha if adiabatic else config.dia_alpha,
+                    beta=config.beta if adiabatic else config.dia_beta,
+                    transition=(m, n),
+                )
         self._metric_tensor = metric
 
     def _compute_G_adiabatic(self, config: _ControlParameters) -> None:
@@ -831,11 +1017,19 @@ class ControlModel:
                 continue
             denominator = np.abs(self._centered_energies[:, state] - self._centered_energies[:, config.initial_state])
             numerator = self._matrix_elements[:, config.initial_state, state]
-            metric += self._metric_ratio(numerator, denominator, alpha=config.alpha, beta=config.beta,
-                                         transition=(config.initial_state, state), )
+            metric += self._metric_ratio(
+                numerator,
+                denominator,
+                alpha=config.alpha,
+                beta=config.beta,
+                transition=(config.initial_state, state),
+            )
         self._metric_tensor = metric
 
-    def _compute_numerical_partial_H(self, order: int = 8, ) -> np.ndarray:
+    def _compute_numerical_partial_H(
+        self,
+        order: int = 8,
+    ) -> np.ndarray:
         """
         Evaluate dH/dx at every point of a real-valued grid.
 
@@ -873,15 +1067,23 @@ class ControlModel:
 
         initial_step = float(np.min(np.diff(unique_x)))
 
-        tolerances = {"atol": 1e-10, "rtol": 1e-8, }
+        tolerances = {
+            "atol": 1e-10,
+            "rtol": 1e-8,
+        }
 
         # Scalar evaluation to determine the Hamiltonian shape.
-        H_reference = np.asarray(self.evaluate_hamiltonian(float(x_grid[0])), dtype=np.complex128, )
+        H_reference = np.asarray(
+            self.evaluate_hamiltonian(float(x_grid[0])),
+            dtype=np.complex128,
+        )
 
         H_shape = H_reference.shape
         n_elements = H_reference.size
 
-        def evaluate_and_pack(x_column: np.ndarray, ) -> np.ndarray:
+        def evaluate_and_pack(
+            x_column: np.ndarray,
+        ) -> np.ndarray:
             """
             Evaluate the non-vectorized Hamiltonian at one scalar x.
 
@@ -890,7 +1092,10 @@ class ControlModel:
             """
             x = float(x_column[0])
 
-            H = np.asarray(self.evaluate_hamiltonian(float(x)), dtype=np.complex128, )
+            H = np.asarray(
+                self.evaluate_hamiltonian(float(x)),
+                dtype=np.complex128,
+            )
 
             if H.shape != H_shape:
                 raise ValueError(f"H_func returned inconsistent shapes: expected {H_shape}, got {H.shape}.")
@@ -898,16 +1103,27 @@ class ControlModel:
             H_flat = H.ravel()
 
             # scipy.differentiate.jacobian expects real outputs.
-            return np.concatenate((H_flat.real, H_flat.imag,))
+            return np.concatenate(
+                (
+                    H_flat.real,
+                    H_flat.imag,
+                )
+            )
 
-        def packed_hamiltonian(x_array: np.ndarray, ) -> np.ndarray:
+        def packed_hamiltonian(
+            x_array: np.ndarray,
+        ) -> np.ndarray:
             """
             Adapt the scalar H_func to SciPy's vectorized interface.
 
             x_array has shape (1, ...), where the trailing axes contain
             evaluation points introduced by SciPy.
             """
-            return np.apply_along_axis(evaluate_and_pack, axis=0, arr=x_array, )
+            return np.apply_along_axis(
+                evaluate_and_pack,
+                axis=0,
+                arr=x_array,
+            )
 
         # Use one-sided differences at the two domain boundaries.
         x_min = np.min(x_grid)
@@ -917,15 +1133,24 @@ class ControlModel:
         step_direction[x_grid - x_min < initial_step] = 1
         step_direction[x_max - x_grid < initial_step] = -1
 
-        result = jacobian(packed_hamiltonian, x_grid[np.newaxis, :], order=order, initial_step=initial_step,
-                          step_direction=step_direction[np.newaxis, :], tolerances=tolerances, )
+        result = jacobian(
+            packed_hamiltonian,
+            x_grid[np.newaxis, :],
+            order=order,
+            initial_step=initial_step,
+            step_direction=step_direction[np.newaxis, :],
+            tolerances=tolerances,
+        )
 
         success = np.asarray(result.success, dtype=bool)
         if not np.all(success):
             status = np.asarray(result.status)
             error = np.asarray(result.error, dtype=float)
 
-            failed_points = np.any(~success, axis=tuple(range(success.ndim - 1)), )
+            failed_points = np.any(
+                ~success,
+                axis=tuple(range(success.ndim - 1)),
+            )
 
             failed_indices = np.flatnonzero(failed_points)
 
@@ -938,12 +1163,12 @@ class ControlModel:
                 finite_errors = point_errors[np.isfinite(point_errors)]
                 max_error = float(np.max(finite_errors)) if finite_errors.size else np.nan
 
-                details.append(f"x={x_grid[index]:.6g}: "
-                               f"status={statuses.tolist()}, "
-                               f"max_error={max_error:.3e}")
+                details.append(f"x={x_grid[index]:.6g}: status={statuses.tolist()}, max_error={max_error:.3e}")
 
-            raise SolverError("Numerical differentiation failed to converge at "
-                              f"{failed_indices.size} control point(s): " + "; ".join(details))
+            raise SolverError(
+                "Numerical differentiation failed to converge at "
+                f"{failed_indices.size} control point(s): " + "; ".join(details)
+            )
 
         # result.df shape:
         # (2 * n_elements, 1, n_points)
@@ -974,7 +1199,11 @@ class ControlModel:
             raise MetricComputationError("ODE speed factor is non-finite or non-positive.")
 
         order = np.argsort(self._control_pulse)
-        interpolation = PchipInterpolator(self._control_pulse[order], factor[order], extrapolate=False, )
+        interpolation = PchipInterpolator(
+            self._control_pulse[order],
+            factor[order],
+            extrapolate=False,
+        )
 
         direction = float(np.sign(self._control_pulse[-1] - self._control_pulse[0]))
         lower = float(np.min(self._control_pulse))
@@ -1007,8 +1236,14 @@ class ControlModel:
             endpoint_event = EndpointEvent(target, direction)
 
             try:
-                sol = solve_ivp(model, [0.0, 10.0], [self._control_pulse[0]], dense_output=True, events=endpoint_event,
-                                **kwargs, )
+                sol = solve_ivp(
+                    model,
+                    [0.0, 10.0],
+                    [self._control_pulse[0]],
+                    dense_output=True,
+                    events=endpoint_event,
+                    **kwargs,
+                )
             except TypeError as exc:
                 raise ValidationError("Invalid solve_ivp keyword arguments.") from exc
             if not sol.success:
@@ -1025,7 +1260,8 @@ class ControlModel:
                 sol = self._solver(model, [0.0, 1.0], [self._control_pulse[0]], t_eval=s, **kwargs)
             except TypeError as exc:
                 raise ValidationError(
-                    "Invalid solver call: ensure solver accepts (fun, t_span, y0, t_eval=..., **kwargs).") from exc
+                    "Invalid solver call: ensure solver accepts (fun, t_span, y0, t_eval=..., **kwargs)."
+                ) from exc
             if hasattr(sol, "success") and not sol.success:
                 raise SolverError(str(getattr(sol, "message", "ODE solver failed.")))
             if isinstance(sol, tuple):
@@ -1070,20 +1306,46 @@ class ControlModel:
         pulse_final = self.pulse_final
         num_steps = self.num_steps
 
-        if control_name is None or pulse_initial is None or pulse_final is None or num_steps is None:
-            missing_params = [name for name, value in (("control_name", control_name), ("pulse_initial", pulse_initial),
-                                                       ("pulse_final", pulse_final), ("num_steps", num_steps),) if
-                              value is None]
+        missing_params = [
+            name
+            for name, value in (
+                ("pulse_initial", pulse_initial),
+                ("pulse_final", pulse_final),
+                ("num_steps", num_steps),
+            )
+            if value is None
+        ]
+        if not self._affine_hamiltonian and control_name is None:
+            missing_params.insert(0, "control_name")
+
+        if missing_params:
             raise MissingControlParameterError(
                 f"Missing control parameters for eigensystem: {', '.join(missing_params)}. "
-                "Please set them using set_control(...).")
+                "Please set them using set_control(...)."
+            )
 
-        return _EigensystemParameters(control_name=control_name, pulse_initial=pulse_initial, pulse_final=pulse_final,
-                                      num_steps=num_steps, )
+        assert pulse_initial is not None
+        assert pulse_final is not None
+        assert num_steps is not None
 
-    def plot_eigenvalues(self, fig: Any = None, ax: Any = None, legend: bool = True,
-                         legend_kwargs: dict[str, Any] | None = None, xlabel: str | None = None,
-                         ylabel: str | None = None, title: str | None = None, **plot_kwargs: Any, ) -> tuple[Any, Any]:
+        return _EigensystemParameters(
+            control_name=control_name,
+            pulse_initial=pulse_initial,
+            pulse_final=pulse_final,
+            num_steps=num_steps,
+        )
+
+    def plot_eigenvalues(
+        self,
+        fig: Figure | SubFigure | None = None,
+        ax: plt.Axes | None = None,
+        legend: bool = True,
+        legend_kwargs: dict[str, Any] | None = None,
+        xlabel: str | None = None,
+        ylabel: str | None = None,
+        title: str | None = None,
+        **plot_kwargs: Any,
+    ) -> tuple[Figure | SubFigure, plt.Axes] | None:
         """
         Plot ControlModel eigenvalues as a function of the control parameter.
 
@@ -1110,34 +1372,48 @@ class ControlModel:
             ``(fig, ax)`` with the generated plot.
         """
         config = self._check_eigensystem_parameters()
-        control_name = config.control_name
+        control_name = config.control_name or "control"
 
         if ax is None:
-            import matplotlib.pyplot as plt
-
             if fig is None:
                 fig, ax = plt.subplots()
-            else:
+            elif isinstance(fig, plt.Figure) or isinstance(fig, SubFigure):
                 ax = fig.add_subplot(111)
-        elif fig is None:
+
+        if isinstance(ax, plt.Axes):
             fig = ax.figure
 
-        for level in range(self.eigenenergies.shape[1]):
-            ax.plot(self._control_pulse, self.eigenenergies[:, level], label=f"E{level}", **plot_kwargs)
+            if self._control_pulse is None:
+                self._solve_eigenproblem(config)
 
-        ax.set_xlabel(control_name if xlabel is None else xlabel)
-        ax.set_ylabel("Energy" if ylabel is None else ylabel)
-        ax.set_title("Hamiltonian eigenenergies" if title is None else title)
+            assert self._control_pulse is not None
 
-        if legend:
-            ax.legend(**(legend_kwargs or {}))
+            for level in range(self.eigenenergies.shape[1]):
+                ax.plot(self._control_pulse, self.eigenenergies[:, level].real, label=f"E{level}", **plot_kwargs)
 
-        return fig, ax
+            ax.set_xlabel(control_name if xlabel is None else xlabel)
+            ax.set_ylabel("Energy" if ylabel is None else ylabel)
+            ax.set_title("Hamiltonian eigenenergies" if title is None else title)
 
-    def plot_metric_tensor(self, fig: Any = None, ax: Any = None, legend: bool = True,
-                           legend_kwargs: dict[str, Any] | None = None, xlabel: str | None = None,
-                           ylabel: str | None = None, title: str | None = None, **plot_kwargs: Any, ) -> tuple[
-        Any, Any]:
+            if legend:
+                ax.legend(**(legend_kwargs or {}))
+
+            assert fig is not None
+            return fig, ax
+        else:
+            return None
+
+    def plot_metric_tensor(
+        self,
+        fig: Figure | SubFigure | None = None,
+        ax: plt.Axes | None = None,
+        legend: bool = True,
+        legend_kwargs: dict[str, Any] | None = None,
+        xlabel: str | None = None,
+        ylabel: str | None = None,
+        title: str | None = None,
+        **plot_kwargs: Any,
+    ) -> tuple[Figure | SubFigure, plt.Axes] | None:
         """
         Plot the metric tensor (G tensor) as a function of the control parameter.
 
@@ -1169,7 +1445,7 @@ class ControlModel:
         config = self._check_control_parameters()
         self._solve_eigenproblem(config)
         self._compute_metric_tensor(config)
-        control_name = config.control_name
+        control_name = config.control_name or "control"
 
         if self._control_pulse is None:
             raise ValidationError("Control pulse can not be None.")
@@ -1178,25 +1454,25 @@ class ControlModel:
             raise ValidationError("Metric tensor can not be None.")
 
         if ax is None:
-            import matplotlib.pyplot as plt
-
             if fig is None:
                 fig, ax = plt.subplots()
-            else:
+            elif isinstance(fig, plt.Figure) or isinstance(fig, SubFigure):
                 ax = fig.add_subplot(111)
-        elif fig is None:
+
+        if isinstance(ax, plt.Axes):
             fig = ax.figure
+            ax.plot(self._control_pulse, self._metric_tensor, label="G", **plot_kwargs)
 
-        ax.plot(self._control_pulse, self._metric_tensor, label="G", **plot_kwargs)
+            ax.set_xlabel(control_name if xlabel is None else xlabel)
+            ax.set_ylabel("G tensor" if ylabel is None else ylabel)
+            ax.set_title("G tensor" if title is None else title)
 
-        ax.set_xlabel(control_name if xlabel is None else xlabel)
-        ax.set_ylabel("G tensor" if ylabel is None else ylabel)
-        ax.set_title("G tensor" if title is None else title)
+            if legend:
+                ax.legend(**(legend_kwargs or {}))
 
-        if legend:
-            ax.legend(**(legend_kwargs or {}))
-
-        return fig, ax
+            assert fig is not None
+            return fig, ax
+        return None
 
     def synthesize_pulse(self, duration: float) -> PulseControl:
         """
@@ -1235,31 +1511,69 @@ class ControlModel:
         num_steps = self.num_steps
 
         if (
-                control_name is None or pulse_initial is None or pulse_final is None or num_steps is None or
-                initial_state is None or final_state is None or alpha is None or beta is None):  # noqa: E501
-            missing_params = [name for name, value in (("control_name", control_name), ("pulse_initial", pulse_initial),
-                                                       ("pulse_final", pulse_final), ("initial_state", initial_state),
-                                                       ("final_state", final_state), ("alpha", alpha), ("beta", beta),
-                                                       ("num_steps", num_steps),) if value is None]
+            pulse_initial is None
+            or pulse_final is None
+            or num_steps is None
+            or initial_state is None
+            or final_state is None
+            or alpha is None
+            or beta is None
+            or (not self._affine_hamiltonian and control_name is None)
+        ):  # noqa: E501
+            missing_params = [
+                name
+                for name, value in (
+                    ("pulse_initial", pulse_initial),
+                    ("pulse_final", pulse_final),
+                    ("initial_state", initial_state),
+                    ("final_state", final_state),
+                    ("alpha", alpha),
+                    ("beta", beta),
+                    ("num_steps", num_steps),
+                )
+                if value is None
+            ]
+            if not self._affine_hamiltonian and control_name is None:
+                missing_params.insert(0, "control_name")
             raise MissingControlParameterError(
                 f"Missing control parameters: {', '.join(missing_params)}. Please set them using set_control"
-                f"({', '.join(f'{name}=<...>' for name in missing_params)}).")
+                f"({', '.join(f'{name}=<...>' for name in missing_params)})."
+            )
+
+        assert pulse_initial is not None
+        assert pulse_final is not None
+        assert initial_state is not None
+        assert final_state is not None
+        assert alpha is not None
+        assert beta is not None
+        assert num_steps is not None
 
         if initial_state != final_state and (dia_alpha is None or dia_beta is None):
-            missing_params = [name for name, value in (("dia_alpha", dia_alpha), ("dia_beta", dia_beta)) if
-                              value is None]
+            missing_params = [
+                name for name, value in (("dia_alpha", dia_alpha), ("dia_beta", dia_beta)) if value is None
+            ]
             raise MissingControlParameterError(
                 f"Missing control parameters: {', '.join(missing_params)}. Please set them using set_control"
-                f"({', '.join(f'{name}=<...>' for name in missing_params)}).")
+                f"({', '.join(f'{name}=<...>' for name in missing_params)})."
+            )
 
         hamiltonian = self.evaluate_hamiltonian(pulse_initial)
         dimension = hamiltonian.shape[0]
         validate_state_index(initial_state, dimension, "initial_state")
         validate_state_index(final_state, dimension, "final_state")
 
-        return _ControlParameters(control_name=control_name, pulse_initial=pulse_initial, pulse_final=pulse_final,
-                                  num_steps=num_steps, initial_state=initial_state, final_state=final_state,
-                                  alpha=alpha, beta=beta, dia_alpha=dia_alpha, dia_beta=dia_beta, )
+        return _ControlParameters(
+            control_name=control_name,
+            pulse_initial=pulse_initial,
+            pulse_final=pulse_final,
+            num_steps=num_steps,
+            initial_state=initial_state,
+            final_state=final_state,
+            alpha=alpha,
+            beta=beta,
+            dia_alpha=dia_alpha,
+            dia_beta=dia_beta,
+        )
 
     def _generate_summary(self) -> str:
         """
@@ -1268,30 +1582,48 @@ class ControlModel:
         the optimization problem. The summary can be used for logging, debugging, or displaying the current state of the
         ControlModel object.
         """
-        hamiltonian_params = (", ".join(
-            f"{key}: {value}" for key, value in self._parameters.items()) if self._parameters else "❌ not set")
-        alpha_beta = (f"({self.alpha if self.alpha is not None else '❌ not set'}, "
-                      f"{self.beta if self.beta is not None else '❌ not set'})")
-        diabatic_alpha_beta = ("("
-                               f"{self.dia_alpha if self.dia_alpha is not None else '❌ not set'}, "
-                               f"{self.dia_beta if self.dia_beta is not None else '❌ not set'}"
-                               ")")
+        if self._affine_hamiltonian:
+            hamiltonian_description = "✅ affine (H_d + control * H_c)"
+            partial_hamiltonian_description = "✅ exact constant H_c"
+            hamiltonian_params = "absorbed into H_d and H_c"
+        else:
+            hamiltonian_description = "✅ function" if self.H_func is not None else "❌ not set"
+            partial_hamiltonian_description = (
+                "✅ function" if self.partial_H_func is not None else "numerical derivative"
+            )
+            hamiltonian_params = (
+                ", ".join(f"{key}: {value}" for key, value in self._parameters.items())
+                if self._parameters
+                else "❌ not set"
+            )
+        alpha_beta = (
+            f"({self.alpha if self.alpha is not None else '❌ not set'}, "
+            f"{self.beta if self.beta is not None else '❌ not set'})"
+        )
+        diabatic_alpha_beta = (
+            "("
+            f"{self.dia_alpha if self.dia_alpha is not None else '❌ not set'}, "
+            f"{self.dia_beta if self.dia_beta is not None else '❌ not set'}"
+            ")"
+        )
 
-        summary_lines = ["------------------ ControlModel Control Summary ------------------",
-                         f"Hamiltonian: {'✅ set' if self.H_func is not None else '❌ not set'}",
-                         f"Partial Hamiltonian: {'✅ set' if self.partial_H_func is not None else '❌ not set'}",
-                         f"Hamiltonian parameters: {hamiltonian_params}",
-                         f"Control name → {self.control_name if self.control_name is not None else '❌ not set'}",
-                         f"Pulse initial → {self.pulse_initial if self.pulse_initial is not None else '❌ not set'}",
-                         f"Pulse final → {self.pulse_final if self.pulse_final is not None else '❌ not set'}",
-                         f"Initial state index → "
-                         f"{self.initial_state if self.initial_state is not None else '❌ not set'}",
-                         f"Final state index → {self.final_state if self.final_state is not None else '❌ not set'}",
-                         f"(Alpha, Beta) → {alpha_beta}", f"(Diabatic Alpha, Diabatic Beta) → {diabatic_alpha_beta}",
-                         f"Eigenproblem solved → {'✅ yes' if self._flags['eigenproblem_solved'] else '❌ no'}",
-                         f"Metric computed → {'✅ yes' if self._flags['metric_computed'] else '❌ no'}",
-                         f"ODE solved → {'✅ yes' if self._flags['ode_solved'] else '❌ no'}",
-                         "---------------------------------------------------------------", ]
+        summary_lines = [
+            "------------------ ControlModel Control Summary ------------------",
+            f"Hamiltonian: {hamiltonian_description}",
+            f"Partial Hamiltonian: {partial_hamiltonian_description}",
+            f"Hamiltonian parameters: {hamiltonian_params}",
+            f"Control name → {self.control_name if self.control_name is not None else '❌ not set'}",
+            f"Pulse initial → {self.pulse_initial if self.pulse_initial is not None else '❌ not set'}",
+            f"Pulse final → {self.pulse_final if self.pulse_final is not None else '❌ not set'}",
+            f"Initial state index → {self.initial_state if self.initial_state is not None else '❌ not set'}",
+            f"Final state index → {self.final_state if self.final_state is not None else '❌ not set'}",
+            f"(Alpha, Beta) → {alpha_beta}",
+            f"(Diabatic Alpha, Diabatic Beta) → {diabatic_alpha_beta}",
+            f"Eigenproblem solved → {'✅ yes' if self._flags['eigenproblem_solved'] else '❌ no'}",
+            f"Metric computed → {'✅ yes' if self._flags['metric_computed'] else '❌ no'}",
+            f"ODE solved → {'✅ yes' if self._flags['ode_solved'] else '❌ no'}",
+            "---------------------------------------------------------------",
+        ]
         return "\n".join(summary_lines)
 
     def print_summary(self) -> None:
@@ -1302,9 +1634,11 @@ class ControlModel:
         print(self._generate_summary())
 
     def __str__(self) -> str:
-        return (f"ControlModel(control_name={self.control_name}, pulse_initial={self.pulse_initial}, "
-                f"pulse_final={self.pulse_final}, initial_state={self.initial_state}, alpha={self.alpha}, "
-                f"beta={self.beta}, num_steps={self.num_steps})")
+        return (
+            f"ControlModel(control_name={self.control_name}, pulse_initial={self.pulse_initial}, "
+            f"pulse_final={self.pulse_final}, initial_state={self.initial_state}, alpha={self.alpha}, "
+            f"beta={self.beta}, num_steps={self.num_steps})"
+        )
 
     def __repr__(self) -> str:
         return self._generate_summary()
@@ -1314,6 +1648,22 @@ class ControlModel:
         if not isinstance(name, str) or not name.strip():
             raise InvalidControlParameterError("Control name must be a non-empty string.")
         return name
+
+    @staticmethod
+    def _validate_constant_hamiltonian(matrix: Any, name: str) -> np.ndarray:
+        """Validate and detach a constant Hamiltonian matrix."""
+        array = np.asarray(matrix)
+
+        if array.ndim != 2 or array.shape[0] != array.shape[1]:
+            raise ValidationError(f"{name} must be a 2D square matrix, got shape {array.shape}.")
+        if not np.issubdtype(array.dtype, np.number):
+            raise ValidationError(f"{name} must contain numeric values.")
+        if not np.all(np.isfinite(array)):
+            raise ValidationError(f"{name} must contain only finite values.")
+        if not np.allclose(array, array.T.conj()):
+            raise ValidationError(f"{name} must be Hermitian.")
+
+        return array.copy()
 
     @staticmethod
     def _validate_pulse_value(value: Any, name: str) -> float:

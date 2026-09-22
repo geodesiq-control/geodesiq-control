@@ -6,8 +6,11 @@ import pytest
 from scipy.integrate import solve_ivp
 
 from geodesiq import ControlModel
-from geodesiq.exceptions import (InvalidControlParameterError, MetricComputationError, SolverError, )
-
+from geodesiq.exceptions import (
+    InvalidControlParameterError,
+    MetricComputationError,
+    SolverError,
+)
 
 # ---------------------------------------------------------------------------
 # Configures Hamiltonians and models

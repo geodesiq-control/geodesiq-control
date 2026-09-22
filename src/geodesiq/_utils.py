@@ -36,8 +36,13 @@ class Flags:
     # Public API
     # ------------------------------------------------------------------
 
-    def add(self, name: str, value: bool = False, parent: str | None = None,
-            parents: list[str] | tuple[str, ...] | set[str] | None = None, ) -> None:
+    def add(
+        self,
+        name: str,
+        value: bool = False,
+        parent: str | None = None,
+        parents: list[str] | tuple[str, ...] | set[str] | None = None,
+    ) -> None:
         """Register a new flag.
 
         Parameters

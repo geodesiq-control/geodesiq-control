@@ -1,5 +1,9 @@
-from geodesiq.warnings import (ExperimentalFeatureWarning, GeodesiQWarning, NumericalStabilityWarning,
-                               PerformanceWarning, )
+from geodesiq.warnings import (
+    ExperimentalFeatureWarning,
+    GeodesiQWarning,
+    NumericalStabilityWarning,
+    PerformanceWarning,
+)
 
 
 def test_warning_hierarchy():

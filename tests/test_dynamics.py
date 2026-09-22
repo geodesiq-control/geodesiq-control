@@ -4,10 +4,10 @@ import numpy as np
 import pytest
 import qutip as qt
 
+import geodesiq.dynamics as dynamics_module
 from geodesiq import ControlModel
 from geodesiq.dynamics import Dynamics
-from geodesiq.exceptions import ValidationError
-
+from geodesiq.exceptions import ConfigurationError, ValidationError
 
 # ------------------------------------------------------------
 # Real ControlModel() fixtures
@@ -28,9 +28,24 @@ def _build_solved_model() -> ControlModel:
     return model
 
 
+def _build_solved_affine_model() -> ControlModel:
+    H_d = np.array([[0.0, 1.0], [1.0, 0.0]])
+    H_c = np.array([[1.0, 0.0], [0.0, -1.0]])
+    model = ControlModel(H_d=H_d, H_c=H_c)
+    model.set_control(pulse_initial=1.0, pulse_final=3.0, initial_state=0, final_state=1, alpha=2.0,
+                      beta=2.0, dia_alpha=2.0, dia_beta=2.0, num_steps=33, )
+    model.solve_problem(pulse_accuracy=5)
+    return model
+
+
 @pytest.fixture
 def real_model():
     return _build_solved_model()
+
+
+@pytest.fixture
+def affine_model():
+    return _build_solved_affine_model()
 
 
 @pytest.fixture
@@ -46,6 +61,11 @@ def varying_dynamics():
     # Keep interpolation test deterministic independent of ODE solver details.
     varying_model._control_sol = np.array([0.0, 2.0, 4.0], dtype=float)
     return Dynamics(duration=duration, model=varying_model)
+
+
+@pytest.fixture
+def affine_dynamics(affine_model):
+    return Dynamics(duration=2.0, model=affine_model)
 
 
 # ------------------------------------------------------------
@@ -76,6 +96,50 @@ def test_get_ham_interpolation(varying_dynamics):
     expected = np.array([[1.0, 1.0], [1.0, -1.0]])
 
     np.testing.assert_allclose(H_qobj.full(), expected)
+
+
+def test_affine_initialization_bypasses_general_decomposition(affine_model, monkeypatch):
+    """Affine models should be converted directly into a QobjEvo."""
+
+    def unexpected_decomposition(*args, **kwargs):
+        raise AssertionError("decompose_hamiltonian should not be called for an affine model.")
+
+    monkeypatch.setattr(dynamics_module, "decompose_hamiltonian", unexpected_decomposition)
+
+    dynamics = Dynamics(duration=2.0, model=affine_model)
+
+    assert isinstance(dynamics._qevo, qt.QobjEvo)
+
+
+def test_callable_initialization_keeps_general_decomposition(real_model, monkeypatch):
+    """Callable Hamiltonians should retain the existing decomposition route."""
+    original_decomposition = dynamics_module.decompose_hamiltonian
+    calls = []
+
+    def tracked_decomposition(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original_decomposition(*args, **kwargs)
+
+    monkeypatch.setattr(dynamics_module, "decompose_hamiltonian", tracked_decomposition)
+
+    dynamics = Dynamics(duration=2.0, model=real_model)
+
+    assert len(calls) == 1
+    assert isinstance(dynamics._qevo, qt.QobjEvo)
+
+
+def test_affine_dynamics_propagator_starts_as_identity(affine_dynamics):
+    propagators = affine_dynamics.time_evolution_operator()
+
+    assert len(propagators) == len(affine_dynamics._pulse_times)
+    np.testing.assert_allclose(propagators[0].full(), np.eye(2))
+
+
+def test_affine_initialization_rejects_missing_internal_matrix(affine_model):
+    affine_model._H_c = None
+
+    with pytest.raises(ConfigurationError, match="missing its constant drift or control Hamiltonian"):
+        Dynamics(duration=2.0, model=affine_model)
 
 
 @pytest.mark.parametrize("duration", [0, -1, -1.5, np.nan, np.inf, -np.inf, True, False, "1.0", None, 1 + 2j, ], )
@@ -256,12 +320,16 @@ def test_average_gate_fidelity_invalid_gate_type(default_dynamics):
 
 class TestIndices:
     @pytest.mark.parametrize(("initial_state", "final_state"), [(2, 0), (0, 2), (2, 2)], )
-    def test_out_of_range_control_state_indices_raise(self, default_dynamics, initial_state: int,
+    def test_out_of_range_control_state_indices_raise(self,
+                                                      default_dynamics,
+                                                      initial_state: int,
                                                       final_state: int, ) -> None:
         with pytest.raises(ValidationError, match="must be between", ):
             default_dynamics.state_fidelity(initial_state=initial_state, final_state=final_state)
 
     @pytest.mark.parametrize(("initial_state", "final_state"), [(0, 0), (0, 1), (1, 0), (1, 1), ], )
-    def test_valid_control_state_indices_are_accepted(self, default_dynamics, initial_state: int,
+    def test_valid_control_state_indices_are_accepted(self,
+                                                      default_dynamics,
+                                                      initial_state: int,
                                                       final_state: int, ) -> None:
         default_dynamics.state_fidelity(initial_state=initial_state, final_state=final_state)

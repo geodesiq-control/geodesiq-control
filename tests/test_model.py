@@ -4,11 +4,16 @@ import numpy as np
 import pytest
 from scipy.integrate import solve_ivp
 
-from geodesiq import (ControlModel, ImmutableConfigurationError, InvalidControlParameterError,
-                      MissingControlParameterError, SolverError, ValidationError, )
+from geodesiq import (
+    ControlModel,
+    ImmutableConfigurationError,
+    InvalidControlParameterError,
+    MissingControlParameterError,
+    SolverError,
+    ValidationError,
+)
 from geodesiq.pulses import PulseControl
 from geodesiq.warnings import NumericalStabilityWarning
-
 
 # ---------------------------------------------------------------------------
 # Helpers – simple 2×2 Landau-Zener model:  H = [[lam, delta], [delta, -lam]]
@@ -24,9 +29,14 @@ def lz_partial(lam, delta=1.0):
     return np.array([[1.0, 0.0], [0.0, -1.0]])
 
 
+LZ_H_D = np.array([[0.0, 1.0], [1.0, 0.0]])
+LZ_H_C = np.array([[1.0, 0.0], [0.0, -1.0]])
+
+
 def _get_pyplot():
-    """Lazy matplotlib import so plotting tests can be skipped when optional dependency is missing."""
-    matplotlib = pytest.importorskip("matplotlib")
+    """Lazy matplotlib import for plotting tests."""
+    import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
@@ -74,12 +84,26 @@ def ham_with_partial():
 
 
 @pytest.fixture
+def affine_ham():
+    """A ControlModel using constant drift and control Hamiltonians."""
+    return ControlModel(H_d=LZ_H_D, H_c=LZ_H_C)
+
+
+@pytest.fixture
 def configured_ham(ham_with_partial):
     """A fully configured ControlModel ready for solve_problem()."""
     ham_with_partial.set_parameters(delta=0.5)
     ham_with_partial.set_control(control_name="lam", pulse_initial=-5.0, pulse_final=5.0, initial_state=0, alpha=2.0,
                                  beta=2.0, num_steps=2 ** 8 + 1, )
     return ham_with_partial
+
+
+@pytest.fixture
+def configured_affine_ham(affine_ham):
+    """A fully configured affine ControlModel."""
+    affine_ham.set_control(pulse_initial=-5.0, pulse_final=5.0, initial_state=0, alpha=2.0,
+                           beta=2.0, num_steps=2 ** 8 + 1, )
+    return affine_ham
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +125,144 @@ class TestInit:
         assert bare_ham._flags["eigenproblem_solved"] is False
         assert bare_ham._flags["metric_computed"] is False
         assert bare_ham._flags["ode_solved"] is False
+
+
+# ---------------------------------------------------------------------------
+# Constant drift/control Hamiltonians
+# ---------------------------------------------------------------------------
+
+
+class TestAffineHamiltonian:
+    def test_init_stores_affine_hamiltonians(self, affine_ham):
+        assert affine_ham.affine_hamiltonian is True
+        assert affine_ham.H_func is None
+        assert affine_ham.partial_H_func is None
+        assert affine_ham._flag_numerical_partial_H is False
+        assert affine_ham.hamiltonian_dimension == 2
+        np.testing.assert_allclose(affine_ham.H_d, LZ_H_D)
+        np.testing.assert_allclose(affine_ham.H_c, LZ_H_C)
+
+    @pytest.mark.parametrize("kwargs", [{"H_d": LZ_H_D}, {"H_c": LZ_H_C}], )
+    def test_init_requires_both_affine_hamiltonians(self, kwargs):
+        with pytest.raises(ValidationError, match="Both H_d and H_c"):
+            ControlModel(**kwargs)
+
+    @pytest.mark.parametrize("extra", [{"H_func": lz_hamiltonian}, {"partial_H_func": lz_partial}], )
+    def test_init_rejects_mixed_hamiltonian_apis(self, extra):
+        with pytest.raises(ValidationError, match="either H_func/partial_H_func or H_d/H_c"):
+            ControlModel(H_d=LZ_H_D, H_c=LZ_H_C, **extra)
+
+    @pytest.mark.parametrize(("matrix", "message"),
+                             [(np.ones((2, 3)), "2D square matrix"), (np.array([[0.0, 1.0], [0.0, 0.0]]), "Hermitian"),
+                              (np.array([[np.inf, 0.0], [0.0, 1.0]]), "finite"),
+                              (np.array([["a", "b"], ["b", "a"]]), "numeric"), ], )
+    def test_init_validates_constant_hamiltonians(self, matrix, message):
+        with pytest.raises(ValidationError, match=message):
+            ControlModel(H_d=matrix, H_c=np.eye(2))
+
+    def test_init_requires_matching_affine_shapes(self):
+        with pytest.raises(ValidationError, match="same shape"):
+            ControlModel(H_d=np.eye(2), H_c=np.eye(3))
+
+    def test_affine_matrices_are_defensively_copied(self):
+        H_d = LZ_H_D.copy()
+        H_c = LZ_H_C.copy()
+        model = ControlModel(H_d=H_d, H_c=H_c)
+
+        H_d[0, 0] = 10.0
+        returned_control = model.H_c
+        assert returned_control is not None
+        returned_control[0, 0] = 10.0
+
+        np.testing.assert_allclose(model.H_d, LZ_H_D)
+        np.testing.assert_allclose(model.H_c, LZ_H_C)
+
+    def test_evaluate_hamiltonian_uses_affine_form(self, affine_ham):
+        control_value = 0.25
+        expected = LZ_H_D + control_value * LZ_H_C
+
+        np.testing.assert_allclose(affine_ham.evaluate_hamiltonian(control_value), expected)
+
+    def test_affine_call_accepts_positional_control(self, affine_ham):
+        np.testing.assert_allclose(affine_ham(0.25), LZ_H_D + 0.25 * LZ_H_C)
+
+    def test_affine_call_accepts_configured_keyword_control(self, affine_ham):
+        affine_ham.set_control(control_name="lam")
+
+        np.testing.assert_allclose(affine_ham(lam=0.25), LZ_H_D + 0.25 * LZ_H_C)
+
+    def test_affine_call_rejects_invalid_signature(self, affine_ham):
+        with pytest.raises(InvalidControlParameterError, match="one positional control value"):
+            affine_ham(lam=0.25)
+
+    def test_affine_mode_rejects_set_parameters(self, affine_ham):
+        with pytest.raises(ImmutableConfigurationError, match="set_parameters.*unavailable"):
+            affine_ham.set_parameters(delta=0.5)
+
+    def test_affine_mode_rejects_function_setters(self, affine_ham):
+        with pytest.raises(ImmutableConfigurationError, match="H_func cannot be set"):
+            affine_ham.H_func = lz_hamiltonian
+        with pytest.raises(ImmutableConfigurationError, match="partial_H_func cannot be set"):
+            affine_ham.partial_H_func = lz_partial
+
+    def test_affine_eigenproblem_matches_callable_model(self, configured_affine_ham):
+        callable_model = ControlModel(lz_hamiltonian, partial_H_func=lz_partial)
+        callable_model.set_parameters(delta=1.0)
+        callable_model.set_control(control_name="lam", pulse_initial=-5.0, pulse_final=5.0, initial_state=0, alpha=2.0,
+                                   beta=2.0, num_steps=2 ** 8 + 1, )
+
+        np.testing.assert_allclose(configured_affine_ham.eigenenergies, callable_model.eigenenergies)
+        np.testing.assert_allclose(configured_affine_ham._matrix_elements, callable_model._matrix_elements)
+
+    def test_affine_problem_solves_without_control_name(self, affine_ham):
+        affine_ham.set_control(pulse_initial=-2.0, pulse_final=2.0, initial_state=0, alpha=2.0, beta=2.0, num_steps=65)
+
+        affine_ham.solve_problem(pulse_accuracy=20)
+
+        assert affine_ham.control_name is None
+        assert affine_ham._flags["ode_solved"] is True
+
+    def test_affine_plot_defaults_to_generic_xlabel_when_control_name_missing(self, affine_ham):
+        plt = _get_pyplot()
+        affine_ham.set_control(pulse_initial=-2.0, pulse_final=2.0, initial_state=0, alpha=2.0, beta=2.0, num_steps=65)
+
+        result = affine_ham.plot_eigenvalues()
+        assert result is not None
+        fig, ax = result
+
+        assert ax.get_xlabel() == "control"
+        plt.close(fig)
+
+    def test_affine_metric_plot_defaults_to_generic_xlabel_when_control_name_missing(self, affine_ham):
+        plt = _get_pyplot()
+        affine_ham.set_control(pulse_initial=-2.0, pulse_final=2.0, initial_state=0, alpha=2.0, beta=2.0, num_steps=65)
+
+        result = affine_ham.plot_metric_tensor()
+        assert result is not None
+        fig, ax = result
+
+        assert ax.get_xlabel() == "control"
+        plt.close(fig)
+
+    def test_affine_eigenproblem_does_not_call_scalar_evaluator(self, configured_affine_ham, monkeypatch):
+        def unexpected_scalar_evaluation(*args, **kwargs):
+            raise AssertionError("Affine eigensystem construction should be vectorized.")
+
+        monkeypatch.setattr(configured_affine_ham, "evaluate_hamiltonian", unexpected_scalar_evaluation)
+
+        assert configured_affine_ham.eigenenergies.shape == (configured_affine_ham.num_steps, 2)
+
+    def test_affine_summary_describes_exact_derivative(self, affine_ham):
+        summary = affine_ham._generate_summary()
+
+        assert "affine (H_d + control * H_c)" in summary
+        assert "exact constant H_c" in summary
+
+    def test_legacy_positional_verbose_argument_remains_supported(self):
+        model = ControlModel(lz_hamiltonian, lz_partial, True)
+
+        assert model.H_func is lz_hamiltonian
+        assert model.partial_H_func is lz_partial
 
 
 # ---------------------------------------------------------------------------
@@ -868,8 +1030,8 @@ class TestComputeMetricTensor:
 
     def test_metric_tensor_warns_when_zero_or_numerically_singular(self):
         model = ControlModel(singular_metric_hamiltonian, partial_H_func=singular_metric_partial)
-        model.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0,
-                          beta=2.0, num_steps=65, )
+        model.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0, beta=2.0,
+                          num_steps=65, )
 
         config = model._check_control_parameters()
         model._solve_eigenproblem(config)
@@ -1124,7 +1286,7 @@ class TestSolveProblemErrors:
 class TestGenerateSummary:
     def test_summary_contains_set_indicators(self, configured_ham):
         summary = configured_ham._generate_summary()
-        assert "✅ set" in summary  # H_func is set
+        assert "✅ function" in summary  # H_func is set
 
     def test_summary_shows_parameters(self, configured_ham):
         summary = configured_ham._generate_summary()
