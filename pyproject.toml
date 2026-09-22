@@ -58,7 +58,7 @@ lint = [
 build = [
     "build>=1.2",
     "packaging>=24",
-    "twine>=6",
+    "twine>=7",
 ]
 bench = [
     "filelock>=3.15",

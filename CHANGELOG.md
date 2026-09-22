@@ -12,6 +12,10 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   of a set of basis Hamiltonians with time-dependent coefficients. This allows for more flexible control strategies and
   can be useful in various quantum control scenarios. Furthermore, it's far more efficient in general.
 
+## Dev
+
+- Use `twine>=7` for publishing packages.
+
 ## Changed
 
 - Switched static type checking tooling from `mypy` to `ty` in project dependencies, CI, and contributor documentation.
