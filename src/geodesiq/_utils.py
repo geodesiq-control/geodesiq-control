@@ -1,7 +1,12 @@
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from fractions import Fraction
+from functools import lru_cache
+from math import factorial
 from typing import Any
 
 import numpy as np
+from threadpoolctl import ThreadpoolController
 
 from .exceptions import ValidationError
 
@@ -245,3 +250,84 @@ def validate_state_index(index: int, dimension: int, name: str) -> int:
         raise ValidationError(f"{name} must be between 0 and {dimension - 1}, got {index}.")
 
     return index
+
+
+# -----------------------------------
+# Linear algebra threading
+# -----------------------------------
+# Largest matrix dimension for which batched dense linear algebra runs single-threaded. Many small, independent
+# problems parallelize poorly inside BLAS/LAPACK: thread start-up and synchronization dominate, and with many cores the
+# multi-threaded call can be more than ten times slower than the single-threaded one.
+SMALL_MATRIX_DIMENSION = 256
+
+
+@lru_cache(maxsize=1)
+def _threadpool_controller() -> ThreadpoolController:
+    # Inspecting the loaded BLAS libraries is slow, so it is done once and reused.
+    return ThreadpoolController()
+
+
+@contextmanager
+def limit_blas_threads(dimension: int) -> Iterator[None]:
+    """Run BLAS/LAPACK single-threaded inside the context if ``dimension`` is small, otherwise leave it untouched."""
+    if dimension <= SMALL_MATRIX_DIMENSION:
+        with _threadpool_controller().limit(limits=1, user_api="blas"):
+            yield
+    else:
+        yield
+
+
+# -----------------------------------
+# Finite differences
+# -----------------------------------
+@lru_cache(maxsize=None)
+def finite_difference_weights(offsets: tuple[int, ...]) -> np.ndarray:
+    """
+    Weights of the first-derivative finite-difference stencil on integer ``offsets`` (in units of the grid step).
+
+    ``f'(x_0) ~= sum_j w_j f(x_0 + offsets[j] h) / h``, exact for polynomials of degree ``len(offsets) - 1``. The
+    Vandermonde system is solved in exact rational arithmetic, so the weights carry no conditioning error.
+    """
+    m = len(offsets)
+    if m < 2 or len(set(offsets)) != m:
+        raise ValidationError("A finite-difference stencil needs at least two distinct offsets.")
+
+    # Rows k = 0..m-1: sum_j w_j o_j^k / k! = delta_{k,1}
+    matrix = [[Fraction(o) ** k / factorial(k) for o in offsets] + [Fraction(int(k == 1))] for k in range(m)]
+    for col in range(m):
+        pivot = next(row for row in range(col, m) if matrix[row][col] != 0)
+        matrix[col], matrix[pivot] = matrix[pivot], matrix[col]
+        for row in range(m):
+            if row != col and matrix[row][col] != 0:
+                factor = matrix[row][col] / matrix[col][col]
+                matrix[row] = [a - factor * b for a, b in zip(matrix[row], matrix[col], strict=True)]
+    weights = np.array([float(matrix[k][m] / matrix[k][k]) for k in range(m)])
+    weights.flags.writeable = False
+    return weights
+
+
+def uniform_grid_derivative(samples: np.ndarray, step: float, n_points: int) -> np.ndarray:
+    """
+    First derivative along axis 0 of samples taken on a uniform grid with spacing ``step``.
+
+    Each point uses the ``n_points`` nearest samples: a centered stencil in the interior and shifted (one-sided)
+    stencils near the boundaries, so the accuracy order ``n_points - 1`` is the same everywhere.
+    """
+    n = samples.shape[0]
+    if not 2 <= n_points <= n:
+        raise ValidationError(f"n_points must be between 2 and the number of samples ({n}); got {n_points}.")
+
+    derivative = np.zeros(samples.shape, dtype=np.result_type(samples.dtype, float))
+    half = n_points // 2
+    # Stencil start for every point; points sharing the same relative stencil form one contiguous range.
+    starts = np.clip(np.arange(n) - half, 0, n - n_points)
+    relative = starts - np.arange(n)
+    boundaries = np.flatnonzero(np.diff(relative)) + 1
+    for block in np.split(np.arange(n), boundaries):
+        first, last = int(block[0]), int(block[-1]) + 1
+        offsets = tuple(int(relative[first]) + j for j in range(n_points))
+        weights = finite_difference_weights(offsets)
+        for offset, weight in zip(offsets, weights, strict=True):
+            derivative[first:last] += weight * samples[first + offset : last + offset]
+
+    return derivative / step

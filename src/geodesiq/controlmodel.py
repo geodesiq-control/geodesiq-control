@@ -10,7 +10,15 @@ from scipy.differentiate import jacobian
 from scipy.integrate import romb, solve_ivp
 from scipy.interpolate import PchipInterpolator
 
-from ._utils import Flags, build_diab, is_hermitian, validate_state_index, values_equal
+from ._utils import (
+    Flags,
+    build_diab,
+    is_hermitian,
+    limit_blas_threads,
+    uniform_grid_derivative,
+    validate_state_index,
+    values_equal,
+)
 from .exceptions import (
     ImmutableConfigurationError,
     InvalidControlParameterError,
@@ -60,6 +68,12 @@ class ControlModel:
     _METRIC_RTOL = 1e-20
     # Default number of samples of the normalized pulse when solve_problem() is first called without one.
     _DEFAULT_PULSE_ACCURACY = 1000
+    # Numerical dH/dx: finite differences of order _FD_ORDER on the already sampled control grid. Points where the
+    # difference with the order (_FD_ORDER - 2) estimate exceeds _FD_RTOL * max|dH/dx| are recomputed with the
+    # adaptive scipy.differentiate.jacobian, as are all points of grids with fewer than _FD_MIN_POINTS samples.
+    _FD_ORDER = 8
+    _FD_RTOL = 1e-8
+    _FD_MIN_POINTS = 5
 
     def __init__(
         self,
@@ -767,7 +781,8 @@ class ControlModel:
                     )
 
         try:
-            energies, eigenvectors = np.linalg.eigh(hamiltonian_centered)
+            with limit_blas_threads(dimension):
+                energies, eigenvectors = np.linalg.eigh(hamiltonian_centered)
         except np.linalg.LinAlgError as exc:
             raise SolverError("Hamiltonian eigendecomposition failed.") from exc
 
@@ -781,13 +796,14 @@ class ControlModel:
             assert self._H_c is not None
             full_partial_H = self._H_c
         elif self._flag_numerical_partial_H:
-            full_partial_H = self._compute_numerical_partial_H()
+            full_partial_H = self._compute_numerical_partial_H(full_hamiltonian)
         else:
             full_partial_H = np.stack(
                 [self._call_partial_hamiltonian(**self._evaluation_kwargs(value)) for value in self._control_pulse]
             )
 
-        matrix_elements = np.abs(eigenvectors.conj().transpose(0, 2, 1) @ full_partial_H @ eigenvectors)
+        with limit_blas_threads(dimension):
+            matrix_elements = np.abs(eigenvectors.conj().transpose(0, 2, 1) @ full_partial_H @ eigenvectors)
         if not np.all(np.isfinite(matrix_elements)):
             raise SolverError("Hamiltonian derivative matrix elements contain non-finite values.")
         self._matrix_elements = matrix_elements
@@ -951,25 +967,23 @@ class ControlModel:
             )
         self._metric_tensor = metric
 
-    def _compute_numerical_partial_H(
-        self,
-        order: int = 8,
-    ) -> np.ndarray:
+    def _compute_numerical_partial_H(self, samples: np.ndarray | None = None) -> np.ndarray:
         """
-        Evaluate dH/dx at every point of a real-valued grid.
+        Evaluate dH/dx at every point of the (uniform) control grid.
 
-        H_func is assumed not to be vectorized: it accepts one scalar x
-        and returns a real- or complex-valued Hamiltonian.
+        The derivative is first computed with finite differences of the Hamiltonian samples on the grid, which needs
+        no extra Hamiltonian evaluations. Its error is estimated by comparison with a lower-order stencil, and points
+        where the estimate is too large are recomputed with the adaptive ``scipy.differentiate.jacobian``.
 
         Parameters
         ----------
-        order: int
-            Order of the finite-difference formula.
+        samples : np.ndarray | None
+            Hamiltonian evaluated on the control grid, with shape (n_points, *H_shape). Evaluated if not given.
 
         Returns
         -------
         dH_dx
-            Derivative with shape (n_points, *H_shape).
+            Complex derivative with shape (n_points, *H_shape).
         """
         if self._control_pulse is None:
             raise SolverError("x_grid is unavailable before the eigenproblem grid is initialized.")
@@ -985,20 +999,49 @@ class ControlModel:
         if not np.all(np.isfinite(x_grid)):
             raise ValidationError("x_grid must contain only finite values.")
 
-        unique_x = np.unique(x_grid)
-
-        if unique_x.size < 2:
+        if np.unique(x_grid).size < 2:
             raise ValidationError("x_grid must contain at least two distinct points.")
 
+        if samples is None:
+            samples = np.stack([self.evaluate_hamiltonian(float(x)) for x in x_grid])
+        samples = np.asarray(samples, dtype=np.complex128)
+        if samples.shape[0] != x_grid.size:
+            raise SolverError("Hamiltonian samples do not match the control grid.")
+
+        n_points = x_grid.size
+        steps = np.diff(x_grid)
+        step = float(steps[0])
+        uniform = step != 0 and np.allclose(steps, step, rtol=1e-9, atol=0.0)
+
+        if uniform and n_points >= self._FD_MIN_POINTS:
+            stencil = min(self._FD_ORDER + 1, n_points)
+            derivative = uniform_grid_derivative(samples, step, stencil)
+            estimate = uniform_grid_derivative(samples, step, stencil - 2)
+            error = np.max(np.abs(derivative - estimate), axis=tuple(range(1, samples.ndim)))
+            tolerance = self._FD_RTOL * float(np.max(np.abs(derivative)))
+            inaccurate = error > tolerance
+        else:
+            derivative = np.zeros_like(samples)
+            inaccurate = np.ones(n_points, dtype=bool)
+
+        if np.any(inaccurate):
+            derivative[inaccurate] = self._jacobian_partial_H(x_grid, inaccurate, samples)
+
+        return derivative
+
+    def _jacobian_partial_H(self, x_grid: np.ndarray, selected: np.ndarray, samples: np.ndarray) -> np.ndarray:
+        """
+        Adaptive dH/dx at the ``selected`` points of ``x_grid`` with ``scipy.differentiate.jacobian``.
+
+        H_func is assumed not to be vectorized: it accepts one scalar x and returns a real- or complex-valued
+        Hamiltonian. Steps never leave the domain of the grid (one-sided differences at its boundaries).
+        """
+        order = self._FD_ORDER
+        unique_x = np.unique(x_grid)
         initial_step = float(np.min(np.diff(unique_x)))
 
-        # Scalar evaluations to determine the Hamiltonian shape and its scale.
-        H_reference = np.asarray(
-            self.evaluate_hamiltonian(float(x_grid[0])),
-            dtype=np.complex128,
-        )
-        H_end = np.asarray(self.evaluate_hamiltonian(float(x_grid[-1])), dtype=np.complex128)
-
+        H_reference = samples[0]
+        H_end = samples[-1]
         H_shape = H_reference.shape
         n_elements = H_reference.size
 
@@ -1059,14 +1102,15 @@ class ControlModel:
         # Use one-sided differences at the two domain boundaries.
         x_min = np.min(x_grid)
         x_max = np.max(x_grid)
+        points = x_grid[selected]
 
-        step_direction = np.zeros_like(x_grid, dtype=int)
-        step_direction[x_grid - x_min < initial_step] = 1
-        step_direction[x_max - x_grid < initial_step] = -1
+        step_direction = np.zeros_like(points, dtype=int)
+        step_direction[points - x_min < initial_step] = 1
+        step_direction[x_max - points < initial_step] = -1
 
         result = jacobian(
             packed_hamiltonian,
-            x_grid[np.newaxis, :],
+            points[np.newaxis, :],
             order=order,
             initial_step=initial_step,
             step_direction=step_direction[np.newaxis, :],
@@ -1094,7 +1138,7 @@ class ControlModel:
                 finite_errors = point_errors[np.isfinite(point_errors)]
                 max_error = float(np.max(finite_errors)) if finite_errors.size else np.nan
 
-                details.append(f"x={x_grid[index]:.6g}: status={statuses.tolist()}, max_error={max_error:.3e}")
+                details.append(f"x={points[index]:.6g}: status={statuses.tolist()}, max_error={max_error:.3e}")
 
             raise SolverError(
                 "Numerical differentiation failed to converge at "
@@ -1112,7 +1156,7 @@ class ControlModel:
 
         # Convert from (*H_shape, n_points) to
         # (n_points, *H_shape).
-        dH_dx = dH_flat.reshape(H_shape + (x_grid.size,))
+        dH_dx = dH_flat.reshape(H_shape + (points.size,))
 
         return np.moveaxis(dH_dx, -1, 0)
 

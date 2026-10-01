@@ -40,6 +40,13 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   `ValidationError` (was `MissingArgsError`) before anything else is checked. `txt` files are now whitespace-delimited
   (`csv` stays comma-delimited).
 - `matplotlib.pyplot` is imported lazily by `ControlModel` plotting methods.
+- The numerical derivative of the Hamiltonian is computed with 8th-order finite differences of the samples that the
+  eigenproblem already evaluated, instead of `scipy.differentiate.jacobian` at every grid point. This removes the ~11
+  extra Hamiltonian evaluations per grid point (about 9x faster for a 16-level model). The adaptive `jacobian` is still
+  used where the finite-difference error estimate is too large, e.g. near a kink.
+- Batched eigendecompositions and the `Dynamics` solvers run BLAS/LAPACK single-threaded for Hilbert spaces up to
+  dimension 256 (via the new `threadpoolctl` dependency). Multi-threading many small independent problems is slower,
+  in some environments by more than 10x: the 64-level eigenproblem went from 10.7 s to 0.35 s on a 24-core machine.
 
 ### Fixed
 

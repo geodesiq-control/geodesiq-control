@@ -219,6 +219,8 @@ def test_numerical_derivative_rejects_failed_jacobian(monkeypatch, status_code: 
         return SimpleNamespace(df=df, success=success, status=status, error=error, )
 
     monkeypatch.setattr("geodesiq.controlmodel.jacobian", failed_jacobian, )
+    # Grids smaller than _FD_MIN_POINTS skip the finite-difference stage and use the adaptive jacobian everywhere.
+    monkeypatch.setattr(ControlModel, "_FD_MIN_POINTS", 100)
 
     with pytest.raises(SolverError) as exc_info:
         model._solve_eigenproblem()
@@ -524,3 +526,74 @@ class TestPlotEigenvaluesAfterReconfiguration:
 
         assert all(len(line.get_xdata()) == 33 for line in ax.get_lines())
         plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Numerical derivative on the sampled grid
+# ---------------------------------------------------------------------------
+class TestGridNumericalDerivative:
+    def test_smooth_hamiltonian_needs_no_extra_evaluations(self):
+        calls = []
+
+        def hamiltonian(lam: float) -> np.ndarray:
+            calls.append(lam)
+            return np.array([[np.sin(lam), 0.5], [0.5, -np.sin(lam)]])
+
+        model = ControlModel(hamiltonian)
+        model.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0,
+                          beta=2.0, num_steps=129, )
+
+        model._solve_eigenproblem()
+
+        assert len(calls) == 129
+
+    def test_smooth_derivative_is_accurate(self, monkeypatch):
+        def hamiltonian(lam: float) -> np.ndarray:
+            return np.array([[np.sin(3 * lam), 1j * lam ** 3], [-1j * lam ** 3, np.exp(lam)]])
+
+        model = ControlModel(hamiltonian)
+        model.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0,
+                          beta=2.0, num_steps=129, )
+        model._solve_eigenproblem()
+
+        def no_jacobian(*args, **kwargs):
+            raise AssertionError("The adaptive fallback should not be needed for a smooth Hamiltonian.")
+
+        monkeypatch.setattr("geodesiq.controlmodel.jacobian", no_jacobian)
+        derivative = model._compute_numerical_partial_H()
+
+        x = model.control_pulse
+        expected = np.zeros((x.size, 2, 2), dtype=complex)
+        expected[:, 0, 0] = 3 * np.cos(3 * x)
+        expected[:, 0, 1] = 3j * x ** 2
+        expected[:, 1, 0] = -3j * x ** 2
+        expected[:, 1, 1] = np.exp(x)
+        np.testing.assert_allclose(derivative, expected, atol=1e-9)
+
+    def test_kink_falls_back_to_adaptive_jacobian_only_near_the_kink(self, monkeypatch):
+        kink = 0.0123
+
+        def hamiltonian(lam: float) -> np.ndarray:
+            return np.array([[abs(lam - kink), 1.0], [1.0, -abs(lam - kink)]])
+
+        model = ControlModel(hamiltonian)
+        model.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0,
+                          beta=2.0, num_steps=65, )
+        model._solve_eigenproblem()
+
+        import geodesiq.controlmodel as controlmodel_module
+
+        fallback_points = []
+        original_jacobian = controlmodel_module.jacobian
+
+        def spy_jacobian(func, x, **kwargs):
+            fallback_points.extend(np.ravel(x).tolist())
+            return original_jacobian(func, x, **kwargs)
+
+        monkeypatch.setattr(controlmodel_module, "jacobian", spy_jacobian)
+        derivative = model._compute_numerical_partial_H()
+
+        x = model.control_pulse
+        assert 0 < len(fallback_points) < x.size // 2
+        assert all(abs(point - kink) < 0.3 for point in fallback_points)
+        np.testing.assert_allclose(derivative[:, 0, 0].real, np.sign(x - kink), atol=1e-6)

@@ -3,7 +3,7 @@ from typing import Any, List, Optional, Tuple, cast
 import numpy as np
 import qutip as qt
 
-from ._utils import validate_state_index
+from ._utils import limit_blas_threads, validate_state_index
 from .controlmodel import ControlModel
 from .decompose_hamiltonian import decompose_hamiltonian
 from .exceptions import ConfigurationError, MissingArgsError, ValidationError
@@ -105,6 +105,8 @@ class Dynamics:
         self.evaluate_hamiltonian = lambda control_value: model.evaluate_hamiltonian(float(control_value))
         self._initial_state: int | None = model.initial_state
         self._final_state: int | None = model.final_state
+        if model.hamiltonian_dimension is None:
+            model.evaluate_hamiltonian(float(self._pulse[0]))  # Fixes the dimension of callable models
         self._hamiltonian_dimension: int | None = model.hamiltonian_dimension
 
         if model.affine_hamiltonian:
@@ -120,7 +122,9 @@ class Dynamics:
                 order=3,
             )
         else:
-            self._qevo = decompose_hamiltonian(self._get_ham, self._pulse_times, drift="mean", rtol=1e-10).qobjevo()
+            with self._blas_threads():
+                decomposition = decompose_hamiltonian(self._get_ham, self._pulse_times, drift="mean", rtol=1e-10)
+            self._qevo = decomposition.qobjevo()
 
     @staticmethod
     def _validate_custom_pulse(times: np.ndarray, pulse: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -172,9 +176,14 @@ class Dynamics:
         """Total duration of the pulse."""
         return self._duration
 
+    def _blas_threads(self) -> Any:
+        """Context limiting BLAS/LAPACK to one thread for small Hilbert spaces (see ``limit_blas_threads``)."""
+        return limit_blas_threads(self._hamiltonian_dimension or 0)
+
     def _eigenstate(self, control_value: float, state_index: int) -> qt.Qobj:
         hamiltonian = qt.Qobj(self.evaluate_hamiltonian(control_value))
-        _, eigenstates = hamiltonian.eigenstates()
+        with self._blas_threads():
+            _, eigenstates = hamiltonian.eigenstates()
         return eigenstates[state_index]
 
     def _get_ham(self, t: float) -> qt.Qobj:
@@ -206,12 +215,14 @@ class Dynamics:
             # Integrate through every sample time (as for the full propagator), but keep only the final operator.
             identity = qt.qeye(self._qevo.dims[0])
             options = {"store_final_state": True, "store_states": False}
-            result = qt.sesolve(self._qevo, identity, cast(Any, pulse_times), options=options)
+            with self._blas_threads():
+                result = qt.sesolve(self._qevo, identity, cast(Any, pulse_times), options=options)
             if result.final_state is None:
                 raise ValidationError("Time evolution did not return a final propagator.")
             return [result.final_state]
 
-        propagator = qt.propagator(self._qevo, cast(Any, pulse_times))
+        with self._blas_threads():
+            propagator = qt.propagator(self._qevo, cast(Any, pulse_times))
         if isinstance(propagator, list):
             return propagator
         return [propagator]
@@ -297,8 +308,8 @@ class Dynamics:
 
         options = {"store_final_state": True, "store_states": False}
 
-        result = qt.mesolve(self._qevo, psi_init, cast(Any, pulse_times), c_ops=cast(Any, c_ops), options=options)
-
+        with self._blas_threads():
+            result = qt.mesolve(self._qevo, psi_init, cast(Any, pulse_times), c_ops=cast(Any, c_ops), options=options)
 
         psi_f = result.final_state
         if psi_f is None:

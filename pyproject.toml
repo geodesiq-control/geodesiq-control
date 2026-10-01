@@ -35,6 +35,7 @@ dependencies = [
     "scipy>=1.15",
     "qutip>=5.0.4",
     "matplotlib>=3.9",
+    "threadpoolctl>=3.1",
 ]
 
 [project.urls]
