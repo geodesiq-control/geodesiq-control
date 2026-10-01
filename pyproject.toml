@@ -40,7 +40,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/geodesiq-control/geodesiq-control"
-Documentation = "https://github.com/geodesiq-control/geodesiq-control/tree/main/docs"
+Documentation = "https://geodesiq.readthedocs.io"
 Repository = "https://github.com/geodesiq-control/geodesiq-control"
 Issues = "https://github.com/geodesiq-control/geodesiq-control/issues"
 Changelog = "https://github.com/geodesiq-control/geodesiq-control/blob/main/CHANGELOG.md"
@@ -68,6 +68,12 @@ bench = [
     "tqdm>=4.68",
     "qutip_qtrl>=0.2.0"
 ]
+docs = [
+    "mkdocs>=1.6,<2",  # MkDocs 2.0 drops the plugin system that mkdocstrings needs.
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.26",
+    "ruff>=0.15.20",  # Used by mkdocstrings to format the signatures in the API reference.
+]
 notebooks = [
     "ipykernel==6.29.5", # Pinned because newer releases have caused ipywidgets regressions.
     "ipympl>=0.10.0",
@@ -84,6 +90,7 @@ dev = [
     { include-group = "lint" },
     { include-group = "build" },
     { include-group = "bench" },
+    { include-group = "docs" },
     { include-group = "notebooks" },
     "jupyterlab-code-formatter>=3.1.0",
     "jupyterlab-lsp>=5.3.0",

@@ -51,6 +51,8 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Dev
 
+- Documentation site built with MkDocs and mkdocstrings and hosted on Read the Docs (`.readthedocs.yaml`):
+  https://geodesiq.readthedocs.io. Docstrings use the numpy style.
 - `tests/conftest.py` selects the non-interactive matplotlib backend for all tests.
 - Coverage gate raised from 70% to 90%; CI also lints `tests/` and checks the formatting of `src/`.
 - New tests: Landau-Zener transition probability of `Dynamics`, finite-difference derivative and its fallback, BLAS

@@ -182,6 +182,7 @@ class ControlModel:
 
     @property
     def hamiltonian_dimension(self) -> int | None:
+        """Dimension of the Hilbert space, or None before the Hamiltonian has been evaluated."""
         return self._hamiltonian_dimension
 
     def _call_hamiltonian(self, *args: Any, **kwargs: Any) -> np.ndarray:
@@ -296,6 +297,7 @@ class ControlModel:
     # and updates the flags in a single place. Assigning None keeps the previous value.
     @property
     def H_func(self) -> Callable[..., np.ndarray] | None:
+        """Hamiltonian function, or None for affine models defined by H_d and H_c."""
         return self._H_func
 
     @H_func.setter
@@ -314,6 +316,7 @@ class ControlModel:
 
     @property
     def partial_H_func(self) -> Callable[..., np.ndarray] | None:
+        """Analytical derivative of the Hamiltonian, or None when the numerical derivative is used."""
         return self._partial_H_func
 
     @partial_H_func.setter
@@ -351,6 +354,7 @@ class ControlModel:
 
     @property
     def control_name(self) -> str | None:
+        """Name of the control parameter in the Hamiltonian function."""
         return self._control_name
 
     @control_name.setter
@@ -359,6 +363,7 @@ class ControlModel:
 
     @property
     def pulse_initial(self) -> float | None:
+        """Value of the control parameter at the start of the pulse."""
         return self._pulse_initial
 
     @pulse_initial.setter
@@ -367,6 +372,7 @@ class ControlModel:
 
     @property
     def pulse_final(self) -> float | None:
+        """Value of the control parameter at the end of the pulse."""
         return self._pulse_final
 
     @pulse_final.setter
@@ -375,6 +381,7 @@ class ControlModel:
 
     @property
     def initial_state(self) -> int | None:
+        """Index (in increasing energy) of the initial eigenstate."""
         return self._initial_state
 
     @initial_state.setter
@@ -383,6 +390,7 @@ class ControlModel:
 
     @property
     def final_state(self) -> int | None:
+        """Index (in increasing energy) of the target eigenstate."""
         return self._final_state
 
     @final_state.setter
@@ -391,6 +399,7 @@ class ControlModel:
 
     @property
     def alpha(self) -> float | None:
+        """Exponent of the energy gaps in the adiabatic contribution to the metric."""
         return self._alpha
 
     @alpha.setter
@@ -399,6 +408,7 @@ class ControlModel:
 
     @property
     def beta(self) -> float | None:
+        """Exponent of the matrix elements in the adiabatic contribution to the metric."""
         return self._beta
 
     @beta.setter
@@ -407,6 +417,7 @@ class ControlModel:
 
     @property
     def dia_alpha(self) -> float | None:
+        """Exponent of the energy gaps in the diabatic contribution to the metric."""
         return self._dia_alpha
 
     @dia_alpha.setter
@@ -415,6 +426,7 @@ class ControlModel:
 
     @property
     def dia_beta(self) -> float | None:
+        """Exponent of the matrix elements in the diabatic contribution to the metric."""
         return self._dia_beta
 
     @dia_beta.setter
@@ -423,6 +435,7 @@ class ControlModel:
 
     @property
     def num_steps(self) -> int | None:
+        """Number of points of the control-parameter grid."""
         return self._num_steps
 
     @num_steps.setter
@@ -431,6 +444,7 @@ class ControlModel:
 
     @property
     def control_sol(self) -> np.ndarray:
+        """Return the optimal control pulse on the normalized time grid ``s``, solving the problem if needed."""
         if not self._flags["ode_solved"]:
             self.solve_problem()  # Attempt to solve the ODE if not already solved (same accuracy as last time)
         if self._control_sol is None:

@@ -25,11 +25,11 @@ class PulseControl:
         Initialize the PulseControl object with the control pulse and its duration. The samples are assumed to be
         uniformly spaced in time, from 0 to ``duration``.
 
-        Parameters:
-        -----------
-        pulse: np.ndarray
+        Parameters
+        ----------
+        pulse : np.ndarray
             Control pulse values, uniformly sampled in time.
-        duration: float
+        duration : float
             Duration of the control pulse (t_f).
         """
 
@@ -82,14 +82,14 @@ class PulseControl:
 
         Parameters
         ----------
-        linear_steps: int
+        linear_steps : int
             Number of samples (>= 2) of the piecewise linear approximation of the control pulse.
 
         Returns
         -------
-        new_time: np.ndarray
+        new_time : np.ndarray
             Physical time array for the piecewise linear approximation.
-        approx_sol: np.ndarray
+        approx_sol : np.ndarray
             Control pulse values corresponding to the new time array for the piecewise linear approximation.
 
         """
@@ -155,16 +155,16 @@ class PulseControl:
 
         Parameters
         ----------
-        cutoff_freq: float
+        cutoff_freq : float
             Cutoff frequency in units of 1 / time (e.g., Hz if time is in seconds) for the low-pass Butterworth filter.
-        filter_order: int
+        filter_order : int
             Order of the Butterworth filter.
 
         Returns
         -------
-        pulse_times: np.ndarray
+        pulse_times : np.ndarray
             Rescaled time array corresponding to the filtered control pulse.
-        filtered_pulse: np.ndarray
+        filtered_pulse : np.ndarray
             Returns the (butterworth-)filtered control pulse.
         """
         if not isinstance(cutoff_freq, (int, float, np.integer, np.floating)) or isinstance(cutoff_freq, bool):
@@ -200,9 +200,9 @@ class PulseControl:
 
         Parameters
         ----------
-        show: bool
+        show : bool
             Show plot before possibly adding plot_kwargs
-        plot_kwargs: dict
+        plot_kwargs : dict
             Dictionary of style changes to ax.plot()
 
         Returns
@@ -234,11 +234,11 @@ class PulseControl:
 
         Parameters
         ----------
-        filename: str | Path
+        filename : str | Path
             Name for the data file saved.
-        file_extension: str
+        file_extension : str
             Data type the pulse should be stored in (i.e. 'txt', 'npz', 'csv'). Default is 'npz'.
-        overwrite: bool
+        overwrite : bool
             Ensures accidental overwrites.
 
         Returns

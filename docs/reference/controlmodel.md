@@ -1,0 +1,3 @@
+# ControlModel
+
+::: geodesiq.ControlModel

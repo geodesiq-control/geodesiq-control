@@ -30,17 +30,17 @@ class Dynamics:
           ``PulseControl.filtered_pulse()`` or ``PulseControl.discretized_pulse()``. The model then only provides the
           Hamiltonian and the eigenstate boundary conditions.
 
-        Parameters:
-        -----------
+        Parameters
+        ----------
         model: ControlModel
             An instance of the ControlModel class containing the Hamiltonian and the system parameters.
-        duration: Optional[float]
+        duration : Optional[float]
             Duration of the optimal control pulse (t_f). Must not be combined with ``times`` and ``pulse``.
-        times: Optional[np.ndarray]
+        times : Optional[np.ndarray]
             Strictly increasing physical times at which ``pulse`` is sampled. Must be given together with ``pulse``.
-        pulse: Optional[np.ndarray]
+        pulse : Optional[np.ndarray]
             Control pulse values sampled at ``times``. Must be given together with ``times``.
-        hbar: float
+        hbar : float
             Reduced Planck's constant (default is 1).
         """
 
@@ -198,15 +198,15 @@ class Dynamics:
         """
         Compute the time evolution operator using the pulse ControlModel.
 
-        Parameters:
-        -----------
-        final_only: bool
+        Parameters
+        ----------
+        final_only : bool
             If True, return only the propagator at the end of the pulse instead of one per time sample. This avoids
             storing ``len(times)`` dense matrices, which matters for large Hilbert spaces.
 
-        Returns:
-        --------
-        propagators: List[qt.Qobj]
+        Returns
+        -------
+        propagators : List[qt.Qobj]
             Propagators U(t_i, t_0) for every time sample, or ``[U(t_f, t_0)]`` when ``final_only`` is True.
         """
         pulse_times: list[float] = np.asarray(self._pulse_times, dtype=float).tolist()
@@ -238,13 +238,13 @@ class Dynamics:
         explicitly given, then the time evolution is constructed. If integers of None are given then eigenstate
         evolution is assumed.
 
-        Parameters:
-        -----------
-        initial_state: Optional[np.ndarray, int or qt.Qobj]
+        Parameters
+        ----------
+        initial_state : Optional[np.ndarray, int or qt.Qobj]
             Initial state for pulsed time evolution.
-        final_state: Optional[np.ndarray, int or qt.Qobj]
+        final_state : Optional[np.ndarray, int or qt.Qobj]
             Final state for pulsed time evolution.
-        c_ops: Optional[list]
+        c_ops : Optional[list]
             Collapse operators (passed as a list of Qobj or np.ndarray) for the Lindblad master equation.
 
         """
@@ -328,19 +328,19 @@ class Dynamics:
         """
         Compute average gate fidelity given the pulsed time evolution operator in the explicit real-time duration given.
 
-        Parameters:
-        -----------
-        gate: Optional[qt.Qobj]
+        Parameters
+        ----------
+        gate : Optional[qt.Qobj]
             The resulting pulsed gate operation.
-        target_gate: Optional[qt.Qobj | np.ndarray]
+        target_gate : Optional[qt.Qobj | np.ndarray]
             The target gate operation.
-        final_only: bool
+        final_only : bool
             Only used when ``gate`` is None: if True, compute the fidelity of the final propagator only (see
             ``time_evolution_operator``).
 
-        Returns:
-        --------
-        gate_fid: List[float]
+        Returns
+        -------
+        gate_fid : List[float]
             A list of average gate fidelities for each time step in the pulse duration (a single value when
             ``final_only`` is True).
         """

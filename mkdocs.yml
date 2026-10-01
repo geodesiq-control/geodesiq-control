@@ -1,0 +1,66 @@
+site_name: geodesiq
+site_description: Geometric optimal control of quantum systems.
+# Read the Docs sets the canonical URL of every built version (latest, stable, 0.3.0, ...).
+site_url: !ENV [ READTHEDOCS_CANONICAL_URL, "https://geodesiq.readthedocs.io/en/latest/" ]
+repo_url: https://github.com/geodesiq-control/geodesiq-control
+repo_name: geodesiq-control/geodesiq-control
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; David Fernández Fernández and Christian Ventura Meinersen
+
+theme:
+  name: material
+  logo: images/geodesiq_logo.svg
+  favicon: images/geodesiq_logo.svg
+  features:
+    - content.code.copy
+    - navigation.sections
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+nav:
+  - Home: index.md
+  - User guide: api.md
+  - API reference:
+      - ControlModel: reference/controlmodel.md
+      - PulseControl: reference/pulses.md
+      - Dynamics: reference/dynamics.md
+      - decompose_hamiltonian: reference/decompose_hamiltonian.md
+      - Exceptions and warnings: reference/exceptions.md
+      - about: reference/about.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - toc:
+      permalink: true
+
+extra_javascript:
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [ src ]
+          options:
+            docstring_style: numpy
+            members_order: source
+            merge_init_into_class: true
+            separate_signature: true
+            show_signature_annotations: true
+            show_root_heading: true
+            show_source: false
+            filters: [ "!^_" ]

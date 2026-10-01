@@ -1,0 +1,25 @@
+# Read the Docs build configuration: https://docs.readthedocs.com/platform/stable/config-file/v2.html
+version: 2
+
+build:
+  os: ubuntu-24.04
+  tools:
+    python: "3.13"
+  jobs:
+    # Read the Docs runs `uv sync --group docs`, which also installs the default `dev` group of pyproject.toml
+    # (Jupyter, quspin, ...). Install only the documentation tools instead. The API reference is generated from the
+    # sources in src/ without importing geodesiq, so the package itself is not needed.
+    install:
+      - uv sync --only-group docs
+
+# Selecting uv makes Read the Docs install uv and create the environment with `uv venv`; the command itself is
+# replaced by build.jobs.install above.
+python:
+  install:
+    - method: uv
+      command: sync
+      groups: [ docs ]
+
+mkdocs:
+  configuration: mkdocs.yml
+  fail_on_warning: true
