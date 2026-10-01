@@ -6,6 +6,12 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ## [Unreleased]
 
+### Added
+
+- `PulseControl.plot_pulse()` accepts optional `fig` and `ax` arguments to draw on an existing figure, subfigure or
+  axis, like `ControlModel.plot_eigenvalues()` and `ControlModel.plot_metric_tensor()`. A provided figure is never
+  closed; pass `show=False` to keep drawing on it.
+
 ## [0.3.0] - 2026-10-01
 
 ### Added

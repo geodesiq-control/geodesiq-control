@@ -94,6 +94,47 @@ def test_plot_pulse_with_show_invokes_matplotlib_show(default_pulse, monkeypatch
     assert isinstance(ax, Axes)
 
 
+def test_plot_pulse_on_provided_axes(default_pulse):
+    """A provided axis is drawn on, its figure is returned, and it is not closed."""
+    import matplotlib.pyplot as plt
+
+    fig, (ax_left, ax_right) = plt.subplots(1, 2)
+    out_fig, out_ax = default_pulse.plot_pulse(ax=ax_right, show=False)
+
+    assert out_ax is ax_right
+    assert out_fig is fig
+    assert len(ax_right.lines) == 1
+    assert len(ax_left.lines) == 0
+    assert plt.fignum_exists(fig.number)
+    plt.close(fig)
+
+
+def test_plot_pulse_on_provided_figure(default_pulse):
+    """A provided figure without an axis gets a new subplot and is not closed."""
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure()
+    out_fig, ax = default_pulse.plot_pulse(fig=fig, show=False)
+
+    assert out_fig is fig
+    assert ax in fig.axes
+    assert plt.fignum_exists(fig.number)
+    plt.close(fig)
+
+
+def test_plot_pulse_on_provided_subfigure(default_pulse):
+    """A provided SubFigure gets a new subplot and is returned."""
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure()
+    subfig = fig.subfigures(1, 2)[0]
+    out_fig, ax = default_pulse.plot_pulse(fig=subfig, show=False)
+
+    assert out_fig is subfig
+    assert ax in subfig.axes
+    plt.close(fig)
+
+
 # ------------------------------------------------------------
 # Testing export_pulse method
 # ------------------------------------------------------------

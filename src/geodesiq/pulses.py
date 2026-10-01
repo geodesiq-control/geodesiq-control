@@ -10,7 +10,7 @@ from .exceptions import IOErrorGeodesiQ, ValidationError
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
-    from matplotlib.figure import Figure
+    from matplotlib.figure import Figure, SubFigure
 
 
 class PulseControl:
@@ -194,33 +194,46 @@ class PulseControl:
 
         return self._pulse_times.copy(), filtered_pulse
 
-    def plot_pulse(self, show: bool = True, **plot_kwargs: Any) -> "Tuple[Figure, Axes]":
+    def plot_pulse(
+        self,
+        fig: "Figure | SubFigure | None" = None,
+        ax: "Axes | None" = None,
+        show: bool = True,
+        **plot_kwargs: Any,
+    ) -> "Tuple[Figure | SubFigure, Axes]":
         """
         Plot the (real-time) control pulse.
 
         Parameters
         ----------
+        fig, ax
+            Optional matplotlib figure/axis. If not provided, they are created. When ``ax`` is given, the pulse is
+            drawn on it and ``fig`` is ignored.
         show : bool
-            Show plot before possibly adding plot_kwargs
+            Whether to call ``plt.show()``. Pass ``show=False`` to keep drawing on a provided figure/axis.
         plot_kwargs : dict
             Dictionary of style changes to ax.plot()
 
         Returns
         -------
-        fig, ax: Figure, Axes
+        fig, ax: Figure | SubFigure, Axes
             Figure and axes for the construction of a custom plot.
 
         """
         import matplotlib.pyplot as plt
 
-        fig, ax = plt.subplots()
+        if ax is None:
+            if fig is None:
+                fig, ax = plt.subplots()
+            else:
+                ax = fig.add_subplot(111)
+        fig = ax.figure
+
         ax.plot(self._pulse_times, self._pulse, **plot_kwargs)
         ax.set_xlabel("Time $t$")
         ax.set_ylabel("Control Pulse")
         if show:
             plt.show()
-        else:
-            plt.close(fig)
 
         return fig, ax
 
