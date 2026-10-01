@@ -221,3 +221,5 @@ draft/*
 
 # Lock file of the benchmark runner (created while it writes the history)
 benchmarks/results/benchmark_history.parquet.lock
+
+.claude/*
