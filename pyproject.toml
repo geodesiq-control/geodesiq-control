@@ -107,6 +107,7 @@ include = [
     "/README.md",
     "/LICENSE",
     "/CHANGELOG.md",
+    "/CITATION.cff",
 ]
 
 exclude = [

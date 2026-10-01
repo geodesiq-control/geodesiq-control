@@ -16,6 +16,7 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 - `final_only` option in `Dynamics.time_evolution_operator()` and `Dynamics.average_gate_fidelity()` to keep only the
   final propagator instead of one dense matrix per time sample.
 - `ControlModel.s` read-only property with the normalized time grid of the control solution.
+- `CITATION.cff` with the citation metadata of the package.
 
 ### Changed
 
@@ -55,6 +56,7 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 - New tests: Landau-Zener transition probability of `Dynamics`, finite-difference derivative and its fallback, BLAS
   thread limiting.
 - `dynamics_dim_scaling` benchmark scenario for `Dynamics` (callable and affine models).
+- `dev/bump_version.py` also updates the version in `CITATION.cff`.
 - The lock file of the benchmark runner (`benchmark_history.parquet.lock`) is no longer tracked.
 
 ### Fixed

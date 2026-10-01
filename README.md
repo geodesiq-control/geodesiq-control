@@ -90,8 +90,9 @@ Top-level imports are intentionally kept small and explicit:
 
 # Citing `geodesiq`
 
-If you use `geodesiq` in your research, please cite the reference paper
-available [here](https://github.com/geodesiq-control/geodesiq-control).
+If you use `geodesiq` in your research, please cite it. The citation metadata is in
+[`CITATION.cff`](https://github.com/geodesiq-control/geodesiq-control/blob/main/CITATION.cff), and GitHub's
+"Cite this repository" button exports it as BibTeX or APA.
 
 ## Development
 
