@@ -46,7 +46,7 @@ for _p in (str(_ROOT), str(_HERE)):
         sys.path.insert(0, _p)
 
 import geodesiq  # noqa: E402 (must be after sys.path setup)
-from geodesiq import ControlModel  # noqa: E402
+from geodesiq import ControlModel, Dynamics  # noqa: E402
 
 # relative import works when run as module; absolute when run as script
 try:
@@ -68,6 +68,8 @@ _CALIBRATION_MAX_N = 100  # never run more than 100 inner loops
 DIMS = [2, 4, 8, 16, 32, 64]
 NUM_STEPS_LIST = [2 ** k + 1 for k in (5, 7, 9, 11)]  # 33, 129, 513, 2049
 PULSE_ACCURACIES = [50, 100, 250, 500, 1000, 2000]
+DYNAMICS_DURATION = 20.0
+DYNAMICS_PULSE_ACCURACY = 200
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +171,29 @@ def benchmark_ham(ham: ControlModel, pulse_accuracy: int = 1000, n_repeat: int =
     n = _calibrate_n(_bench_total)
     results["total"] = {"n_inner": n, **_stats(_time_fn(_bench_total, n, n_repeat))}
 
+    return results
+
+
+def benchmark_dynamics(ham: ControlModel, duration: float = DYNAMICS_DURATION,
+                       pulse_accuracy: int = DYNAMICS_PULSE_ACCURACY, n_repeat: int = _DEFAULT_N_REPEAT,
+                       ) -> dict[str, dict]:
+    """
+    Benchmark :class:`~geodesiq.Dynamics` for a solved model: construction (Hamiltonian decomposition for callable
+    models), closed-system state fidelity, and the final propagator.
+    """
+    ham.solve_problem(pulse_accuracy=pulse_accuracy)
+    dynamics = Dynamics(ham, duration=duration)
+
+    stages: dict[str, Callable[[], object]] = {
+        "dynamics_init": lambda: Dynamics(ham, duration=duration),
+        "state_fidelity": dynamics.state_fidelity,
+        "final_propagator": lambda: dynamics.time_evolution_operator(final_only=True),
+    }
+
+    results: dict[str, dict] = {}
+    for stage, fn in stages.items():
+        n = _calibrate_n(fn)
+        results[stage] = {"n_inner": n, **_stats(_time_fn(fn, n, n_repeat))}
     return results
 
 
@@ -285,6 +310,23 @@ def run_pulse_accuracy_scaling(meta: dict, n_repeat: int) -> list[dict]:
     return rows
 
 
+def run_dynamics_dim_scaling(meta: dict, n_repeat: int) -> list[dict]:
+    """
+    **Scenario: dynamics_dim_scaling**
+
+    Times the :class:`~geodesiq.Dynamics` stages (construction / state fidelity / final propagator) as the
+    Hilbert-space dimension grows, for the same Hamiltonian given as a callable (decomposed numerically) and as
+    affine ``H_d``/``H_c`` matrices.
+    """
+    rows: list[dict] = []
+    for dim in tqdm(DIMS, desc="  dynamics_dim_scaling", leave=False):
+        for variant, affine in (("callable", False), ("affine", True)):
+            ham = make_ham(dim=dim, num_steps=2 ** 8 + 1, analytical_partial=True, affine=affine)
+            res = benchmark_dynamics(ham, n_repeat=n_repeat)
+            rows += _make_rows("dynamics_dim_scaling", "dim", dim, variant, res, meta)
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # Scenario registry
 # ---------------------------------------------------------------------------
@@ -293,7 +335,8 @@ SCENARIOS: dict[str, Callable[..., list[dict]]] = {"dim_scaling": run_dim_scalin
                                                    "num_steps_scaling": run_num_steps_scaling,
                                                    "analytical_vs_numerical": run_analytical_vs_numerical,
                                                    "adiabatic_vs_diabatic": run_adiabatic_vs_diabatic,
-                                                   "pulse_accuracy_scaling": run_pulse_accuracy_scaling, }
+                                                   "pulse_accuracy_scaling": run_pulse_accuracy_scaling,
+                                                   "dynamics_dim_scaling": run_dynamics_dim_scaling, }
 
 
 # ---------------------------------------------------------------------------

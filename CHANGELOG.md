@@ -48,6 +48,10 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   dimension 256 (via the new `threadpoolctl` dependency). Multi-threading many small independent problems is slower,
   in some environments by more than 10x: the 64-level eigenproblem went from 10.7 s to 0.35 s on a 24-core machine.
 
+### Dev
+
+- `dynamics_dim_scaling` benchmark scenario for `Dynamics` (callable and affine models).
+
 ### Fixed
 
 - `PulseControl.export_pulse()` wrote `txt`/`csv` values with 8 fixed decimals, so e.g. nanosecond times in seconds were

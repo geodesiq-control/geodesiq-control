@@ -82,7 +82,7 @@ def _chain_H_dH(N: int, coupling: float = 0.5, seed: int = 42):
 
 def make_ham(dim: int = 2, num_steps: int = 2 ** 8 + 1, analytical_partial: bool = True, adiabatic: bool = True,
              pulse_initial: float = -5.0, pulse_final: float = 5.0, alpha: float = 2.0, beta: float = 2.0,
-             coupling: float = 0.5, seed: int = 42, ) -> ControlModel:
+             coupling: float = 0.5, seed: int = 42, affine: bool = False, ) -> ControlModel:
     """
     Build and configure a :class:`~geodesiq.ControlModel` for benchmarking.
 
@@ -110,13 +110,19 @@ def make_ham(dim: int = 2, num_steps: int = 2 ** 8 + 1, analytical_partial: bool
         Off-diagonal coupling strength passed to the ControlModel model.
     seed
         RNG seed for the chain Hamiltonian's random noise term.
+    affine
+        If ``True`` the same Hamiltonian is passed as constant matrices ``H_d = H(0)`` and ``H_c = dH/dλ``
+        (both models are affine in λ), which exercises the affine code paths.
     """
     if dim == 2:
         H, dH = _lz_H_dH(coupling=coupling)
     else:
         H, dH = _chain_H_dH(dim, coupling=coupling, seed=seed)
 
-    ham = ControlModel(H, partial_H_func=(dH if analytical_partial else None))
+    if affine:
+        ham = ControlModel(H_d=H(0.0), H_c=dH(0.0))
+    else:
+        ham = ControlModel(H, partial_H_func=(dH if analytical_partial else None))
 
     ctrl: dict = dict(control_name="lam", pulse_initial=pulse_initial, pulse_final=pulse_final, initial_state=0,
                       alpha=alpha, beta=beta, num_steps=num_steps, )
