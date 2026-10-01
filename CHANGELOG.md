@@ -50,6 +50,10 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Dev
 
+- `tests/conftest.py` selects the non-interactive matplotlib backend for all tests.
+- Coverage gate raised from 70% to 90%; CI also lints `tests/` and checks the formatting of `src/`.
+- New tests: Landau-Zener transition probability of `Dynamics`, finite-difference derivative and its fallback, BLAS
+  thread limiting.
 - `dynamics_dim_scaling` benchmark scenario for `Dynamics` (callable and affine models).
 
 ### Fixed

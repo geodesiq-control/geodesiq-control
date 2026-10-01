@@ -495,12 +495,6 @@ class TestSettersDelegateToSetControl:
 # Plotting after reconfiguration
 # ---------------------------------------------------------------------------
 class TestPlotEigenvaluesAfterReconfiguration:
-    @pytest.fixture(autouse=True)
-    def _agg_backend(self):
-        import matplotlib
-
-        matplotlib.use("Agg")
-
     def test_first_branch_uses_the_new_grid(self):
         import matplotlib.pyplot as plt
 

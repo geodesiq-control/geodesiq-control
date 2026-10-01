@@ -602,3 +602,53 @@ def test_dynamics_is_unit_consistent(scale: float):
 
     np.testing.assert_allclose(scaled.pulse, reference.pulse, rtol=1e-7)
     assert scaled.state_fidelity(0, 1) == pytest.approx(reference.state_fidelity(0, 1), abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Physics: Landau-Zener transition probability
+# ---------------------------------------------------------------------------
+
+
+class TestLandauZenerFormula:
+    """
+    For H = lam(t) sigma_z + Delta sigma_x with a linear sweep lam(t) = v t, the probability of a diabatic transition
+    (ending in the excited adiabatic state) is P = exp(-pi Delta^2 / (hbar v)). The adiabatic ground-to-ground
+    fidelity is therefore 1 - P. The finite sweep range adds small oscillatory corrections (~1e-4 for L = 40 Delta).
+    """
+
+    DELTA = 1.0
+    SWEEP = 40.0  # lam goes from -SWEEP to +SWEEP
+
+    def _linear_ramp_fidelity(self, rate: float, hbar: float) -> float:
+        model = ControlModel(H_d=self.DELTA * np.array([[0.0, 1.0], [1.0, 0.0]]), H_c=np.diag([1.0, -1.0]))
+        model.set_control(pulse_initial=-self.SWEEP, pulse_final=self.SWEEP, initial_state=0, alpha=2.0, beta=2.0)
+
+        duration = 2 * self.SWEEP / rate
+        times = np.linspace(0.0, duration, 4001)
+        pulse = np.linspace(-self.SWEEP, self.SWEEP, times.size)
+
+        return Dynamics(model, times=times, pulse=pulse, hbar=hbar).state_fidelity(initial_state=0, final_state=0)
+
+    @pytest.mark.parametrize("rate", [1.0, 2.6, 6.0, 20.0])
+    def test_linear_ramp_matches_landau_zener(self, rate: float):
+        expected = 1.0 - np.exp(-np.pi * self.DELTA**2 / rate)
+
+        assert self._linear_ramp_fidelity(rate, hbar=1.0) == pytest.approx(expected, abs=2e-3)
+
+    def test_hbar_enters_the_landau_zener_exponent(self):
+        rate, hbar = 2.0, 0.5
+        expected = 1.0 - np.exp(-np.pi * self.DELTA**2 / (hbar * rate))
+
+        assert self._linear_ramp_fidelity(rate, hbar=hbar) == pytest.approx(expected, abs=2e-3)
+
+    def test_optimal_pulse_beats_linear_ramp_of_same_duration(self):
+        """The geodesic pulse is designed to be more adiabatic than a linear ramp of the same duration."""
+        model = ControlModel(H_d=self.DELTA * np.array([[0.0, 1.0], [1.0, 0.0]]), H_c=np.diag([1.0, -1.0]))
+        model.set_control(pulse_initial=-self.SWEEP, pulse_final=self.SWEEP, initial_state=0, alpha=2.0, beta=2.0)
+        model.solve_problem(pulse_accuracy=2001)
+        rate = 6.0
+        duration = 2 * self.SWEEP / rate
+
+        optimal = Dynamics(model, duration=duration).state_fidelity(initial_state=0, final_state=0)
+
+        assert optimal > self._linear_ramp_fidelity(rate, hbar=1.0) + 0.1

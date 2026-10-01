@@ -98,7 +98,8 @@ available [here](https://github.com/geodesiq-control/geodesiq-control).
 Use the following checks before submitting changes:
 
 ```bash
-uv run ruff check src
+uv run ruff check src tests
+uv run ruff format --check src
 uv run ty check src
 uv run pytest
 uv run python -m build
