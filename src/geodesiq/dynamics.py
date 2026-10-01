@@ -1,4 +1,5 @@
-from typing import Any, List, Optional, Tuple, cast
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, List, Literal, Optional, Tuple, cast
 
 import numpy as np
 import qutip as qt
@@ -7,6 +8,10 @@ from ._utils import limit_blas_threads, validate_state_index
 from .controlmodel import ControlModel
 from .decompose_hamiltonian import decompose_hamiltonian
 from .exceptions import ConfigurationError, MissingArgsError, ValidationError
+
+if TYPE_CHECKING:
+    from matplotlib.axes import Axes
+    from matplotlib.figure import Figure, SubFigure
 
 
 class Dynamics:
@@ -248,12 +253,7 @@ class Dynamics:
             Collapse operators (passed as a list of Qobj or np.ndarray) for the Lindblad master equation.
 
         """
-        if c_ops is None:
-            pass
-        elif isinstance(c_ops, list):
-            c_ops = [qt.Qobj(op) if isinstance(op, np.ndarray) else op for op in c_ops]
-        else:
-            raise ValidationError("Collapse operators must be provided as a list of Qobj or numpy arrays.")
+        c_ops = _as_collapse_operators(c_ops)
 
         control_initial, control_final = self._boundary_controls
 
@@ -361,7 +361,189 @@ class Dynamics:
 
         return gate_fid
 
+    def _resolve_initial_state(self, initial_state: Optional[np.ndarray | int | qt.Qobj]) -> qt.Qobj:
+        """Initial state of the evolution, following the conventions of ``state_fidelity``."""
+        control_initial = self._boundary_controls[0]
+
+        if initial_state is None:
+            if self._initial_state is None:
+                raise ConfigurationError(
+                    "The initial state index must be configured in the ControlModel when no explicit initial state is "
+                    "provided."
+                )
+            return self._eigenstate(control_initial, self._initial_state)
+
+        if _is_index(initial_state):
+            dimension = self._hamiltonian_dimension
+            if dimension is None:
+                raise ConfigurationError("Hamiltonian dimension is unavailable.")
+            index = validate_state_index(cast(int, initial_state), dimension, "initial_state")
+            return self._eigenstate(control_initial, index)
+
+        if isinstance(initial_state, np.ndarray):
+            if initial_state.shape[0] != self._hamiltonian_dimension:
+                raise ValidationError(
+                    f"Initial state must have the same dimension as the ControlModel. Shape of ControlModel:"
+                    f" {(self._hamiltonian_dimension, self._hamiltonian_dimension)}."
+                    f" Shape of initial state: {initial_state.shape}"
+                )
+            return qt.Qobj(initial_state)
+
+        if isinstance(initial_state, qt.Qobj):
+            return initial_state
+
+        raise ValidationError(
+            "Initial state must be either an integer, a numpy array with correct dimensions or a Qobj instance."
+        )
+
+    def populations(
+        self,
+        initial_state: Optional[np.ndarray | int | qt.Qobj] = None,
+        basis: Literal["adiabatic", "diabatic"] = "adiabatic",
+        c_ops: Optional[List[qt.Qobj] | List[np.ndarray]] = None,
+    ) -> np.ndarray:
+        """
+        Compute the population of every state at each time sample of the pulsed time evolution.
+
+        Parameters
+        ----------
+        initial_state : Optional[np.ndarray, int or qt.Qobj]
+            Initial state of the evolution, with the same conventions as in ``state_fidelity``: None uses the initial
+            state index of the ControlModel, an integer selects an eigenstate of the Hamiltonian at the initial control
+            value, and a numpy array or Qobj is used as given (state vector or density matrix).
+        basis : {"adiabatic", "diabatic"}
+            Basis in which populations are measured. ``"adiabatic"`` uses the instantaneous eigenstates of the
+            Hamiltonian at each time, sorted by increasing energy. ``"diabatic"`` uses the fixed basis in which the
+            Hamiltonian matrix is written. Adiabatic populations of exactly degenerate levels are not unique.
+        c_ops : Optional[list]
+            Collapse operators (passed as a list of Qobj or np.ndarray) for the Lindblad master equation.
+
+        Returns
+        -------
+        populations : np.ndarray
+            Array of shape ``(len(times), dimension)``, where ``populations[i, n]`` is the population of state ``n`` at
+            ``times[i]``.
+        """
+        if basis not in ("adiabatic", "diabatic"):
+            raise ValidationError(f"basis must be 'adiabatic' or 'diabatic', got {basis!r}.")
+
+        c_ops = _as_collapse_operators(c_ops)
+        psi_init = self._resolve_initial_state(initial_state)
+
+        pulse_times: list[float] = np.asarray(self._pulse_times, dtype=float).tolist()
+        options = {"store_states": True}
+
+        with self._blas_threads():
+            result = qt.mesolve(self._qevo, psi_init, cast(Any, pulse_times), c_ops=cast(Any, c_ops), options=options)
+
+            states = result.states
+            if len(states) != len(pulse_times):
+                raise ValidationError("Time evolution did not return a state for every time sample.")
+
+            populations = np.empty((len(states), states[0].shape[0]))
+            for i, (state, control_value) in enumerate(zip(states, self._pulse, strict=True)):
+                data = state.full()
+                if basis == "adiabatic":
+                    _, eigenvectors = np.linalg.eigh(np.asarray(self.evaluate_hamiltonian(control_value)))
+                    data = eigenvectors.conj().T @ data
+                    if not state.isket:
+                        data = data @ eigenvectors
+
+                if state.isket:
+                    populations[i] = np.abs(data[:, 0]) ** 2
+                else:
+                    populations[i] = np.diagonal(data).real
+
+        return populations
+
+    def plot_populations(
+        self,
+        fig: "Figure | SubFigure | None" = None,
+        ax: "Axes | None" = None,
+        initial_state: Optional[np.ndarray | int | qt.Qobj] = None,
+        basis: Literal["adiabatic", "diabatic"] = "adiabatic",
+        c_ops: Optional[List[qt.Qobj] | List[np.ndarray]] = None,
+        states: Optional[Sequence[int]] = None,
+        legend: bool = True,
+        legend_kwargs: dict[str, Any] | None = None,
+        xlabel: str | None = None,
+        ylabel: str | None = None,
+        title: str | None = None,
+        **plot_kwargs: Any,
+    ) -> "tuple[Figure | SubFigure, Axes]":
+        """
+        Plot the population of each state as a function of time during the pulsed time evolution.
+
+        Parameters
+        ----------
+        fig, ax
+            Optional matplotlib figure/axis. If not provided, they are created.
+        initial_state : Optional[np.ndarray, int or qt.Qobj]
+            Initial state of the evolution (see ``populations``).
+        basis : {"adiabatic", "diabatic"}
+            Basis in which populations are measured (see ``populations``).
+        c_ops : Optional[list]
+            Collapse operators for the Lindblad master equation (see ``populations``).
+        states : Optional[Sequence[int]]
+            Indices of the states to plot. All states are plotted when not provided.
+        legend : bool
+            Whether to draw a legend.
+        legend_kwargs : dict | None
+            Extra kwargs forwarded to ``ax.legend``.
+        xlabel : str | None
+            Label for the x-axis. Defaults to ``"Time $t$"`` when not provided.
+        ylabel : str | None
+            Label for the y-axis. Defaults to ``"Population"`` when not provided.
+        title : str | None
+            Plot title. Defaults to ``"Adiabatic populations"`` or ``"Diabatic populations"`` when not provided.
+        **plot_kwargs
+            Extra kwargs forwarded to ``ax.plot`` for each state.
+
+        Returns
+        -------
+        tuple
+            ``(fig, ax)`` with the generated plot.
+        """
+        import matplotlib.pyplot as plt
+
+        populations = self.populations(initial_state=initial_state, basis=basis, c_ops=c_ops)
+        dimension = populations.shape[1]
+
+        if states is None:
+            indices = list(range(dimension))
+        else:
+            indices = [validate_state_index(index, dimension, "states") for index in states]
+
+        if ax is None:
+            if fig is None:
+                fig, ax = plt.subplots()
+            else:
+                ax = fig.add_subplot(111)
+        fig = ax.figure
+
+        for index in indices:
+            label = rf"$|E_{{{index}}}\rangle$" if basis == "adiabatic" else rf"$|{index}\rangle$"
+            ax.plot(self._pulse_times, populations[:, index], label=label, **plot_kwargs)
+
+        ax.set_xlabel("Time $t$" if xlabel is None else xlabel)
+        ax.set_ylabel("Population" if ylabel is None else ylabel)
+        ax.set_title(f"{basis.capitalize()} populations" if title is None else title)
+
+        if legend:
+            ax.legend(**(legend_kwargs or {}))
+
+        return fig, ax
+
 
 def _is_index(value: Any) -> bool:
     """Whether a value is an integer state index (Python or NumPy integer, but not a bool)."""
     return isinstance(value, (int, np.integer)) and not isinstance(value, (bool, np.bool_))
+
+
+def _as_collapse_operators(c_ops: Any) -> Optional[List[qt.Qobj]]:
+    """Validate collapse operators, converting numpy arrays to Qobj."""
+    if c_ops is None:
+        return None
+    if isinstance(c_ops, list):
+        return [qt.Qobj(op) if isinstance(op, np.ndarray) else op for op in c_ops]
+    raise ValidationError("Collapse operators must be provided as a list of Qobj or numpy arrays.")

@@ -11,6 +11,11 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 - `PulseControl.plot_pulse()` accepts optional `fig` and `ax` arguments to draw on an existing figure, subfigure or
   axis, like `ControlModel.plot_eigenvalues()` and `ControlModel.plot_metric_tensor()`. A provided figure is never
   closed; pass `show=False` to keep drawing on it.
+- `Dynamics.populations()` returns the population of every state at each time sample, in the instantaneous eigenbasis
+  of the Hamiltonian (`basis="adiabatic"`, default) or in the basis of the Hamiltonian matrix (`basis="diabatic"`). It
+  accepts the same initial states as `state_fidelity()` and optional collapse operators.
+- `Dynamics.plot_populations()` plots these populations over time, with the same `fig`, `ax`, `legend` and label
+  arguments as `ControlModel.plot_eigenvalues()` and an optional `states` selection.
 
 ## [0.3.0] - 2026-10-01
 

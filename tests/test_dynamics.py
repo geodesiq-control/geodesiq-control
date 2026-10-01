@@ -528,6 +528,130 @@ def test_average_gate_fidelity_invalid_gate_type(default_dynamics):
 
 
 # ---------------------------------------------------------------------------
+# Testing populations and plot_populations
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("basis", ["adiabatic", "diabatic"])
+def test_populations_shape_and_normalization(default_dynamics, basis):
+    """One row per time sample, one column per state, and every row sums to one."""
+    populations = default_dynamics.populations(basis=basis)
+
+    assert populations.shape == (len(default_dynamics.times), 2)
+    assert np.all(populations >= -1e-12)
+    np.testing.assert_allclose(populations.sum(axis=1), 1.0, atol=1e-6)
+
+
+def test_populations_start_in_the_initial_eigenstate(default_dynamics):
+    """The default initial state is the configured eigenstate, fully populated at t = 0."""
+    populations = default_dynamics.populations()
+
+    np.testing.assert_allclose(populations[0], [1.0, 0.0], atol=1e-10)
+
+
+def test_final_adiabatic_population_matches_state_fidelity(default_dynamics):
+    """For a pure state, the final population of eigenstate n is the fidelity of the transfer to it."""
+    populations = default_dynamics.populations(initial_state=0)
+
+    assert populations[-1, 1] == pytest.approx(default_dynamics.state_fidelity(0, 1), abs=1e-6)
+    assert populations[-1, 0] == pytest.approx(default_dynamics.state_fidelity(0, 0), abs=1e-6)
+
+
+def test_diabatic_populations_of_a_basis_state(default_dynamics):
+    """An explicit computational basis state is fully populated at t = 0 in the diabatic basis."""
+    populations = default_dynamics.populations(initial_state=np.array([0.0, 1.0]), basis="diabatic")
+
+    np.testing.assert_allclose(populations[0], [0.0, 1.0], atol=1e-12)
+
+
+def test_populations_of_density_matrix_match_state_vector(default_dynamics):
+    """With vanishing collapse operators the density-matrix branch reproduces the closed-system populations."""
+    closed = default_dynamics.populations(initial_state=0)
+    open_system = default_dynamics.populations(initial_state=0, c_ops=[np.zeros((2, 2))])
+
+    np.testing.assert_allclose(open_system, closed, atol=1e-6)
+
+
+def test_populations_reject_unknown_basis(default_dynamics):
+    with pytest.raises(ValidationError, match="basis must be"):
+        default_dynamics.populations(basis=cast(Any, "computational"))
+
+
+def test_populations_reject_invalid_initial_state(default_dynamics):
+    with pytest.raises(ValidationError, match="same dimension"):
+        default_dynamics.populations(initial_state=np.array([1.0, 0.0, 0.0]))
+    with pytest.raises(ValidationError, match="must be between"):
+        default_dynamics.populations(initial_state=2)
+    with pytest.raises(ValidationError, match="Initial state must be"):
+        default_dynamics.populations(initial_state=cast(Any, "ground"))
+
+
+def test_populations_require_a_configured_initial_state(default_dynamics):
+    default_dynamics._initial_state = None
+
+    with pytest.raises(ConfigurationError, match="initial state index"):
+        default_dynamics.populations()
+
+
+def test_populations_raise_when_mesolve_misses_states(default_dynamics, monkeypatch):
+    class DummyResult:
+        states = [qt.basis(2, 0)]
+
+    monkeypatch.setattr(qt, "mesolve", lambda *args, **kwargs: DummyResult())
+
+    with pytest.raises(ValidationError, match="state for every time sample"):
+        default_dynamics.populations()
+
+
+def test_plot_populations_draws_one_line_per_state(default_dynamics):
+    import matplotlib.pyplot as plt
+    from matplotlib.axes import Axes
+
+    fig, ax = default_dynamics.plot_populations()
+
+    assert isinstance(ax, Axes)
+    assert len(ax.lines) == 2
+    assert [line.get_label() for line in ax.lines] == [r"$|E_{0}\rangle$", r"$|E_{1}\rangle$"]
+    np.testing.assert_allclose(ax.lines[0].get_xdata(), default_dynamics.times)
+    assert ax.get_xlabel() == "Time $t$"
+    assert ax.get_title() == "Adiabatic populations"
+    plt.close(fig)
+
+
+def test_plot_populations_on_provided_axes_with_selected_states(default_dynamics):
+    import matplotlib.pyplot as plt
+
+    fig, (ax_left, ax_right) = plt.subplots(1, 2)
+    out_fig, out_ax = default_dynamics.plot_populations(ax=ax_right, basis="diabatic", states=[1], legend=False)
+
+    assert out_ax is ax_right
+    assert out_fig is fig
+    assert len(ax_right.lines) == 1
+    assert ax_right.lines[0].get_label() == r"$|1\rangle$"
+    assert ax_right.get_legend() is None
+    assert len(ax_left.lines) == 0
+    plt.close(fig)
+
+
+def test_plot_populations_on_provided_figure(default_dynamics):
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure()
+    out_fig, ax = default_dynamics.plot_populations(fig=fig, title="LZ", ylabel="P")
+
+    assert out_fig is fig
+    assert ax in fig.axes
+    assert ax.get_title() == "LZ"
+    assert ax.get_ylabel() == "P"
+    plt.close(fig)
+
+
+def test_plot_populations_rejects_out_of_range_states(default_dynamics):
+    with pytest.raises(ValidationError, match="states must be between"):
+        default_dynamics.plot_populations(states=[0, 2])
+
+
+# ---------------------------------------------------------------------------
 # Test initial and final indices
 # ---------------------------------------------------------------------------
 
@@ -634,6 +758,18 @@ class TestLandauZenerFormula:
         expected = 1.0 - np.exp(-np.pi * self.DELTA**2 / rate)
 
         assert self._linear_ramp_fidelity(rate, hbar=1.0) == pytest.approx(expected, abs=2e-3)
+
+    def test_final_excited_population_matches_landau_zener(self):
+        """The final population of the excited adiabatic state is the Landau-Zener probability."""
+        rate = 2.6
+        model = ControlModel(H_d=self.DELTA * np.array([[0.0, 1.0], [1.0, 0.0]]), H_c=np.diag([1.0, -1.0]))
+        model.set_control(pulse_initial=-self.SWEEP, pulse_final=self.SWEEP, initial_state=0, alpha=2.0, beta=2.0)
+        times = np.linspace(0.0, 2 * self.SWEEP / rate, 4001)
+        pulse = np.linspace(-self.SWEEP, self.SWEEP, times.size)
+
+        populations = Dynamics(model, times=times, pulse=pulse).populations(initial_state=0)
+
+        assert populations[-1, 1] == pytest.approx(np.exp(-np.pi * self.DELTA**2 / rate), abs=2e-3)
 
     def test_hbar_enters_the_landau_zener_exponent(self):
         rate, hbar = 2.0, 0.5

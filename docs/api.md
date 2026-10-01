@@ -53,6 +53,19 @@ In both cases the default initial and target states of `state_fidelity()` are th
 `pulse_initial` and `pulse_final` of the model, so fidelities of different pulses are directly comparable. If the model
 has no control endpoints configured, the endpoints of the custom pulse are used instead.
 
+## State populations
+
+`Dynamics.populations()` returns an array of shape `(len(times), dimension)` with the population of every state during
+the evolution. With `basis="adiabatic"` (default) populations are measured in the instantaneous eigenstates of the
+Hamiltonian, sorted by increasing energy; with `basis="diabatic"` they are measured in the basis of the Hamiltonian
+matrix. `Dynamics.plot_populations()` plots them over time:
+
+```python
+populations = dynamics.populations(initial_state=0)  # populations[-1, 1] == dynamics.state_fidelity(0, 1)
+
+fig, ax = dynamics.plot_populations(basis="diabatic", states=[0, 1])
+```
+
 ## Numerical contracts
 
 Hamiltonians must be finite, non-empty, square, Hermitian, and dimensionally stable over the sweep. Analytical
