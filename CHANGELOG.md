@@ -55,6 +55,7 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 - New tests: Landau-Zener transition probability of `Dynamics`, finite-difference derivative and its fallback, BLAS
   thread limiting.
 - `dynamics_dim_scaling` benchmark scenario for `Dynamics` (callable and affine models).
+- The lock file of the benchmark runner (`benchmark_history.parquet.lock`) is no longer tracked.
 
 ### Fixed
 

@@ -6,6 +6,7 @@ Benchmark history is generated locally by:
 uv run --only-group bench python -m benchmarks.run_benchmarks
 ```
 
-The resulting `benchmark_history.parquet` file is intentionally ignored because it is machine-specific, grows over time,
-and is rewritten atomically by the benchmark runner. Preserve benchmark datasets as explicitly versioned release
-artifacts or attach them to a benchmark report when long-term comparison is required.
+Each run appends its results, tagged with the package version and machine information, to `benchmark_history.parquet`.
+The file is tracked in the repository so that results can be compared across versions and machines; commit it when a
+run should become part of the published history. The runner rewrites the file atomically, guarded by
+`benchmark_history.parquet.lock`.
