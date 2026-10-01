@@ -17,6 +17,9 @@ def test_about_prints_expected_sections(capsys):
     for label in expected_labels:
         assert label in captured.out
 
+    assert "Reference paper: \n" not in captured.out
+    assert "https://github.com/geodesiq-control/geodesiq-control" in captured.out
+
 
 def test_module_version_returns_none_for_missing_modules():
     assert about_module._module_version("geodesiq_definitely_missing_module") == "None"

@@ -221,7 +221,7 @@ def solve_gq(H_c,
     # ----- Solve for optimal pulse -----
     model.solve_problem(pulse_accuracy=pulse_accuracy)
 
-    dynamics = gq.Dynamics(tf, model)
+    dynamics = gq.Dynamics(model, duration=tf)
     gq_error = 1 - np.sqrt(dynamics.state_fidelity())
 
     gq_pulse = model.synthesize_pulse(tf).pulse

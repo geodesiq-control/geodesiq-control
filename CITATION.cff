@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use geodesiq in your research, please cite it as below."
+type: software
+title: "geodesiq: Geometric optimal control"
+abstract: >-
+  A Python package for computing optimal quantum control pulses of Hamiltonian parameters for generic quantum
+  systems using the geodesic approach.
+authors:
+  - family-names: "Fernández Fernández"
+    given-names: "David"
+  - family-names: "Ventura Meinersen"
+    given-names: "Christian"
+version: 0.3.0
+license: LGPL-2.1-only
+repository-code: "https://github.com/geodesiq-control/geodesiq-control"
+url: "https://pypi.org/project/geodesiq/"
+keywords:
+  - quantum control
+  - optimal control
+  - geodesic
+  - quantum computing

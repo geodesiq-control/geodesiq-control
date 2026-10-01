@@ -11,6 +11,8 @@ from ._meta import __author__, __version__
 
 __all__ = ["about"]
 
+_REPOSITORY_URL = "https://github.com/geodesiq-control/geodesiq-control"
+
 
 def _module_version(module_name: str) -> str:
     """Return module __version__ when available, otherwise 'None'."""
@@ -50,7 +52,7 @@ def about() -> None:
     print()
     print("=" * 50)
     print("Please cite geodesiq in your publication.")
-    print("Reference paper: ")
+    print(f"See: {_REPOSITORY_URL}#citing-geodesiq")
     print("=" * 50)
 
 

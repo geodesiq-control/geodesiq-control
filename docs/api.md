@@ -6,7 +6,8 @@ The supported top-level API is exported from `geodesiq`:
   solve the optimal dimensionless trajectory.
 - `PulseControl`: represent a solved trajectory at a physical duration, resample it, inspect its spectrum, filter it,
   plot it, and export it without pickle.
-- `Dynamics`: evaluate closed- or open-system dynamics using a solved `ControlModel`.
+- `Dynamics`: evaluate closed- or open-system dynamics of a `ControlModel`, driven either by its solved optimal pulse or
+  by a custom pulse (e.g. a filtered `PulseControl` pulse).
 - Typed exception and warning hierarchies rooted at `GeodesiQError` and `GeodesiQWarning`.
 
 ## Model lifecycle
@@ -26,11 +27,31 @@ model.set_control(control_name="z", pulse_initial=-3.0, pulse_final=3.0, initial
                   beta=2.0, num_steps=129, )
 model.solve_problem(pulse_accuracy=500)
 pulse = model.synthesize_pulse(duration=10.0)
-dynamics = Dynamics(duration=10.0, model=model)
+dynamics = Dynamics(model, duration=10.0)
 ```
 
 Arrays returned by public properties are defensive copies. The `parameters` property is read-only. A synthesized pulse
 is available only after `synthesize_pulse(duration=...)`; the package never guesses a physical duration.
+
+## Dynamics with optimal or custom pulses
+
+`Dynamics(model, ...)` accepts exactly one pulse source:
+
+- `duration`: the solved optimal pulse of `model` is rescaled to the physical duration.
+- `times` and `pulse` (keyword-only, given together): an arbitrary pulse sampled at strictly increasing physical times,
+  for example the output of `PulseControl.filtered_pulse()` or `PulseControl.discretized_pulse()`. The model does not
+  need to be solved in this case.
+
+```python
+optimal = Dynamics(model, duration=10.0)
+
+times, filtered = pulse.filtered_pulse(cutoff_freq=2.0)
+filtered_dynamics = Dynamics(model, times=times, pulse=filtered)
+```
+
+In both cases the default initial and target states of `state_fidelity()` are the eigenstates of the Hamiltonian at
+`pulse_initial` and `pulse_final` of the model, so fidelities of different pulses are directly comparable. If the model
+has no control endpoints configured, the endpoints of the custom pulse are used instead.
 
 ## Numerical contracts
 

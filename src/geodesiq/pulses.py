@@ -3,12 +3,10 @@ from typing import TYPE_CHECKING, Any, Tuple
 
 import numpy as np
 import scipy as sp
-from scipy.interpolate import interp1d
 from scipy.signal import ShortTimeFFT
 from scipy.signal.windows import hann
 
-from ._meta import PACKAGE_NAME
-from .exceptions import IOErrorGeodesiQ, MissingArgsError, ValidationError
+from .exceptions import IOErrorGeodesiQ, ValidationError
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
@@ -24,15 +22,14 @@ class PulseControl:
 
     def __init__(self, pulse: np.ndarray, duration: float):
         """
-        Initialize the PulseControl object with the control pulse and the rescaled time array as inputs.
+        Initialize the PulseControl object with the control pulse and its duration. The samples are assumed to be
+        uniformly spaced in time, from 0 to ``duration``.
 
-        Parameters:
-        -----------
-        s: np.ndarray
-            Rescaled time array (s = t/t_f) for the pulse.
-        pulse: np.ndarray
-            Control pulse values corresponding to the rescaled time array.
-        duration: float
+        Parameters
+        ----------
+        pulse : np.ndarray
+            Control pulse values, uniformly sampled in time.
+        duration : float
             Duration of the control pulse (t_f).
         """
 
@@ -85,22 +82,22 @@ class PulseControl:
 
         Parameters
         ----------
-        linear_steps: int
-            Number of linear steps to use for the piecewise linear approximation of the control pulse.
+        linear_steps : int
+            Number of samples (>= 2) of the piecewise linear approximation of the control pulse.
 
         Returns
         -------
-        new_time: np.ndarray
-            Rescaled time array for the piecewise linear approximation.
-        approx_sol: np.ndarray
-            Control pulse values corresponding to the new rescaled time array for the piecewise linear approximation.
+        new_time : np.ndarray
+            Physical time array for the piecewise linear approximation.
+        approx_sol : np.ndarray
+            Control pulse values corresponding to the new time array for the piecewise linear approximation.
 
         """
+        if not isinstance(linear_steps, (int, np.integer)) or isinstance(linear_steps, bool) or linear_steps < 2:
+            raise ValidationError("linear_steps must be an integer >= 2.")
 
-        piecewise_linear = interp1d(self._pulse_times, self._pulse, kind="linear", fill_value="extrapolate")
-
-        new_time = np.linspace(self._pulse_times[0], self._pulse_times[-1], linear_steps)
-        approx_sol = np.asarray(piecewise_linear(new_time))
+        new_time = np.linspace(self._pulse_times[0], self._pulse_times[-1], int(linear_steps))
+        approx_sol = np.interp(new_time, self._pulse_times, self._pulse)
 
         return new_time, approx_sol
 
@@ -158,23 +155,27 @@ class PulseControl:
 
         Parameters
         ----------
-        cutoff_freq: float
+        cutoff_freq : float
             Cutoff frequency in units of 1 / time (e.g., Hz if time is in seconds) for the low-pass Butterworth filter.
-        filter_order: int
+        filter_order : int
             Order of the Butterworth filter.
 
         Returns
         -------
-        pulse_times: np.ndarray
+        pulse_times : np.ndarray
             Rescaled time array corresponding to the filtered control pulse.
-        filtered_pulse: np.ndarray
+        filtered_pulse : np.ndarray
             Returns the (butterworth-)filtered control pulse.
         """
-        if cutoff_freq <= 0:
-            raise ValidationError(f"Cutoff frequency must be positive. Given: {cutoff_freq}")
+        if not isinstance(cutoff_freq, (int, float, np.integer, np.floating)) or isinstance(cutoff_freq, bool):
+            raise ValidationError("cutoff_freq must be a finite positive number.")
+        cutoff_freq = float(cutoff_freq)
+        if not np.isfinite(cutoff_freq) or cutoff_freq <= 0:
+            raise ValidationError(f"Cutoff frequency must be positive and finite. Given: {cutoff_freq}")
 
-        if not (isinstance(filter_order, int) and not isinstance(filter_order, bool)) or filter_order < 1:
+        if not isinstance(filter_order, (int, np.integer)) or isinstance(filter_order, bool) or filter_order < 1:
             raise ValidationError("filter_order must be a positive integer.")
+        filter_order = int(filter_order)
 
         # Compute the sampling rate from the rescaled time array
         dt = float(np.abs(self._pulse_times[1] - self._pulse_times[0]))  # Uniform spacing by construction
@@ -199,9 +200,9 @@ class PulseControl:
 
         Parameters
         ----------
-        show: bool
+        show : bool
             Show plot before possibly adding plot_kwargs
-        plot_kwargs: dict
+        plot_kwargs : dict
             Dictionary of style changes to ax.plot()
 
         Returns
@@ -223,46 +224,56 @@ class PulseControl:
 
         return fig, ax
 
-    def export_pulse(self, filename: str, file_extension: str = "npz", overwrite: bool = False) -> None:
+    def export_pulse(self, filename: str | Path, file_extension: str = "npz", overwrite: bool = False) -> Path:
         """
         Export (real-time) pulse data to a (npz, txt, csv) file.
 
+        Values are written with full double precision (``%.17g``), so that e.g. nanosecond-scale times expressed in
+        seconds are preserved. The ``txt`` format is whitespace-delimited and the ``csv`` format is comma-delimited;
+        both have a one-line header with the column names.
+
         Parameters
         ----------
-        filename: str
+        filename : str | Path
             Name for the data file saved.
-        file_extension: str
+        file_extension : str
             Data type the pulse should be stored in (i.e. 'txt', 'npz', 'csv'). Default is 'npz'.
-        overwrite: bool
+        overwrite : bool
             Ensures accidental overwrites.
+
+        Returns
+        -------
+        output_path: Path
+            Path of the written file.
         """
 
         # Remove possible file_extension starting with a dot
         if file_extension.startswith("."):
             file_extension = file_extension[1:]
 
+        if file_extension not in ("npz", "txt", "csv"):
+            raise ValidationError(
+                f"Unsupported data_type '{file_extension}'. Supported types are: 'npz', 'txt', and 'csv'."
+            )
+
         output_path = Path(filename)
         if output_path.suffix != f".{file_extension}":
             output_path = output_path.with_suffix(f".{file_extension}")
 
-        t: np.ndarray = np.asarray(self._pulse_times)
-        pulse: np.ndarray = np.asarray(self._pulse)
-
         if output_path.exists() and not overwrite:
             raise IOErrorGeodesiQ(f"File already exists (choose overwrite=True to remove safety check.): {output_path}")
+
+        t: np.ndarray = np.asarray(self._pulse_times)
+        pulse: np.ndarray = np.asarray(self._pulse)
 
         # Save data depending on users preference
         if file_extension == "npz":
             np.savez(output_path, times=t, pulse=pulse)
         elif file_extension == "txt":
-            txt_data: np.ndarray = np.column_stack((t, pulse))
-            np.savetxt(output_path, txt_data, delimiter=",", header="t,pulse", comments="", fmt="%.8f")
-        elif file_extension == "csv":
-            csv_data = np.column_stack((t, pulse))
-            np.savetxt(output_path, csv_data, delimiter=",", header="t,pulse", comments="", fmt="%.8f")
+            np.savetxt(output_path, np.column_stack((t, pulse)), header="t pulse", comments="", fmt="%.17g")
         else:
-            raise MissingArgsError(
-                f"Unsupported data_type '{file_extension}'. Supported types are: 'npz', 'txt', and 'csv'. "
+            np.savetxt(
+                output_path, np.column_stack((t, pulse)), delimiter=",", header="t,pulse", comments="", fmt="%.17g"
             )
 
-        print(f"[{PACKAGE_NAME}] File saved as '{output_path}' type.")
+        return output_path

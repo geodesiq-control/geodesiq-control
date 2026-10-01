@@ -51,13 +51,13 @@ jobs:
         run: uv sync --no-default-groups --group lint
 
       - name: Lint
-        run: uv run --no-sync ruff check src
+        run: uv run --no-sync ruff check src tests
+
+      - name: Check formatting
+        run: uv run --no-sync ruff format --check src
 
       - name: Type check
         run: uv run --no-sync ty check src
-
-  #      - name: Check formatting
-  #        run: uv run --no-sync lint ruff format --check src
 
   coverage:
     name: Tests and coverage

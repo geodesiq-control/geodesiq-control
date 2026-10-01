@@ -1,0 +1,3 @@
+# about
+
+::: geodesiq.about

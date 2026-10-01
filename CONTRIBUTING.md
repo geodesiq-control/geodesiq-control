@@ -28,11 +28,28 @@ If you do not use `uv`, create a virtual environment and install equivalent dev 
 
 ```bash
 uv run pytest
-uv run ruff check src
+uv run ruff check src tests
+uv run ruff format --check src
 uv run ty check src
 uv run python -m build
 uv run python -m twine check dist/*
 ```
+
+`pytest` fails below 90% coverage. The package sources are formatted with `ruff format`; tests are linted but keep their
+own formatting.
+
+## Documentation
+
+The documentation is built with MkDocs (`mkdocs.yml`, pages in `docs/`, API reference from the docstrings) and hosted
+on [Read the Docs](https://geodesiq.readthedocs.io), configured by `.readthedocs.yaml`. Read the Docs rebuilds it on
+every push to the tracked branches and tags. To preview it locally with live reload:
+
+```bash
+uv run mkdocs serve
+```
+
+Docstrings use the numpy style. `uv run mkdocs build --strict` fails on broken references, as the Read the Docs build
+does.
 
 ## Pull request guidelines
 

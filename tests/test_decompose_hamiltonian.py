@@ -5,6 +5,7 @@ import pytest
 import qutip as qt
 
 from geodesiq.decompose_hamiltonian import decompose_hamiltonian
+from geodesiq.exceptions import ValidationError
 
 
 def _reference_components() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -141,3 +142,31 @@ def test_invalid_rank_bounds_raise_value_error() -> None:
 
     with pytest.raises(ValueError, match="rank must satisfy"):
         decompose_hamiltonian(_model_hamiltonian, times=times, rank=10)
+
+
+def test_decompose_raises_package_validation_error() -> None:
+    """Errors are ValidationError, which still is a ValueError for backward compatibility."""
+    with pytest.raises(ValidationError, match="strictly increasing"):
+        decompose_hamiltonian(_model_hamiltonian, times=np.array([0.0, 0.0]))
+
+
+def test_decompose_hermiticity_check_is_relative() -> None:
+    times = np.linspace(0.0, 1.0, 5)
+
+    def large_scale(t: float) -> np.ndarray:
+        # Rounding-level asymmetry at GHz scale used to fail the absolute 1e-10 check.
+        return 1e10 * np.array([[t, 1.0 + 1e-15], [1.0, -t]])
+
+    decomposition = decompose_hamiltonian(large_scale, times=times)
+    np.testing.assert_allclose(decomposition.reconstruct_sample(2).full(), large_scale(0.5), rtol=1e-8)
+
+    def small_scale_non_hermitian(t: float) -> np.ndarray:
+        return 1e-12 * np.array([[t, 1.0], [0.0, -t]])
+
+    with pytest.raises(ValidationError, match="must be Hermitian"):
+        decompose_hamiltonian(small_scale_non_hermitian, times=times)
+
+
+def test_decompose_rejects_non_finite_samples() -> None:
+    with pytest.raises(ValidationError, match="finite values"):
+        decompose_hamiltonian(lambda t: np.array([[t, np.nan], [np.nan, -t]]), times=np.linspace(0.0, 1.0, 3))

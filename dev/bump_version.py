@@ -21,6 +21,7 @@ from typing import Literal
 from packaging.version import InvalidVersion, Version
 
 _VERSION_PATTERN = re.compile(r'(__version__\s*=\s*")([^"]+)(")')
+_CITATION_VERSION_PATTERN = re.compile(r"^(version:\s*)(\S+)\s*$", re.MULTILINE)
 _UNRELEASED_PATTERN = re.compile(r"^(?P<heading>## \[Unreleased\][^\n]*\n)(?P<body>.*?)(?=^## \[|\Z)",
                                  re.MULTILINE | re.DOTALL, )
 
@@ -77,6 +78,13 @@ def prepare_updates(meta_content: str, changelog_content: str, new_version: Vers
     return updated_meta, updated_changelog
 
 
+def prepare_citation_update(citation_content: str, new_version: Version) -> str:
+    """Return CITATION.cff content with its top-level ``version`` set to ``new_version``."""
+    if _CITATION_VERSION_PATTERN.search(citation_content) is None:
+        raise ValueError("Could not find a top-level 'version:' entry in CITATION.cff")
+    return _CITATION_VERSION_PATTERN.sub(rf"\g<1>{new_version}", citation_content, count=1)
+
+
 def _write_temp(path: Path, content: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n", dir=path.parent,
@@ -118,16 +126,19 @@ def atomic_update(files: dict[Path, str]) -> None:
 
 
 def update_project(meta_file: Path, changelog_file: Path, new_version: Version, *, dry_run: bool = False,
-                   release_date: date | None = None, ) -> tuple[str, str]:
-    """Validate and update both project files, optionally without writing."""
+                   release_date: date | None = None, citation_file: Path | None = None, ) -> tuple[str, str]:
+    """Validate and update the project files (and CITATION.cff, if given), optionally without writing."""
     current = read_current_version(meta_file)
     if new_version <= current:
         raise ValueError(f"New version {new_version} must be greater than current version {current}")
     updated_meta, updated_changelog = prepare_updates(meta_file.read_text(encoding="utf-8"),
                                                       changelog_file.read_text(encoding="utf-8"), new_version,
                                                       release_date=release_date, )
+    files = {meta_file: updated_meta, changelog_file: updated_changelog}
+    if citation_file is not None:
+        files[citation_file] = prepare_citation_update(citation_file.read_text(encoding="utf-8"), new_version)
     if not dry_run:
-        atomic_update({meta_file: updated_meta, changelog_file: updated_changelog})
+        atomic_update(files)
     return updated_meta, updated_changelog
 
 
@@ -147,6 +158,7 @@ def main(argv: list[str] | None = None) -> int:
     project_root = Path(__file__).resolve().parents[1]
     meta_file = project_root / "src" / "geodesiq" / "_meta.py"
     changelog_file = project_root / "CHANGELOG.md"
+    citation_file = project_root / "CITATION.cff"
     current = read_current_version(meta_file)
 
     if args.version is not None:
@@ -162,7 +174,8 @@ def main(argv: list[str] | None = None) -> int:
         new_version = increment_version(current, part)
 
     try:
-        update_project(meta_file, changelog_file, new_version, dry_run=args.dry_run)
+        update_project(meta_file, changelog_file, new_version, dry_run=args.dry_run,
+                       citation_file=citation_file if citation_file.exists() else None, )
     except ValueError as exc:
         build_parser().error(str(exc))
 

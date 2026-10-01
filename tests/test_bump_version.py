@@ -56,3 +56,24 @@ def test_dry_run_does_not_write(tmp_path: Path) -> None:
     updated = bump_version.update_project(meta, changelog, Version("1.2.4"), dry_run=True)
     assert updated != before
     assert (meta.read_text(encoding="utf-8"), changelog.read_text(encoding="utf-8")) == before
+
+
+def test_citation_version_is_updated_atomically(tmp_path: Path) -> None:
+    meta, changelog = project_files(tmp_path)
+    citation = tmp_path / "CITATION.cff"
+    citation.write_text('cff-version: 1.2.0\ntitle: "x"\nversion: 1.2.3\nlicense: MIT\n', encoding="utf-8")
+
+    bump_version.update_project(meta, changelog, Version("1.3.0"), citation_file=citation)
+
+    assert citation.read_text(encoding="utf-8") == 'cff-version: 1.2.0\ntitle: "x"\nversion: 1.3.0\nlicense: MIT\n'
+
+
+def test_citation_without_version_is_rejected_before_writing(tmp_path: Path) -> None:
+    meta, changelog = project_files(tmp_path)
+    citation = tmp_path / "CITATION.cff"
+    citation.write_text("cff-version: 1.2.0\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="version"):
+        bump_version.update_project(meta, changelog, Version("1.3.0"), citation_file=citation)
+
+    assert '__version__ = "1.2.3"' in meta.read_text(encoding="utf-8")

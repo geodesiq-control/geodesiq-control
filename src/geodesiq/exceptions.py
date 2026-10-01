@@ -11,7 +11,7 @@ class GeodesiQError(Exception):
 
 
 # ---- Error families ----
-class ValidationError(GeodesiQError):
+class ValidationError(GeodesiQError, ValueError):
     """Invalid user-provided input values or shapes."""
 
 
