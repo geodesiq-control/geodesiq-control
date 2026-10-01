@@ -4,6 +4,9 @@ from typing import Callable, Literal
 import numpy as np
 import qutip as qt
 
+from ._utils import HERMITIAN_RTOL, is_hermitian
+from .exceptions import ValidationError
+
 
 def _hermitian_to_real_vector(H: np.ndarray) -> np.ndarray:
     """Map a d x d Hermitian matrix to R^(d^2), preserving the Frobenius inner product."""
@@ -70,7 +73,7 @@ def decompose_hamiltonian(
     rank: int | None = None,
     rtol: float = 1e-10,
     atol: float = 0.0,
-    hermitian_tol: float = 1e-10,
+    hermitian_tol: float = HERMITIAN_RTOL,
 ) -> HamiltonianDecomposition:
     """
     Numerically decompose a time-dependent Hamiltonian as
@@ -99,7 +102,7 @@ def decompose_hamiltonian(
     atol
         Absolute singular-value cutoff.
     hermitian_tol
-        Tolerance used to verify Hermiticity.
+        Relative tolerance used to verify Hermiticity: ``||H - H^dagger||_F <= hermitian_tol * ||H||_F``.
 
     Returns
     -------
@@ -108,10 +111,10 @@ def decompose_hamiltonian(
     times = np.asarray(times, dtype=float)
 
     if times.ndim != 1 or len(times) < 1:
-        raise ValueError("times must be a one-dimensional non-empty array.")
+        raise ValidationError("times must be a one-dimensional non-empty array.")
 
     if np.any(np.diff(times) <= 0):
-        raise ValueError("times must be strictly increasing.")
+        raise ValidationError("times must be strictly increasing.")
 
     raw_samples = [H_func(float(t)) for t in times]
 
@@ -121,13 +124,16 @@ def decompose_hamiltonian(
     samples = np.asarray([H.full() if isinstance(H, qt.Qobj) else np.asarray(H, dtype=complex) for H in raw_samples])
 
     if samples.ndim != 3 or samples.shape[1] != samples.shape[2]:
-        raise ValueError("H_func must return square matrices.")
+        raise ValidationError("H_func must return square matrices.")
 
     d = samples.shape[1]
 
+    if not np.all(np.isfinite(samples)):
+        raise ValidationError("All sampled Hamiltonians must contain only finite values.")
+
     for H in samples:
-        if not np.allclose(H, H.conj().T, atol=hermitian_tol, rtol=0.0):
-            raise ValueError("All sampled Hamiltonians must be Hermitian.")
+        if not is_hermitian(H, rtol=hermitian_tol):
+            raise ValidationError("All sampled Hamiltonians must be Hermitian.")
 
     if isinstance(drift, str):
         if drift == "mean":
@@ -137,15 +143,18 @@ def decompose_hamiltonian(
         elif drift == "zero":
             H_d_array = np.zeros((d, d), dtype=complex)
         else:
-            raise ValueError(f"Unknown drift option: {drift}")
+            raise ValidationError(f"Unknown drift option: {drift}")
     else:
         H_d_array = drift.full() if isinstance(drift, qt.Qobj) else np.asarray(drift, dtype=complex)
 
     if H_d_array.shape != (d, d):
-        raise ValueError("The drift Hamiltonian has incompatible dimensions.")
+        raise ValidationError("The drift Hamiltonian has incompatible dimensions.")
 
-    if not np.allclose(H_d_array, H_d_array.conj().T, atol=hermitian_tol, rtol=0.0):
-        raise ValueError("H_d must be Hermitian.")
+    if not np.all(np.isfinite(H_d_array)):
+        raise ValidationError("H_d must contain only finite values.")
+
+    if not is_hermitian(H_d_array, rtol=hermitian_tol):
+        raise ValidationError("H_d must be Hermitian.")
 
     residuals = samples - H_d_array
 
@@ -157,7 +166,7 @@ def decompose_hamiltonian(
         threshold = atol + rtol * singular_values[0] if singular_values.size else atol
         rank = int(np.sum(singular_values > threshold))
     elif not 0 <= rank <= len(singular_values):
-        raise ValueError(f"rank must satisfy 0 <= rank <= {len(singular_values)}.")
+        raise ValidationError(f"rank must satisfy 0 <= rank <= {len(singular_values)}.")
 
     basis_vectors = U[:, :rank]
     coefficients = singular_values[:rank, None] * Vh[:rank, :]

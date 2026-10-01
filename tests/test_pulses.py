@@ -120,9 +120,10 @@ def test_export_pulse_as_txt(default_pulse, tmp_path):
     assert os.path.exists(expected_full_path)
 
     # Load back data to verify integrity
-    loaded_data = np.loadtxt(expected_full_path, delimiter=",", skiprows=1)
+    loaded_data = np.loadtxt(expected_full_path, skiprows=1)
     assert loaded_data.shape[0] == len(default_pulse._pulse)
-    np.testing.assert_array_almost_equal(loaded_data[:, 1], default_pulse._pulse)
+    np.testing.assert_array_equal(loaded_data[:, 0], default_pulse.times)
+    np.testing.assert_array_equal(loaded_data[:, 1], default_pulse._pulse)
 
 
 def test_export_pulse_raises_on_existing_file(default_pulse, tmp_path):
@@ -154,12 +155,12 @@ def test_export_pulse_with_overwrite(default_pulse, tmp_path):
 
 def test_export_pulse_unsupported_extension(default_pulse, tmp_path):
     """Verify export_pulse raises error for unsupported file extensions."""
-    from geodesiq.exceptions import MissingArgsError
-
     test_file_base = os.path.join(tmp_path, "test_pulse_invalid")
 
-    with pytest.raises(MissingArgsError, match="Unsupported data_type"):
+    with pytest.raises(ValidationError, match="Unsupported data_type"):
         default_pulse.export_pulse(filename=test_file_base, file_extension="json")
+
+    assert not os.listdir(tmp_path)
 
 
 def test_export_pulse_strips_leading_dot(default_pulse, tmp_path):
@@ -261,3 +262,68 @@ def test_pulse_control_pulse_times_generation(sample_pulse_data):
     # Should be uniformly spaced
     differences = np.diff(pc._pulse_times)
     np.testing.assert_array_almost_equal(differences, differences[0] * np.ones_like(differences))
+
+
+# ------------------------------------------------------------
+# Export precision, return value and input validation
+# ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("file_extension", "delimiter"), [("txt", None), ("csv", ",")])
+def test_export_keeps_full_precision_for_nanosecond_pulses(tmp_path, file_extension: str, delimiter):
+    """Times in seconds for a ns-scale pulse used to be written as 0.00000000."""
+    pc = PulseControl(pulse=np.linspace(1e-6, 3e-6, 11) + np.pi * 1e-12, duration=5e-9)
+
+    output_path = pc.export_pulse(tmp_path / "ns_pulse", file_extension=file_extension)
+
+    loaded = np.loadtxt(output_path, delimiter=delimiter, skiprows=1)
+    np.testing.assert_array_equal(loaded[:, 0], pc.times)
+    np.testing.assert_array_equal(loaded[:, 1], pc.pulse)
+
+
+def test_export_csv_has_header_and_comma_delimiter(default_pulse, tmp_path):
+    output_path = default_pulse.export_pulse(tmp_path / "pulse", file_extension="csv")
+
+    lines = output_path.read_text().splitlines()
+    assert lines[0] == "t,pulse"
+    assert len(lines[1].split(",")) == 2
+
+
+def test_export_returns_path_and_does_not_print(default_pulse, tmp_path, capsys):
+    output_path = default_pulse.export_pulse(str(tmp_path / "pulse"), file_extension=".npz")
+
+    assert output_path == tmp_path / "pulse.npz"
+    assert output_path.exists()
+    assert capsys.readouterr().out == ""
+
+
+def test_export_unsupported_extension_is_checked_before_existing_file(default_pulse, tmp_path):
+    (tmp_path / "pulse.json").write_text("{}")
+
+    with pytest.raises(ValidationError, match="Unsupported data_type"):
+        default_pulse.export_pulse(tmp_path / "pulse", file_extension="json")
+
+
+@pytest.mark.parametrize("linear_steps", [1, 0, -3, 2.5, True, "4"])
+def test_discretized_pulse_rejects_invalid_steps(default_pulse, linear_steps):
+    with pytest.raises(ValidationError, match="linear_steps must be an integer >= 2"):
+        default_pulse.discretized_pulse(linear_steps=linear_steps)
+
+
+def test_discretized_pulse_accepts_numpy_integer_and_matches_linear_interpolation(default_pulse):
+    times, values = default_pulse.discretized_pulse(linear_steps=np.int64(7))
+
+    assert times.shape == (7,)
+    np.testing.assert_allclose(values, np.interp(times, default_pulse.times, default_pulse.pulse))
+
+
+@pytest.mark.parametrize("cutoff_freq", ["0.1", None, True, np.nan, np.inf])
+def test_filtered_pulse_rejects_invalid_cutoff_types(default_pulse, cutoff_freq):
+    with pytest.raises(ValidationError):
+        default_pulse.filtered_pulse(cutoff_freq=cutoff_freq)
+
+
+def test_filtered_pulse_accepts_numpy_filter_order(default_pulse):
+    times, filtered = default_pulse.filtered_pulse(cutoff_freq=0.1, filter_order=np.int64(2))
+
+    assert filtered.shape == times.shape

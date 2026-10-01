@@ -635,13 +635,21 @@ class TestCheckControlParameters:
         with pytest.raises(MissingControlParameterError, match="alpha"):
             bare_ham._check_control_parameters()
 
-    def test_missing_num_steps_is_reported(self, bare_ham):
+    def test_setters_apply_the_same_num_steps_default_as_set_control(self, bare_ham):
         bare_ham.control_name = "lam"
         bare_ham.pulse_initial = -1.0
         bare_ham.pulse_final = 1.0
         bare_ham.initial_state = 0
         bare_ham.alpha = 2.0
         bare_ham.beta = 2.0
+
+        assert bare_ham.num_steps == 2**10 + 1
+        bare_ham._check_control_parameters()  # should not raise
+
+    def test_missing_num_steps_is_reported(self, bare_ham):
+        bare_ham.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0,
+                             beta=2.0)
+        bare_ham._num_steps = None
 
         with pytest.raises(MissingControlParameterError, match="num_steps"):
             bare_ham._check_control_parameters()

@@ -168,13 +168,27 @@ class Flags:
             raise KeyError(f"Flag '{name}' is not registered.")
 
 
+# Relative tolerance for Hermiticity checks, measured against the Frobenius norm of the matrix.
+HERMITIAN_RTOL = 1e-8
+
+
+def is_hermitian(matrix: np.ndarray, rtol: float = HERMITIAN_RTOL) -> bool:
+    """
+    Check Hermiticity relative to the scale of the matrix, so the result does not depend on the energy units.
+
+    The matrix is Hermitian if ``||A - A^dagger||_F <= rtol * ||A||_F``. The zero matrix is Hermitian.
+    """
+    array = np.asarray(matrix)
+    return bool(np.linalg.norm(array - array.conj().T) <= rtol * np.linalg.norm(array))
+
+
 def build_diab(initial_state: int, final_state: int, dim: int) -> np.ndarray:
     """Build the adiabatic/diabatic transition mask with validated indices."""
     if not isinstance(dim, int) or isinstance(dim, bool) or dim < 1:
-        raise ValueError("dim must be a positive integer.")
+        raise ValidationError("dim must be a positive integer.")
     for label, state in (("initial_state", initial_state), ("final_state", final_state)):
         if not isinstance(state, int) or isinstance(state, bool) or not 0 <= state < dim:
-            raise ValueError(f"{label} must be an integer in [0, {dim - 1}].")
+            raise ValidationError(f"{label} must be an integer in [0, {dim - 1}].")
     diad_list = -1 * np.eye(dim, dtype=int)  # Diagonal entries are -1 by default
 
     min_state = min(initial_state, final_state)

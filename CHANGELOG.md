@@ -6,53 +6,86 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ## [Unreleased]
 
-## [0.2.1] - 2026-10-01
+## [0.3.0] - 2026-10-01
 
-## Added
+### Added
 
 - `Dynamics` can be driven by a custom pulse via the keyword-only `times` and `pulse` arguments, e.g. a pulse filtered
   with `PulseControl.filtered_pulse()`. Passing only `duration` keeps using the solved optimal pulse.
 - `Dynamics.times`, `Dynamics.pulse` and `Dynamics.duration` read-only properties.
+- `final_only` option in `Dynamics.time_evolution_operator()` and `Dynamics.average_gate_fidelity()` to keep only the
+  final propagator instead of one dense matrix per time sample.
+- `ControlModel.s` read-only property with the normalized time grid of the control solution.
 
-## Changed
+### Changed
 
 - `Dynamics` now takes `model` as its first (mandatory) argument: `Dynamics(model, duration=...)`. Calls that pass
   `duration` and `model` positionally (`Dynamics(tf, model)`) must be updated; keyword calls are unaffected. `hbar` is
   now keyword-only.
+- All numerical tolerances are now relative, so results no longer depend on the units of the Hamiltonian (e.g. Joules
+  or Hz instead of natural units):
+  - an energy gap is degenerate when it is below `1e-12` times the spectral bandwidth (was an absolute `1e-14`);
+  - the metric tensor is zero when it is below `1e-20` times its maximum;
+  - Hermiticity is checked as `||H - H^dagger|| <= 1e-8 ||H||` in `ControlModel` and `decompose_hamiltonian`, whose
+    `hermitian_tol` is now relative (default `1e-8`);
+  - the absolute tolerance of the numerical derivative scales with `|H| / |control range|`.
+- `ValidationError` now also derives from `ValueError`. `decompose_hamiltonian` raises `ValidationError` instead of a
+  plain `ValueError`, so existing `except ValueError` code keeps working.
+- `solve_problem()` without `pulse_accuracy` reuses the accuracy of the previous solve (1000 on the first solve). This
+  also applies to the automatic re-solves of `control_sol` and `synthesize_pulse()` after a configuration change, which
+  previously fell back to 1000 samples.
+- The `ControlModel` control setters (`model.alpha = ...`, etc.) delegate to `set_control()`, so they share its
+  validation and cache invalidation. As with `set_control()`, `num_steps` now defaults to `2**10 + 1` when unset.
+- `PulseControl.export_pulse()` returns the written path and no longer prints. Unsupported extensions raise
+  `ValidationError` (was `MissingArgsError`) before anything else is checked. `txt` files are now whitespace-delimited
+  (`csv` stays comma-delimited).
+- `matplotlib.pyplot` is imported lazily by `ControlModel` plotting methods.
+
+### Fixed
+
+- `PulseControl.export_pulse()` wrote `txt`/`csv` values with 8 fixed decimals, so e.g. nanosecond times in seconds were
+  saved as zero. Values are now written with full double precision.
+- Unit-dependent degeneracy and Hermiticity checks: SI-scale Hamiltonians were rejected as degenerate, small-scale
+  non-Hermitian matrices were accepted, and GHz-scale numerical derivatives failed to converge.
+- Non-finite Hamiltonians are reported as such instead of as non-Hermitian.
+- `Dynamics.state_fidelity()` accepts NumPy integer state indices and rejects booleans.
+- `PulseControl.discretized_pulse()` and `PulseControl.filtered_pulse()` validate `linear_steps`, `cutoff_freq` and
+  `filter_order`.
+- `about()` no longer prints an empty "Reference paper" line.
 
 ## [0.2.0] - 2026-09-22
 
-## Added
+### Added
 
-- Added the possibility to use affine Hamiltonian control, where the Hamiltonian is expressed as a linear combination
-  of a set of basis Hamiltonians with time-dependent coefficients. This allows for more flexible control strategies and
-  can be useful in various quantum control scenarios. Furthermore, it's far more efficient in general.
+- Added the possibility to use affine Hamiltonian control, `H(u) = H_d + u H_c`, by passing the constant drift and
+  control matrices to `ControlModel(H_d=..., H_c=...)`. This is far more efficient than a general Hamiltonian
+  function.
 
-## Dev
+### Dev
 
 - Use `twine>=7` for publishing packages.
 
-## Changed
+### Changed
 
 - Switched static type checking tooling from `mypy` to `ty` in project dependencies, CI, and contributor documentation.
 
 ## [0.1.5] - 2026-08-06
 
-## Fixed
+### Fixed
 
 - `README.md` badges for PyPI, and logo image.
 - Correctly raise `NumericalStabilityWarning` as a warning, instead of raising it as an exception.
 
 ## [0.1.4] - 2026-08-06
 
-## Added
+### Added
 
 - `ControlModel` now raises a `MetricComputationError` when the metric tensor is never larger than the _SINGULARITY_RTOL
   threshold, indicating that the metric tensor is always close to zero.
 - Test to verify that the DQD model does not raise a `MetricComputationError` when the metric tensor is close to zero at
   some point, but not always.
 
-## Changed
+### Changed
 
 - Relax the _SINGULARITY_RTOL from 1e-12 to 1e-20, so values closer to zero are accepted.
 - Instead of returning a `MetricComputationError` when the metric tensor is close to zero at some point, now the
@@ -61,7 +94,7 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ## [0.1.3] - 2026-07-28
 
-## Added
+### Added
 
 - Badges for PyPI, Python version, GitHub Actions CI status, code coverage, license and maintenability.
 

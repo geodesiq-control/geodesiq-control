@@ -10,6 +10,7 @@ from geodesiq.exceptions import (
     InvalidControlParameterError,
     MetricComputationError,
     SolverError,
+    ValidationError,
 )
 
 # ---------------------------------------------------------------------------
@@ -278,3 +279,248 @@ class TestDegeneracies:
         model_small_shifted = make_model(10)
 
         np.testing.assert_allclose(model_0.eigenenergies + 10, model_small_shifted.eigenenergies)
+
+
+# ---------------------------------------------------------------------------
+# Unit independence of the numerical tolerances
+# ---------------------------------------------------------------------------
+def scaled_lz_hamiltonian(lam: float, scale: float, delta: float = 0.5) -> np.ndarray:
+    """Landau-Zener Hamiltonian H = scale * (lam sigma_z + delta sigma_x), e.g. scale = h * 1 GHz in Joules."""
+    return scale * lz_hamiltonian(lam, delta=delta)
+
+
+def scaled_lz_partial(lam: float, scale: float, delta: float = 0.5) -> np.ndarray:
+    return scale * lz_partial(lam, delta=delta)
+
+
+def scaled_model(scale: float, *, analytical: bool = True, initial_state: int = 0, final_state: int = 0,
+                 ) -> ControlModel:
+    model = ControlModel(scaled_lz_hamiltonian, scaled_lz_partial if analytical else None)
+    model.set_parameters(scale=scale, delta=0.5)
+    model.set_control(control_name="lam", pulse_initial=-3.0, pulse_final=3.0, initial_state=initial_state,
+                      final_state=final_state, alpha=2.0, beta=2.0, dia_alpha=2.0, dia_beta=2.0, num_steps=65, )
+    model.solve_problem(pulse_accuracy=50)
+    return model
+
+
+class TestUnitIndependence:
+    """The optimal pulse only depends on the shape of the spectrum, not on the units of the Hamiltonian."""
+
+    @pytest.mark.parametrize("scale", [6.62607015e-25, 1e-12, 1e9])
+    @pytest.mark.parametrize("analytical", [True, False])
+    def test_control_solution_does_not_depend_on_energy_units(self, scale: float, analytical: bool):
+        reference = scaled_model(1.0, analytical=analytical)
+        scaled = scaled_model(scale, analytical=analytical)
+
+        np.testing.assert_allclose(scaled.control_sol, reference.control_sol, rtol=1e-7, atol=1e-9)
+
+    @pytest.mark.parametrize("scale", [6.62607015e-25, 1e9])
+    def test_diabatic_solution_does_not_depend_on_energy_units(self, scale: float):
+        reference = scaled_model(1.0, initial_state=0, final_state=1)
+        scaled = scaled_model(scale, initial_state=0, final_state=1)
+
+        np.testing.assert_allclose(scaled.control_sol, reference.control_sol, rtol=1e-7, atol=1e-9)
+
+    @pytest.mark.parametrize("scale", [6.62607015e-25, 1.0, 1e9])
+    def test_true_degeneracy_is_rejected_in_any_units(self, scale: float):
+        model = ControlModel(lambda lam: scale * degenerate_hamiltonian(lam),
+                             lambda lam: scale * degenerate_partial(lam))
+        model.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0,
+                          beta=2.0, num_steps=65, )
+
+        with pytest.raises(MetricComputationError, match="Degenerate or near-degenerate"):
+            model.solve_problem()
+
+    @pytest.mark.filterwarnings("ignore::geodesiq.warnings.NumericalStabilityWarning")
+    def test_small_but_resolved_gap_is_not_a_degeneracy(self):
+        """A minimum gap of ~1e-7 relative to the bandwidth is physical and must not be flagged as degenerate."""
+        delta = 1e-6
+
+        def hamiltonian(lam: float) -> np.ndarray:
+            return np.array([[lam, delta, 0.0], [delta, -lam, 0.0], [0.0, 0.0, 10.0]])
+
+        def partial(lam: float) -> np.ndarray:
+            return np.diag([1.0, -1.0, 0.0])
+
+        model = ControlModel(hamiltonian, partial)
+        model.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0,
+                          beta=2.0, num_steps=65, )
+
+        model.solve_problem(pulse_accuracy=50)
+
+        gaps = np.diff(np.sort(model.eigenenergies, axis=1), axis=1)
+        assert gaps.min() / np.ptp(model.eigenenergies, axis=1).max() < 1e-6
+        assert np.all(np.isfinite(model.control_sol))
+
+
+# ---------------------------------------------------------------------------
+# Hermiticity checks
+# ---------------------------------------------------------------------------
+class TestHermiticity:
+    def test_non_hermitian_matrix_is_rejected_at_small_scales(self):
+        """At 1e-12 energy scales the old absolute tolerance accepted any matrix."""
+
+        def hamiltonian(lam: float) -> np.ndarray:
+            return 1e-12 * np.array([[lam, 1.0], [0.0, -lam]])
+
+        model = ControlModel(hamiltonian)
+        model.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0,
+                          beta=2.0, num_steps=33, )
+
+        with pytest.raises(ValidationError, match="Hermitian"):
+            model.evaluate_hamiltonian(0.5)
+
+    def test_rounding_level_asymmetry_is_accepted_at_large_scales(self):
+        def hamiltonian(lam: float) -> np.ndarray:
+            return 1e10 * np.array([[lam, 1.0 + 1e-15], [1.0, -lam]])
+
+        model = ControlModel(hamiltonian)
+        model.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0,
+                          beta=2.0, num_steps=33, )
+
+        np.testing.assert_allclose(model.evaluate_hamiltonian(0.5), hamiltonian(0.5))
+
+    def test_non_finite_matrix_reports_finiteness_not_hermiticity(self):
+        model = ControlModel(lambda lam: np.array([[lam, np.nan], [np.nan, -lam]]))
+        model.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0)
+
+        with pytest.raises(ValidationError, match="finite values"):
+            model.evaluate_hamiltonian(0.5)
+
+    def test_affine_matrices_use_relative_check(self):
+        H_c = np.diag([1.0, -1.0]) * 1e-12
+        non_hermitian_drift = np.array([[0.0, 1.0], [0.0, 0.0]]) * 1e-12
+
+        with pytest.raises(ValidationError, match="H_d must be Hermitian"):
+            ControlModel(H_d=non_hermitian_drift, H_c=H_c)
+
+
+# ---------------------------------------------------------------------------
+# Re-solving keeps the pulse accuracy
+# ---------------------------------------------------------------------------
+class TestPulseAccuracyIsReused:
+    def test_control_sol_resolves_with_previous_accuracy(self):
+        model = configured_model()
+        model.solve_problem(pulse_accuracy=50)
+
+        model.set_control(alpha=3.0)
+
+        assert model.control_sol.shape == (50,)
+        assert model.s.shape == (50,)
+
+    def test_synthesize_pulse_resolves_with_previous_accuracy(self):
+        model = configured_model()
+        model.solve_problem(pulse_accuracy=40)
+
+        model.set_parameters(delta=0.7)
+
+        assert model.synthesize_pulse(duration=2.0).pulse.shape == (40,)
+
+    def test_explicit_accuracy_still_wins(self):
+        model = configured_model()
+        model.solve_problem(pulse_accuracy=40)
+
+        model.solve_problem(pulse_accuracy=60)
+
+        assert model.control_sol.shape == (60,)
+
+    def test_default_accuracy_on_first_solve(self):
+        model = configured_model()
+
+        model.solve_problem()
+
+        assert model.control_sol.shape == (ControlModel._DEFAULT_PULSE_ACCURACY,)
+
+    def test_s_property_is_a_copy_of_the_normalized_grid(self):
+        model = configured_model()
+        model.solve_problem(pulse_accuracy=30)
+
+        s = model.s
+        s[0] = 5.0
+
+        assert model.s[0] == 0.0
+        assert model.s[-1] == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# Setters share the logic of set_control
+# ---------------------------------------------------------------------------
+class TestSettersDelegateToSetControl:
+    def test_setters_and_set_control_produce_the_same_state(self):
+        by_setters = ControlModel(lz_hamiltonian, lz_partial)
+        by_setters.control_name = "lam"
+        by_setters.pulse_initial = -3.0
+        by_setters.pulse_final = 3.0
+        by_setters.initial_state = 0
+        by_setters.alpha = 2.0
+        by_setters.beta = 2.0
+
+        by_set_control = ControlModel(lz_hamiltonian, lz_partial)
+        by_set_control.set_control(control_name="lam", pulse_initial=-3.0, pulse_final=3.0, initial_state=0,
+                                   alpha=2.0, beta=2.0, )
+
+        for name in ("control_name", "pulse_initial", "pulse_final", "initial_state", "final_state", "alpha", "beta",
+                     "num_steps"):
+            assert getattr(by_setters, name) == getattr(by_set_control, name), name
+
+    def test_setter_change_invalidates_the_solution(self):
+        model = configured_model()
+        model.solve_problem(pulse_accuracy=30)
+        first = model.control_sol
+
+        model.alpha = 4.0
+
+        assert not model._flags["metric_computed"]
+        assert not np.allclose(model.control_sol, first)
+
+    def test_invalid_setter_value_leaves_state_unchanged(self):
+        model = configured_model()
+
+        with pytest.raises(InvalidControlParameterError, match="must be different"):
+            model.pulse_final = model.pulse_initial
+
+        assert model.pulse_final == 3.0
+
+    def test_none_keeps_previous_value(self):
+        model = configured_model()
+
+        model.alpha = None
+
+        assert model.alpha == 2.0
+
+
+# ---------------------------------------------------------------------------
+# Plotting after reconfiguration
+# ---------------------------------------------------------------------------
+class TestPlotEigenvaluesAfterReconfiguration:
+    @pytest.fixture(autouse=True)
+    def _agg_backend(self):
+        import matplotlib
+
+        matplotlib.use("Agg")
+
+    def test_first_branch_uses_the_new_grid(self):
+        import matplotlib.pyplot as plt
+
+        model = configured_model()
+        model.solve_problem(pulse_accuracy=30)
+
+        model.set_control(pulse_initial=-1.0)
+        fig, ax = cast(Any, model.plot_eigenvalues())
+
+        expected_grid = np.linspace(-1.0, 3.0, 65)
+        for line in ax.get_lines():
+            np.testing.assert_allclose(line.get_xdata(), expected_grid)
+        plt.close(fig)
+
+    def test_changing_num_steps_does_not_break_plot(self):
+        import matplotlib.pyplot as plt
+
+        model = configured_model()
+        model.solve_problem(pulse_accuracy=30)
+
+        model.set_control(num_steps=33)
+        fig, ax = cast(Any, model.plot_eigenvalues())
+
+        assert all(len(line.get_xdata()) == 33 for line in ax.get_lines())
+        plt.close(fig)

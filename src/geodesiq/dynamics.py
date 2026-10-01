@@ -185,11 +185,32 @@ class Dynamics:
 
         return qt.Qobj(self.evaluate_hamiltonian(control_val_t)) / self._hbar
 
-    def time_evolution_operator(self) -> List[qt.Qobj]:
+    def time_evolution_operator(self, final_only: bool = False) -> List[qt.Qobj]:
         """
         Compute the time evolution operator using the pulse ControlModel.
+
+        Parameters:
+        -----------
+        final_only: bool
+            If True, return only the propagator at the end of the pulse instead of one per time sample. This avoids
+            storing ``len(times)`` dense matrices, which matters for large Hilbert spaces.
+
+        Returns:
+        --------
+        propagators: List[qt.Qobj]
+            Propagators U(t_i, t_0) for every time sample, or ``[U(t_f, t_0)]`` when ``final_only`` is True.
         """
         pulse_times: list[float] = np.asarray(self._pulse_times, dtype=float).tolist()
+
+        if final_only:
+            # Integrate through every sample time (as for the full propagator), but keep only the final operator.
+            identity = qt.qeye(self._qevo.dims[0])
+            options = {"store_final_state": True, "store_states": False}
+            result = qt.sesolve(self._qevo, identity, cast(Any, pulse_times), options=options)
+            if result.final_state is None:
+                raise ValidationError("Time evolution did not return a final propagator.")
+            return [result.final_state]
+
         propagator = qt.propagator(self._qevo, cast(Any, pulse_times))
         if isinstance(propagator, list):
             return propagator
@@ -217,7 +238,7 @@ class Dynamics:
 
         """
         if c_ops is None:
-            c_ops = None
+            pass
         elif isinstance(c_ops, list):
             c_ops = [qt.Qobj(op) if isinstance(op, np.ndarray) else op for op in c_ops]
         else:
@@ -240,17 +261,17 @@ class Dynamics:
             psi_init = self._eigenstate(control_initial, initial_index)
             psi_target = self._eigenstate(control_final, final_index)
 
-        elif isinstance(initial_state, int) and isinstance(final_state, int):
+        elif _is_index(initial_state) and _is_index(final_state):
             dimension = self._hamiltonian_dimension
 
             if dimension is None:
                 raise ConfigurationError("Hamiltonian dimension is unavailable.")
 
-            validate_state_index(initial_state, dimension, "initial_state")
-            validate_state_index(final_state, dimension, "final_state")
+            initial_index = validate_state_index(cast(int, initial_state), dimension, "initial_state")
+            final_index = validate_state_index(cast(int, final_state), dimension, "final_state")
 
-            psi_init = self._eigenstate(control_initial, initial_state)
-            psi_target = self._eigenstate(control_final, final_state)
+            psi_init = self._eigenstate(control_initial, initial_index)
+            psi_target = self._eigenstate(control_final, final_index)
 
         elif isinstance(initial_state, np.ndarray) and isinstance(final_state, np.ndarray):
             if (
@@ -288,7 +309,10 @@ class Dynamics:
         return state_fidelity
 
     def average_gate_fidelity(
-        self, gate: Optional[qt.Qobj | List[qt.Qobj]] = None, target_gate: Optional[qt.Qobj | np.ndarray] = None
+        self,
+        gate: Optional[qt.Qobj | List[qt.Qobj]] = None,
+        target_gate: Optional[qt.Qobj | np.ndarray] = None,
+        final_only: bool = False,
     ) -> List[float]:
         """
         Compute average gate fidelity given the pulsed time evolution operator in the explicit real-time duration given.
@@ -299,19 +323,22 @@ class Dynamics:
             The resulting pulsed gate operation.
         target_gate: Optional[qt.Qobj | np.ndarray]
             The target gate operation.
-
+        final_only: bool
+            Only used when ``gate`` is None: if True, compute the fidelity of the final propagator only (see
+            ``time_evolution_operator``).
 
         Returns:
         --------
         gate_fid: List[float]
-            A list of average gate fidelities for each time step in the pulse duration.
+            A list of average gate fidelities for each time step in the pulse duration (a single value when
+            ``final_only`` is True).
         """
 
         if isinstance(target_gate, np.ndarray):
             target_gate = qt.Qobj(target_gate)
 
         if gate is None:
-            operators = self.time_evolution_operator()
+            operators = self.time_evolution_operator(final_only=final_only)
         elif isinstance(gate, qt.Qobj):
             operators = [gate]
         elif isinstance(gate, list) and all(isinstance(g, qt.Qobj) for g in gate):
@@ -322,3 +349,8 @@ class Dynamics:
         gate_fid = [qt.average_gate_fidelity(oper=oper, target=target_gate) for oper in operators]
 
         return gate_fid
+
+
+def _is_index(value: Any) -> bool:
+    """Whether a value is an integer state index (Python or NumPy integer, but not a bool)."""
+    return isinstance(value, (int, np.integer)) and not isinstance(value, (bool, np.bool_))

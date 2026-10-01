@@ -546,3 +546,59 @@ class TestIndices:
                                                       initial_state: int,
                                                       final_state: int, ) -> None:
         default_dynamics.state_fidelity(initial_state=initial_state, final_state=final_state)
+
+
+# ---------------------------------------------------------------------------
+# NumPy indices, final-only propagators and unit consistency
+# ---------------------------------------------------------------------------
+
+
+def test_state_fidelity_accepts_numpy_integer_indices(default_dynamics):
+    expected = default_dynamics.state_fidelity(initial_state=0, final_state=1)
+
+    fidelity = default_dynamics.state_fidelity(initial_state=np.int64(0), final_state=np.int32(1))
+
+    assert fidelity == pytest.approx(expected)
+
+
+def test_state_fidelity_rejects_bool_indices(default_dynamics):
+    with pytest.raises(ValidationError, match="either integers"):
+        default_dynamics.state_fidelity(initial_state=cast(Any, True), final_state=cast(Any, False))
+
+
+@pytest.mark.parametrize("fixture_name", ["default_dynamics", "affine_dynamics"])
+def test_final_only_propagator_matches_last_full_propagator(request, fixture_name: str):
+    dynamics = request.getfixturevalue(fixture_name)
+
+    full = dynamics.time_evolution_operator()
+    final = dynamics.time_evolution_operator(final_only=True)
+
+    assert len(final) == 1
+    np.testing.assert_allclose(final[0].full(), full[-1].full(), atol=1e-6)
+
+
+def test_final_only_gate_fidelity_matches_last_value(affine_dynamics):
+    full = affine_dynamics.average_gate_fidelity(target_gate=qt.sigmax())
+    final = affine_dynamics.average_gate_fidelity(target_gate=qt.sigmax(), final_only=True)
+
+    assert len(final) == 1
+    assert final[0] == pytest.approx(full[-1], abs=1e-6)
+
+
+@pytest.mark.parametrize("scale", [6.62607015e-25, 1e9])
+def test_dynamics_is_unit_consistent(scale: float):
+    """Scaling H and hbar by the same factor leaves the dynamics in physical time unchanged."""
+    H_d = np.array([[0.0, 1.0], [1.0, 0.0]])
+    H_c = np.array([[1.0, 0.0], [0.0, -1.0]])
+
+    def build(factor: float) -> ControlModel:
+        model = ControlModel(H_d=factor * H_d, H_c=factor * H_c)
+        model.set_control(pulse_initial=1.0, pulse_final=3.0, initial_state=0, alpha=2.0, beta=2.0, num_steps=33, )
+        model.solve_problem(pulse_accuracy=50)
+        return model
+
+    reference = Dynamics(build(1.0), duration=2.0)
+    scaled = Dynamics(build(scale), duration=2.0, hbar=scale)
+
+    np.testing.assert_allclose(scaled.pulse, reference.pulse, rtol=1e-7)
+    assert scaled.state_fidelity(0, 1) == pytest.approx(reference.state_fidelity(0, 1), abs=1e-6)
