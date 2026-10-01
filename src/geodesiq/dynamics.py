@@ -1,4 +1,4 @@
-from typing import Any, List, Optional, cast
+from typing import Any, List, Optional, Tuple, cast
 
 import numpy as np
 import qutip as qt
@@ -6,38 +6,46 @@ import qutip as qt
 from ._utils import validate_state_index
 from .controlmodel import ControlModel
 from .decompose_hamiltonian import decompose_hamiltonian
-from .exceptions import ConfigurationError, ValidationError
+from .exceptions import ConfigurationError, MissingArgsError, ValidationError
 
 
 class Dynamics:
-    def __init__(self, duration: float, model: ControlModel, hbar: float = 1.0):
+    def __init__(
+        self,
+        model: ControlModel,
+        duration: Optional[float] = None,
+        *,
+        times: Optional[np.ndarray] = None,
+        pulse: Optional[np.ndarray] = None,
+        hbar: float = 1.0,
+    ):
         """
         Initialize the Dynamics object, which depends on an instance of the ControlModel class. This class deals with
         observables due to the time evolution of the pulsed ControlModel.
 
+        The control pulse driving the evolution can be given in one of two (mutually exclusive) ways:
+
+        - ``duration`` only: the optimal pulse solved by ``model`` is rescaled to the physical duration t_f.
+        - ``times`` and ``pulse``: an arbitrary pulse sampled at the given physical times is used, e.g. the output of
+          ``PulseControl.filtered_pulse()`` or ``PulseControl.discretized_pulse()``. The model then only provides the
+          Hamiltonian and the eigenstate boundary conditions.
+
         Parameters:
         -----------
-        duration: float
-            Duration of the control pulse (t_f).
         model: ControlModel
-            An instance of the ControlModel class containing the control pulse and system parameters.
+            An instance of the ControlModel class containing the Hamiltonian and the system parameters.
+        duration: Optional[float]
+            Duration of the optimal control pulse (t_f). Must not be combined with ``times`` and ``pulse``.
+        times: Optional[np.ndarray]
+            Strictly increasing physical times at which ``pulse`` is sampled. Must be given together with ``pulse``.
+        pulse: Optional[np.ndarray]
+            Control pulse values sampled at ``times``. Must be given together with ``times``.
         hbar: float
             Reduced Planck's constant (default is 1).
         """
 
-        # Attributes of the ControlModel instance
-        if model.control_pulse is None or model.control_sol is None:
-            raise ConfigurationError(
-                "Control pulse is unavailable. Solve the ControlModel before computing the dynamics."
-            )
-
-        self._control_pulse: np.ndarray = np.asarray(model.control_pulse, dtype=float)
-        self._control_sol: np.ndarray = np.asarray(model.control_sol, dtype=float)
-
-        self.evaluate_hamiltonian = lambda control_value: model.evaluate_hamiltonian(float(control_value))
-        self._initial_state: int | None = model.initial_state
-        self._final_state: int | None = model.final_state
-        self._hamiltonian_dimension: int | None = model.hamiltonian_dimension
+        if not isinstance(model, ControlModel):
+            raise ValidationError("model must be an instance of ControlModel.")
 
         if not isinstance(hbar, (int, float, np.integer, np.floating)) or isinstance(hbar, bool):
             raise ValidationError("hbar must be a finite positive number.")
@@ -49,15 +57,55 @@ class Dynamics:
             raise ValidationError("hbar must be a finite positive number.")
         self._hbar: float = hbar
 
-        if not isinstance(duration, (int, float, np.integer, np.floating)) or isinstance(duration, bool):
-            raise ValidationError("duration must be a finite positive number.")
+        self._pulse_times: np.ndarray
+        self._pulse: np.ndarray
+        self._duration: float
+        # Control values whose eigenstates define the default initial and target states.
+        self._boundary_controls: tuple[float, float]
 
-        duration = float(duration)
+        if times is not None or pulse is not None:
+            if duration is not None:
+                raise ValidationError(
+                    "Provide either duration (optimal pulse) or times and pulse (custom pulse), not both."
+                )
+            if times is None or pulse is None:
+                raise MissingArgsError("times and pulse must be provided together.")
 
-        if not np.isfinite(duration) or duration <= 0:
-            raise ValidationError("duration must be a finite positive number.")
-        self._duration: float = duration
-        self._pulse_times: np.ndarray = duration * np.linspace(0.0, 1.0, len(self._control_sol))
+            self._pulse_times, self._pulse = self._validate_custom_pulse(times, pulse)
+            self._duration = float(self._pulse_times[-1] - self._pulse_times[0])
+
+            # Eigenstates are defined by the control problem of the model. Without one, use the pulse boundaries.
+            if model.pulse_initial is not None and model.pulse_final is not None:
+                self._boundary_controls = (float(model.pulse_initial), float(model.pulse_final))
+            else:
+                self._boundary_controls = (float(self._pulse[0]), float(self._pulse[-1]))
+        else:
+            if duration is None:
+                raise MissingArgsError(
+                    "Provide either duration (optimal pulse) or times and pulse (custom pulse) to define the dynamics."
+                )
+            if not isinstance(duration, (int, float, np.integer, np.floating)) or isinstance(duration, bool):
+                raise ValidationError("duration must be a finite positive number.")
+            duration = float(duration)
+            if not np.isfinite(duration) or duration <= 0:
+                raise ValidationError("duration must be a finite positive number.")
+
+            # Attributes of the ControlModel instance
+            if model.control_pulse is None or model.control_sol is None:
+                raise ConfigurationError(
+                    "Control pulse is unavailable. Solve the ControlModel before computing the dynamics."
+                )
+
+            control_grid = np.asarray(model.control_pulse, dtype=float)
+            self._pulse = np.asarray(model.control_sol, dtype=float)
+            self._boundary_controls = (float(control_grid[0]), float(control_grid[-1]))
+            self._duration = duration
+            self._pulse_times = duration * np.linspace(0.0, 1.0, len(self._pulse))
+
+        self.evaluate_hamiltonian = lambda control_value: model.evaluate_hamiltonian(float(control_value))
+        self._initial_state: int | None = model.initial_state
+        self._final_state: int | None = model.final_state
+        self._hamiltonian_dimension: int | None = model.hamiltonian_dimension
 
         if model.affine_hamiltonian:
             H_d = model.H_d
@@ -67,12 +115,62 @@ class Dynamics:
                 raise ConfigurationError("Affine ControlModel is missing its constant drift or control Hamiltonian.")
 
             self._qevo = qt.QobjEvo(
-                [qt.Qobj(H_d) / self._hbar, [qt.Qobj(H_c) / self._hbar, self._control_sol]],
+                [qt.Qobj(H_d) / self._hbar, [qt.Qobj(H_c) / self._hbar, self._pulse]],
                 tlist=self._pulse_times,
                 order=3,
             )
         else:
             self._qevo = decompose_hamiltonian(self._get_ham, self._pulse_times, drift="mean", rtol=1e-10).qobjevo()
+
+    @staticmethod
+    def _validate_custom_pulse(times: np.ndarray, pulse: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Validate a user-provided pulse and its sampling times."""
+        time_values = np.asarray(times)
+        if time_values.ndim != 1:
+            raise ValidationError(f"times must be one-dimensional; received shape {time_values.shape}.")
+        if time_values.size < 2:
+            raise ValidationError("times must contain at least two samples.")
+        if not np.issubdtype(time_values.dtype, np.number) or np.iscomplexobj(time_values):
+            raise ValidationError("times must contain real-valued samples.")
+        time_values = np.asarray(time_values, dtype=float)
+        if not np.all(np.isfinite(time_values)):
+            raise ValidationError("times contains NaN or infinite values.")
+        if np.any(np.diff(time_values) <= 0):
+            raise ValidationError("times must be strictly increasing.")
+
+        pulse_values = np.asarray(pulse)
+        if pulse_values.ndim != 1:
+            raise ValidationError(f"pulse must be one-dimensional; received shape {pulse_values.shape}.")
+        if pulse_values.shape != time_values.shape:
+            raise ValidationError(
+                f"pulse and times must have the same length; received {pulse_values.size} and {time_values.size}."
+            )
+        if not np.issubdtype(pulse_values.dtype, np.number):
+            raise ValidationError("pulse must contain real-valued samples.")
+        if np.iscomplexobj(pulse_values):
+            if not np.allclose(pulse_values.imag, 0.0):
+                raise ValidationError("pulse must contain real-valued samples.")
+            pulse_values = pulse_values.real
+        pulse_values = np.asarray(pulse_values, dtype=float)
+        if not np.all(np.isfinite(pulse_values)):
+            raise ValidationError("pulse contains NaN or infinite values.")
+
+        return time_values.copy(), pulse_values.copy()
+
+    @property
+    def times(self) -> np.ndarray:
+        """Return a copy of the physical-time grid of the pulse."""
+        return self._pulse_times.copy()
+
+    @property
+    def pulse(self) -> np.ndarray:
+        """Return a copy of the control pulse samples driving the dynamics."""
+        return self._pulse.copy()
+
+    @property
+    def duration(self) -> float:
+        """Total duration of the pulse."""
+        return self._duration
 
     def _eigenstate(self, control_value: float, state_index: int) -> qt.Qobj:
         hamiltonian = qt.Qobj(self.evaluate_hamiltonian(control_value))
@@ -83,7 +181,7 @@ class Dynamics:
         """
         Construct the time-dependent ControlModel using QuTiP Qobj
         """
-        control_val_t = float(np.interp(t, self._pulse_times, self._control_sol))
+        control_val_t = float(np.interp(t, self._pulse_times, self._pulse))
 
         return qt.Qobj(self.evaluate_hamiltonian(control_val_t)) / self._hbar
 
@@ -125,12 +223,7 @@ class Dynamics:
         else:
             raise ValidationError("Collapse operators must be provided as a list of Qobj or numpy arrays.")
 
-        control_pulse = self._control_pulse
-
-        if control_pulse is None:
-            raise ConfigurationError(
-                "Control pulse is unavailable. Solve the ControlModel before computing the dynamics."
-            )
+        control_initial, control_final = self._boundary_controls
 
         pulse_times: list[float] = np.asarray(self._pulse_times, dtype=float).tolist()
 
@@ -144,14 +237,8 @@ class Dynamics:
                     "when no explicit states are provided."
                 )
 
-            psi_init = self._eigenstate(
-                float(control_pulse[0]),
-                initial_index,
-            )
-            psi_target = self._eigenstate(
-                float(control_pulse[-1]),
-                final_index,
-            )
+            psi_init = self._eigenstate(control_initial, initial_index)
+            psi_target = self._eigenstate(control_final, final_index)
 
         elif isinstance(initial_state, int) and isinstance(final_state, int):
             dimension = self._hamiltonian_dimension
@@ -162,8 +249,8 @@ class Dynamics:
             validate_state_index(initial_state, dimension, "initial_state")
             validate_state_index(final_state, dimension, "final_state")
 
-            psi_init = self._eigenstate(float(control_pulse[0]), initial_state)
-            psi_target = self._eigenstate(float(control_pulse[-1]), final_state)
+            psi_init = self._eigenstate(control_initial, initial_state)
+            psi_target = self._eigenstate(control_final, final_state)
 
         elif isinstance(initial_state, np.ndarray) and isinstance(final_state, np.ndarray):
             if (

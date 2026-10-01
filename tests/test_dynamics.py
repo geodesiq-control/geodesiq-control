@@ -7,7 +7,7 @@ import qutip as qt
 import geodesiq.dynamics as dynamics_module
 from geodesiq import ControlModel
 from geodesiq.dynamics import Dynamics
-from geodesiq.exceptions import ConfigurationError, ValidationError
+from geodesiq.exceptions import ConfigurationError, MissingArgsError, ValidationError
 
 # ------------------------------------------------------------
 # Real ControlModel() fixtures
@@ -19,22 +19,22 @@ def lz_hamiltonian(lam: float, delta: float = 1.0) -> np.ndarray:
     return np.array([[lam, delta], [delta, -lam]], dtype=float)
 
 
-def _build_solved_model() -> ControlModel:
+def _build_solved_model(pulse_accuracy: int = 3) -> ControlModel:
     model = ControlModel(lz_hamiltonian)
     model.set_parameters(delta=1.0)
     model.set_control(control_name="lam", pulse_initial=1.0, pulse_final=3.0, initial_state=0, final_state=1, alpha=2.0,
                       beta=2.0, dia_alpha=2.0, dia_beta=2.0, num_steps=33, )
-    model.solve_problem(pulse_accuracy=3)
+    model.solve_problem(pulse_accuracy=pulse_accuracy)
     return model
 
 
-def _build_solved_affine_model() -> ControlModel:
+def _build_solved_affine_model(pulse_accuracy: int = 5) -> ControlModel:
     H_d = np.array([[0.0, 1.0], [1.0, 0.0]])
     H_c = np.array([[1.0, 0.0], [0.0, -1.0]])
     model = ControlModel(H_d=H_d, H_c=H_c)
     model.set_control(pulse_initial=1.0, pulse_final=3.0, initial_state=0, final_state=1, alpha=2.0,
                       beta=2.0, dia_alpha=2.0, dia_beta=2.0, num_steps=33, )
-    model.solve_problem(pulse_accuracy=5)
+    model.solve_problem(pulse_accuracy=pulse_accuracy)
     return model
 
 
@@ -142,7 +142,7 @@ def test_affine_initialization_rejects_missing_internal_matrix(affine_model):
         Dynamics(duration=2.0, model=affine_model)
 
 
-@pytest.mark.parametrize("duration", [0, -1, -1.5, np.nan, np.inf, -np.inf, True, False, "1.0", None, 1 + 2j, ], )
+@pytest.mark.parametrize("duration", [0, -1, -1.5, np.nan, np.inf, -np.inf, True, False, "1.0", 1 + 2j, ], )
 def test_invalid_duration_raises_validation_error(real_model, duration: Any) -> None:
     with pytest.raises(ValidationError, match="duration must be a finite positive number", ):
         Dynamics(duration=duration, model=real_model)
@@ -153,6 +153,219 @@ def test_valid_duration_is_accepted(real_model, duration: Any) -> None:
     dynamics = Dynamics(duration=duration, model=real_model)
 
     assert dynamics._duration == float(duration)
+
+
+# ------------------------------------------------------------
+# Testing pulse sources: optimal pulse (duration) vs. custom pulse (times, pulse)
+# ------------------------------------------------------------
+
+
+class TestOptimalPulse:
+    """Only a duration is given: the solved optimal pulse is rescaled to physical time."""
+
+    def test_model_can_be_passed_positionally(self, real_model):
+        dynamics = Dynamics(real_model, 3.0)
+
+        assert dynamics.duration == 3.0
+
+    def test_uses_solved_pulse_on_uniform_grid(self, real_model):
+        dynamics = Dynamics(real_model, duration=4.0)
+
+        np.testing.assert_allclose(dynamics.pulse, real_model.control_sol)
+        np.testing.assert_allclose(dynamics.times, np.linspace(0.0, 4.0, len(real_model.control_sol)))
+
+    def test_eigenstate_boundaries_follow_control_grid(self, real_model):
+        dynamics = Dynamics(real_model, duration=2.0)
+
+        assert dynamics._boundary_controls == (real_model.pulse_initial, real_model.pulse_final)
+
+    def test_matches_synthesized_pulse_control(self, real_model):
+        duration = 2.5
+        dynamics = Dynamics(real_model, duration=duration)
+        pulse_control = real_model.synthesize_pulse(duration=duration)
+
+        np.testing.assert_allclose(dynamics.times, pulse_control.times)
+        np.testing.assert_allclose(dynamics.pulse, pulse_control.pulse)
+
+    def test_fidelity_increases_with_duration(self):
+        model = _build_solved_model(pulse_accuracy=200)
+
+        short = Dynamics(model, duration=0.5).state_fidelity(initial_state=0, final_state=0)
+        long = Dynamics(model, duration=50.0).state_fidelity(initial_state=0, final_state=0)
+
+        assert long > short
+        assert long == pytest.approx(1.0, abs=1e-3)
+
+    def test_properties_return_copies(self, default_dynamics):
+        default_dynamics.times[0] = 100.0
+        default_dynamics.pulse[0] = 100.0
+
+        assert default_dynamics.times[0] == 0.0
+        assert default_dynamics.pulse[0] != 100.0
+
+    def test_missing_duration_and_pulse_raises(self, real_model):
+        with pytest.raises(MissingArgsError, match="Provide either duration"):
+            Dynamics(real_model)
+
+    def test_invalid_model_raises(self):
+        with pytest.raises(ValidationError, match="model must be an instance of ControlModel"):
+            Dynamics(cast(Any, 2.0), duration=1.0)
+
+    def test_unsolved_model_is_solved_lazily(self):
+        model = ControlModel(lz_hamiltonian)
+        model.set_parameters(delta=1.0)
+        model.set_control(control_name="lam", pulse_initial=1.0, pulse_final=3.0, initial_state=0, final_state=1,
+                          alpha=2.0, beta=2.0, dia_alpha=2.0, dia_beta=2.0, num_steps=33, )
+
+        dynamics = Dynamics(model, duration=2.0)
+
+        np.testing.assert_allclose(dynamics.pulse, model.control_sol)
+
+
+class TestCustomPulse:
+    """Explicit times and pulse are given, e.g. after filtering the pulse with PulseControl."""
+
+    def test_reproduces_optimal_pulse_dynamics(self, real_model):
+        """Feeding the optimal pulse explicitly must give the same result as passing only the duration."""
+        optimal = Dynamics(real_model, duration=2.0)
+        custom = Dynamics(real_model, times=optimal.times, pulse=optimal.pulse)
+
+        assert custom.state_fidelity() == pytest.approx(optimal.state_fidelity(), rel=1e-8)
+        np.testing.assert_allclose(
+            custom.time_evolution_operator()[-1].full(), optimal.time_evolution_operator()[-1].full(), atol=1e-8
+        )
+
+    def test_reproduces_optimal_pulse_dynamics_affine(self, affine_model):
+        optimal = Dynamics(affine_model, duration=2.0)
+        custom = Dynamics(affine_model, times=optimal.times, pulse=optimal.pulse)
+
+        assert custom.state_fidelity() == pytest.approx(optimal.state_fidelity(), rel=1e-8)
+
+    def test_filtered_pulse_from_pulse_control(self):
+        model = _build_solved_model(pulse_accuracy=200)
+        duration = 50.0
+        pulse_control = model.synthesize_pulse(duration=duration)
+        times, filtered = pulse_control.filtered_pulse(cutoff_freq=0.1)
+
+        dynamics = Dynamics(model, times=times, pulse=filtered)
+
+        np.testing.assert_allclose(dynamics.times, times)
+        np.testing.assert_allclose(dynamics.pulse, filtered)
+        assert dynamics.duration == pytest.approx(duration)
+        assert not np.allclose(filtered, pulse_control.pulse)
+        fidelity = dynamics.state_fidelity(initial_state=0, final_state=0)
+        # A smooth, slow pulse should still drive an (almost) adiabatic evolution.
+        optimal = Dynamics(model, duration=duration).state_fidelity(initial_state=0, final_state=0)
+        assert fidelity == pytest.approx(optimal, abs=1e-2)
+
+    def test_filtered_pulse_from_pulse_control_affine(self):
+        model = _build_solved_affine_model(pulse_accuracy=200)
+        pulse_control = model.synthesize_pulse(duration=20.0)
+        times, filtered = pulse_control.filtered_pulse(cutoff_freq=0.5)
+
+        dynamics = Dynamics(model, times=times, pulse=filtered)
+        gate_fid = dynamics.average_gate_fidelity(target_gate=qt.identity(2))
+
+        assert len(gate_fid) == len(times)
+        assert gate_fid[0] == pytest.approx(1.0)
+
+    def test_discretized_pulse_uses_its_own_grid(self, real_model):
+        times, values = real_model.synthesize_pulse(duration=10.0).discretized_pulse(linear_steps=7)
+
+        dynamics = Dynamics(real_model, times=times, pulse=values)
+
+        assert len(dynamics.time_evolution_operator()) == 7
+        np.testing.assert_allclose(dynamics.times, times)
+
+    def test_non_uniform_and_shifted_time_grid(self, affine_model):
+        times = 1.0 + 4.0 * np.linspace(0.0, 1.0, 40) ** 2
+        pulse = np.linspace(1.0, 3.0, times.size)
+
+        dynamics = Dynamics(affine_model, times=times, pulse=pulse)
+        propagators = dynamics.time_evolution_operator()
+
+        assert dynamics.duration == pytest.approx(4.0)
+        np.testing.assert_allclose(propagators[0].full(), np.eye(2), atol=1e-12)
+        np.testing.assert_allclose(dynamics._get_ham(times[-1]).full(), lz_hamiltonian(3.0), atol=1e-12)
+
+    def test_linear_ramp_matches_analytical_hamiltonian(self, real_model):
+        times = np.linspace(0.0, 2.0, 21)
+        pulse = np.linspace(1.0, 3.0, times.size)
+
+        dynamics = Dynamics(real_model, times=times, pulse=pulse)
+
+        np.testing.assert_allclose(dynamics._get_ham(1.0).full(), lz_hamiltonian(2.0))
+
+    def test_eigenstate_boundaries_follow_model_control_problem(self, real_model):
+        """Initial and target eigenstates are those of the model, not of the (filtered) pulse endpoints."""
+        times = np.linspace(0.0, 1.0, 11)
+        pulse = np.linspace(1.2, 2.8, times.size)
+
+        dynamics = Dynamics(real_model, times=times, pulse=pulse)
+
+        assert dynamics._boundary_controls == (1.0, 3.0)
+
+    def test_custom_pulse_does_not_require_solved_model(self):
+        model = ControlModel(H_d=lz_hamiltonian(0.0), H_c=np.diag([1.0, -1.0]))
+        times = np.linspace(0.0, 1.0, 11)
+        pulse = np.linspace(-1.0, 1.0, times.size)
+
+        dynamics = Dynamics(model, times=times, pulse=pulse)
+
+        assert dynamics._boundary_controls == (-1.0, 1.0)
+        assert len(dynamics.average_gate_fidelity(target_gate=qt.identity(2))) == times.size
+
+    def test_custom_inputs_are_copied(self, real_model):
+        times = np.linspace(0.0, 1.0, 11)
+        pulse = np.linspace(1.0, 3.0, times.size)
+
+        dynamics = Dynamics(real_model, times=times, pulse=pulse)
+        times[0] = -5.0
+        pulse[0] = -5.0
+
+        assert dynamics.times[0] == 0.0
+        assert dynamics.pulse[0] == 1.0
+
+    def test_accepts_lists_and_real_complex_values(self, real_model):
+        dynamics = Dynamics(real_model, times=cast(Any, [0.0, 0.5, 1.0]), pulse=np.array([1.0, 2.0, 3.0]) + 0j)
+
+        assert dynamics.pulse.dtype == float
+        np.testing.assert_allclose(dynamics.pulse, [1.0, 2.0, 3.0])
+
+    def test_duration_with_custom_pulse_raises(self, real_model):
+        times = np.linspace(0.0, 1.0, 5)
+
+        with pytest.raises(ValidationError, match="not both"):
+            Dynamics(real_model, duration=1.0, times=times, pulse=np.ones(5))
+
+    @pytest.mark.parametrize("missing", ["times", "pulse"])
+    def test_times_and_pulse_must_be_given_together(self, real_model, missing: str):
+        kwargs: dict[str, Any] = {"times": np.linspace(0.0, 1.0, 5), "pulse": np.ones(5)}
+        kwargs.pop(missing)
+
+        with pytest.raises(MissingArgsError, match="must be provided together"):
+            Dynamics(real_model, **kwargs)
+
+    @pytest.mark.parametrize(
+        ("times", "pulse", "match"),
+        [
+            (np.zeros((2, 2)), np.ones(4), "times must be one-dimensional"),
+            (np.array([0.0]), np.array([1.0]), "at least two samples"),
+            (np.array(["a", "b"]), np.ones(2), "times must contain real-valued samples"),
+            (np.array([0.0, 1.0j]), np.ones(2), "times must contain real-valued samples"),
+            (np.array([0.0, np.nan]), np.ones(2), "times contains NaN or infinite"),
+            (np.array([0.0, 1.0, 1.0]), np.ones(3), "strictly increasing"),
+            (np.array([1.0, 0.0]), np.ones(2), "strictly increasing"),
+            (np.linspace(0.0, 1.0, 4), np.ones((2, 2)), "pulse must be one-dimensional"),
+            (np.linspace(0.0, 1.0, 4), np.ones(5), "same length"),
+            (np.linspace(0.0, 1.0, 2), np.array(["a", "b"]), "pulse must contain real-valued samples"),
+            (np.linspace(0.0, 1.0, 2), np.array([1.0, 1.0j]), "pulse must contain real-valued samples"),
+            (np.linspace(0.0, 1.0, 2), np.array([1.0, np.inf]), "pulse contains NaN or infinite"),
+        ],
+    )
+    def test_invalid_custom_pulse_raises(self, real_model, times, pulse, match: str):
+        with pytest.raises(ValidationError, match=match):
+            Dynamics(real_model, times=times, pulse=pulse)
 
 
 # ------------------------------------------------------------

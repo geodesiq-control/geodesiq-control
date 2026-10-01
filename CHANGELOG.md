@@ -6,6 +6,18 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ## [Unreleased]
 
+## Added
+
+- `Dynamics` can be driven by a custom pulse via the keyword-only `times` and `pulse` arguments, e.g. a pulse filtered
+  with `PulseControl.filtered_pulse()`. Passing only `duration` keeps using the solved optimal pulse.
+- `Dynamics.times`, `Dynamics.pulse` and `Dynamics.duration` read-only properties.
+
+## Changed
+
+- `Dynamics` now takes `model` as its first (mandatory) argument: `Dynamics(model, duration=...)`. Calls that pass
+  `duration` and `model` positionally (`Dynamics(tf, model)`) must be updated; keyword calls are unaffected. `hbar` is
+  now keyword-only.
+
 ## [0.2.0] - 2026-09-22
 
 ## Added
