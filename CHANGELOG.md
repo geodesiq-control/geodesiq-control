@@ -17,6 +17,14 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 - `Dynamics.plot_populations()` plots these populations over time, with the same `fig`, `ax`, `legend` and label
   arguments as `ControlModel.plot_eigenvalues()` and an optional `states` selection.
 
+### Fixed
+
+- `ControlModel.solve_problem()` no longer fails with "Required step size is less than spacing between numbers" when
+  the metric tensor spans many orders of magnitude (e.g. large `alpha` and `beta`). The default solver now integrates
+  the inverse equation `ds/dx = sqrt(G)/a` and inverts it, exactly through the PCHIP antiderivative when no
+  `solver_kwargs` are given, or with `solve_ivp` (default `rtol=1e-10`, `atol=1e-12`) otherwise. Custom solvers are
+  unchanged.
+
 ## [0.3.0] - 2026-10-01
 
 ### Added

@@ -1209,41 +1209,51 @@ class ControlModel:
             if reserved:
                 names = ", ".join(sorted(reserved))
                 raise ValidationError(f"solver_kwargs must not override internally managed option(s): {names}.")
-            kwargs = {"method": "RK45", "atol": 1e-8, "rtol": 1e-6, **kwargs}
+            # The ODE dx/ds = factor(x) is autonomous, so solve its inverse ds/dx = 1 / factor(x) and invert s(x)
+            # afterward. The speed factor can span many orders of magnitude (e.g. large alpha/beta), which makes the
+            # forward problem require steps below floating-point spacing, while the inverse is well conditioned.
+            inverse_interpolation = PchipInterpolator(
+                self._control_pulse[order],
+                1.0 / factor[order],
+                extrapolate=False,
+            )
+            x_start = float(self._control_pulse[0])
+            x_end = float(self._control_pulse[-1])
+            x_grid = np.linspace(x_start, x_end, max(self._control_pulse.size, 8 * pulse_accuracy))
 
-            target = float(self._control_pulse[-1])
+            if kwargs:
+                # Errors in s are amplified by dx/ds when inverting, hence the tight default tolerances.
+                kwargs = {"method": "RK45", "atol": 1e-12, "rtol": 1e-10, **kwargs}
 
-            class EndpointEvent:
-                def __init__(self, target: float, direction: float) -> None:
-                    self.target = target
-                    self.terminal = True
-                    self.direction = direction
+                def inverse_model(x: float, _: np.ndarray) -> np.ndarray:
+                    clipped = np.clip(x, lower, upper)
+                    return np.atleast_1d(direction * inverse_interpolation(clipped)).astype(float)
 
-                def __call__(self, _: float, y: np.ndarray) -> float:
-                    return float(y[0] - self.target)
+                try:
+                    sol = solve_ivp(inverse_model, [x_start, x_end], [0.0], dense_output=True, **kwargs)
+                except TypeError as exc:
+                    raise ValidationError("Invalid solve_ivp keyword arguments.") from exc
+                if not sol.success:
+                    raise SolverError(str(sol.message))
+                if sol.sol is None:
+                    raise SolverError("ODE solution did not reach the requested final control value.")
+                s_grid = np.asarray(sol.sol(x_grid), dtype=float)[0]
+            else:
+                # Without solver options, integrate the interpolant exactly through its piecewise-polynomial
+                # antiderivative, which is deterministic and free of step-size control.
+                antiderivative = inverse_interpolation.antiderivative()
+                s_grid = direction * (antiderivative(x_grid) - antiderivative(x_start))
 
-            endpoint_event = EndpointEvent(target, direction)
-
-            try:
-                sol = solve_ivp(
-                    model,
-                    [0.0, 10.0],
-                    [self._control_pulse[0]],
-                    dense_output=True,
-                    events=endpoint_event,
-                    **kwargs,
-                )
-            except TypeError as exc:
-                raise ValidationError("Invalid solve_ivp keyword arguments.") from exc
-            if not sol.success:
-                raise SolverError(str(sol.message))
-            if not sol.t_events or sol.t_events[0].size == 0 or sol.sol is None:
-                raise SolverError("ODE solution did not reach the requested final control value.")
-            endpoint_time = float(sol.t_events[0][0])
+            endpoint_time = float(s_grid[-1])
             if not np.isfinite(endpoint_time) or endpoint_time <= 0:
                 raise SolverError("ODE endpoint time must be finite and strictly positive.")
+            s_grid = np.maximum.accumulate(s_grid / endpoint_time)
+            # Keep only strictly increasing nodes; flat stretches occur where the metric is numerically negligible.
+            keep = np.concatenate(([True], np.diff(s_grid) > 0))
+            if np.count_nonzero(keep) < 2:
+                raise SolverError("ODE solution did not reach the requested final control value.")
             t = s
-            y = np.asarray(sol.sol(s * endpoint_time), dtype=float)
+            y = PchipInterpolator(s_grid[keep], x_grid[keep])(np.clip(s, s_grid[keep][0], s_grid[keep][-1]))
         else:
             try:
                 sol = self._solver(model, [0.0, 1.0], [self._control_pulse[0]], t_eval=s, **kwargs)
