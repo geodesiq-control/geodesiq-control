@@ -202,8 +202,6 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# uv files
-uv.lock
 
 # JupyterLab
 .jupyterlab

@@ -1,4 +1,4 @@
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from fractions import Fraction
 from functools import lru_cache
@@ -268,7 +268,7 @@ def _threadpool_controller() -> ThreadpoolController:
 
 
 @contextmanager
-def limit_blas_threads(dimension: int) -> Iterator[None]:
+def limit_blas_threads(dimension: int) -> Generator[None, None, None]:
     """Run BLAS/LAPACK single-threaded inside the context if ``dimension`` is small, otherwise leave it untouched."""
     if dimension <= SMALL_MATRIX_DIMENSION:
         with _threadpool_controller().limit(limits=1, user_api="blas"):

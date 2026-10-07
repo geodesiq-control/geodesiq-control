@@ -48,7 +48,7 @@ jobs:
           enable-cache: true
 
       - name: Sync environment
-        run: uv sync --no-default-groups --group lint
+        run: uv sync --locked --no-default-groups --group lint
 
       - name: Lint
         run: uv run --no-sync ruff check src tests
@@ -80,7 +80,7 @@ jobs:
           enable-cache: true
 
       - name: Sync environment
-        run: uv sync --no-default-groups --group test
+        run: uv sync --locked --no-default-groups --group test
 
       - name: Run tests with coverage
         run: uv run --no-sync pytest -q --cov=geodesiq --cov-report=term-missing --cov-report=xml:coverage.xml
@@ -124,7 +124,7 @@ jobs:
           cache-suffix: ${{ matrix.os }}-py${{ matrix.python-version }}
 
       - name: Sync environment
-        run: uv sync --no-default-groups --group test
+        run: uv sync --locked --no-default-groups --group test
 
       - name: Run full test suite
         run: uv run --no-sync pytest --no-cov
@@ -148,7 +148,7 @@ jobs:
           enable-cache: true
 
       - name: Sync environment
-        run: uv sync --only-group build
+        run: uv sync --locked --only-group build
 
       - name: Build distributions
         run: uv run --no-sync python -m build
