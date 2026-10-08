@@ -132,12 +132,14 @@ def benchmark_ham(ham: ControlModel, pulse_accuracy: int = 1000, n_repeat: int =
     ham.solve_problem(pulse_accuracy=pulse_accuracy)
 
     results: dict[str, dict] = {}
+    # Validated control parameters, built once as in solve_problem().
+    config = ham._check_control_parameters()
 
     # ── eigenproblem stage ──────────────────────────────────────────────────
     # Resetting eigenproblem_solved cascades metric_computed → ode_solved.
     def _bench_eigen() -> None:
         ham._flags["eigenproblem_solved"] = False
-        ham._solve_eigenproblem()
+        ham._solve_eigenproblem(config)
 
     n = _calibrate_n(_bench_eigen)
     results["eigenproblem"] = {"n_inner": n, **_stats(_time_fn(_bench_eigen, n, n_repeat))}
@@ -147,7 +149,7 @@ def benchmark_ham(ham: ControlModel, pulse_accuracy: int = 1000, n_repeat: int =
     # Resetting metric_computed cascades only ode_solved.
     def _bench_metric() -> None:
         ham._flags["metric_computed"] = False
-        ham._compute_metric_tensor()
+        ham._compute_metric_tensor(config)
 
     n = _calibrate_n(_bench_metric)
     results["metric"] = {"n_inner": n, **_stats(_time_fn(_bench_metric, n, n_repeat))}

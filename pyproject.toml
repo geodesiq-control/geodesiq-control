@@ -155,5 +155,5 @@ indent-style = "space"
 line-ending = "auto"
 
 [tool.ty.environment]
-root = ["./src"]
+root = ["./src", ".", "./benchmarks"]
 

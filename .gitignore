@@ -221,3 +221,4 @@ draft/*
 benchmarks/results/benchmark_history.parquet.lock
 
 .claude/*
+CLAUDE.md
