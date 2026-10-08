@@ -207,6 +207,31 @@ def _gap_basin(gap: np.ndarray, index: int) -> tuple[int, int]:
     return left, right
 
 
+# A diabatic passage is fully diabatic over this fraction of the way (along the control grid) from the anticrossing
+# minimum to the bounding gap maximum. From there to the maximum the exponents are blended smoothly into the adiabatic
+# ones.
+DIABATIC_BLEND_START = 0.5
+
+
+def _diabatic_weight(gap: np.ndarray, index: int, left: int, right: int) -> np.ndarray:
+    """
+    Diabatic weight on ``gap[left:right + 1]`` around the anticrossing at ``index``.
+
+    The weight is 1 near the anticrossing and decreases smoothly (C1 smoothstep along the grid) to 0 at the bounding
+    gap maxima. Edges at the ends of the grid are not maxima of the gap, so the weight is not reduced towards them.
+    """
+    weight = np.ones(right - left + 1)
+    for edge in (left, right):
+        if edge in (0, gap.size - 1) or edge == index:
+            continue
+        lo, hi = min(edge, index), max(edge, index)
+        distance = np.abs(np.arange(lo, hi + 1) - index) / abs(edge - index)
+        t = np.clip((distance - DIABATIC_BLEND_START) / (1.0 - DIABATIC_BLEND_START), 0.0, 1.0)
+        side = weight[lo - left : hi - left + 1]
+        np.minimum(side, 1.0 - t * t * (3.0 - 2.0 * t), out=side)
+    return weight
+
+
 def build_dia_list(energies: np.ndarray, initial_state: int, final_state: int) -> np.ndarray:
     """
     Build the adiabatic/diabatic transition mask along the control grid.
@@ -216,9 +241,10 @@ def build_dia_list(energies: np.ndarray, initial_state: int, final_state: int) -
     ``d = sign(final_state - initial_state)``, the passage is diabatic and the occupied state becomes ``k + d``. All
     other anticrossings, including those back away from ``final_state`` and all anticrossings after reaching it, are
     passed adiabatically. A diabatic passage only acts inside its anticrossing: between the closest maxima of the
-    corresponding gap. Overlapping anticrossings, as in a fan of levels crossing at one point, are passed together:
-    if the next gap has no minimum ahead but the grid point of a passage is still inside its last anticrossing, that
-    anticrossing is passed at the same point.
+    corresponding gap, and the exponents are blended smoothly into the adiabatic ones towards those maxima (see
+    ``DIABATIC_BLEND_START``). Overlapping anticrossings, as in a fan of levels crossing at one point, are passed
+    together: if the next gap has no minimum ahead but the grid point of a passage is still inside its last
+    anticrossing, that anticrossing is passed at the same point.
 
     Parameters
     ----------
@@ -230,9 +256,9 @@ def build_dia_list(energies: np.ndarray, initial_state: int, final_state: int) -
     Returns
     -------
     np.ndarray
-        Integer mask with shape (n_points, dim, dim). Entry ``[i, m, n]`` is ``1`` if the transition between states
-        ``m`` and ``n`` is adiabatic at grid point ``i``, ``0`` if it is diabatic and ``-1`` if it does not involve the
-        occupied state (and is not considered).
+        Adiabatic fraction with shape (n_points, dim, dim). Entry ``[i, m, n]`` is ``1`` if the transition between
+        states ``m`` and ``n`` is adiabatic at grid point ``i``, ``0`` if it is diabatic, a value in between where the
+        two are blended, and ``-1`` if it does not involve the occupied state (and is not considered).
 
     Raises
     ------
@@ -284,18 +310,21 @@ def build_dia_list(energies: np.ndarray, initial_state: int, final_state: int) -
         )
 
     # Every transition from the occupied state is adiabatic unless it belongs to a diabatic anticrossing.
-    dia_list = -np.ones((n_points, dim, dim), dtype=int)
+    dia_list = -np.ones((n_points, dim, dim), dtype=float)
     points = np.arange(n_points)
     dia_list[points[:, None], occupied[:, None], np.arange(dim)[None, :]] = 1
     dia_list[points[:, None], np.arange(dim)[None, :], occupied[:, None]] = 1
     dia_list[points, occupied, occupied] = -1
 
     for index, before, after in passages:
-        left, right = _gap_basin(gaps[:, min(before, after)], index)
+        gap = gaps[:, min(before, after)]
+        left, right = _gap_basin(gap, index)
         window = np.arange(left, right + 1)
-        window = window[(occupied[window] == before) | (occupied[window] == after)]
-        dia_list[window, before, after] = 0
-        dia_list[window, after, before] = 0
+        adiabatic_fraction = 1.0 - _diabatic_weight(gap, index, left, right)
+        involved = (occupied[window] == before) | (occupied[window] == after)
+        window, adiabatic_fraction = window[involved], adiabatic_fraction[involved]
+        dia_list[window, before, after] = adiabatic_fraction
+        dia_list[window, after, before] = adiabatic_fraction
 
     return dia_list
 

@@ -24,7 +24,8 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   `final_state` are passed diabatically (`dia_alpha`, `dia_beta`) until `final_state` is reached, and all other
   anticrossings adiabatically (`alpha`, `beta`). A pair of states that anticrosses twice is no longer crossed
   diabatically back and forth. Only transitions from the occupied state contribute to the metric tensor, as in the
-  adiabatic case. Overlapping anticrossings (e.g. a fan of levels crossing at one point) are passed together. The list
+  adiabatic case. Towards the gap maxima that bound a diabatic anticrossing, the exponents are blended smoothly
+  (C1) into the adiabatic ones, so the metric does not jump where a diabatic passage ends. Overlapping anticrossings (e.g. a fan of levels crossing at one point) are passed together. The list
   is recomputed whenever the eigenproblem changes.
 
 ### Fixed

@@ -832,13 +832,18 @@ class ControlModel:
         self,
         numerator: np.ndarray,
         denominator: np.ndarray,
-        alpha: float,
-        beta: float,
+        alpha: float | np.ndarray,
+        beta: float | np.ndarray,
         transition: tuple[int, int],
         points: np.ndarray | None = None,
     ) -> np.ndarray:
-        """Metric contribution of one transition, on all grid points or on the grid indices ``points``."""
-        if alpha > 0:
+        """
+        Metric contribution of one transition, on all grid points or on the grid indices ``points``.
+
+        The exponents are scalars or arrays with one value per point.
+        """
+        positive_alpha = np.asarray(alpha) > 0
+        if np.any(positive_alpha):
             if self._centered_energies is None:
                 raise MetricComputationError("Eigenenergies are unavailable for degeneracy detection.")
 
@@ -848,7 +853,7 @@ class ControlModel:
 
             tolerance = self._GAP_RTOL * bandwidth
 
-            singular = denominator <= tolerance
+            singular = (denominator <= tolerance) & positive_alpha
 
             if np.any(singular):
                 control_pulse = self._control_pulse
@@ -955,24 +960,23 @@ class ControlModel:
         num, dim = self._centered_energies.shape
         metric = np.zeros(num, dtype=float)
 
-        # Only transitions from the occupied state contribute (entries -1 of the diabatic list are skipped).
-        exponents = ((1, config.alpha, config.beta), (0, config.dia_alpha, config.dia_beta))
+        # Only transitions from the occupied state contribute (entries -1 of the diabatic list are skipped). The entries
+        # are the adiabatic fraction, which blends the adiabatic and diabatic exponents.
         for m in range(dim):
             for n in range(m + 1, dim):
-                denominator = np.abs(self._centered_energies[:, n] - self._centered_energies[:, m])
-                numerator = self._matrix_elements[:, m, n]
-                for kind, alpha, beta in exponents:
-                    points = np.flatnonzero(self._dia_list[:, m, n] == kind)
-                    if points.size == 0:
-                        continue
-                    metric[points] += self._metric_ratio(
-                        numerator[points],
-                        denominator[points],
-                        alpha=alpha,
-                        beta=beta,
-                        transition=(m, n),
-                        points=points,
-                    )
+                points = np.flatnonzero(self._dia_list[:, m, n] >= 0)
+                if points.size == 0:
+                    continue
+                adiabatic_fraction = self._dia_list[points, m, n]
+                denominator = np.abs(self._centered_energies[points, n] - self._centered_energies[points, m])
+                metric[points] += self._metric_ratio(
+                    self._matrix_elements[points, m, n],
+                    denominator,
+                    alpha=adiabatic_fraction * config.alpha + (1.0 - adiabatic_fraction) * config.dia_alpha,
+                    beta=adiabatic_fraction * config.beta + (1.0 - adiabatic_fraction) * config.dia_beta,
+                    transition=(m, n),
+                    points=points,
+                )
         self._metric_tensor = metric
 
     def _compute_G_adiabatic(self, config: _ControlParameters) -> None:

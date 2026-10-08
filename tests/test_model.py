@@ -1555,8 +1555,8 @@ class TestMutability:
         model.solve_problem()
 
         x = model._control_pulse
-        assert np.all(model._dia_list[x <= 0.0, 0, 1] == 0)
-        assert np.all(model._dia_list[x > 0.0, 0, 1] == 1)
+        assert np.all(model._dia_list[x <= -0.8, 0, 1] == 0)
+        assert np.all(model._dia_list[x >= 0.0, 0, 1] == 1)
         # The spectrum is mirror-symmetric, but the two anticrossings use different exponents.
         assert model._metric_tensor[np.argmin(np.abs(x - 1.0))] > 0
         assert model._metric_tensor[np.argmin(np.abs(x - 1.0))] != model._metric_tensor[np.argmin(np.abs(x + 1.0))]

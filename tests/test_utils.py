@@ -3,6 +3,7 @@ import pytest
 from threadpoolctl import threadpool_info
 
 from geodesiq._utils import (
+    DIABATIC_BLEND_START,
     SMALL_MATRIX_DIMENSION,
     build_dia_list,
     finite_difference_weights,
@@ -39,9 +40,9 @@ class TestBuildDiaList:
         assert dia_list.shape == (self.x.size, 3, 3)
         occupied = occupied_states(dia_list)
         np.testing.assert_array_equal(occupied, np.where(self.x < -1.0 - 1e-9, 1, 2))
-        # Diabatic up to the gap maximum at x = 0, adiabatic at the second anticrossing at x = 1.
-        assert np.all(dia_list[self.x <= 0.0, 1, 2] == 0)
-        assert np.all(dia_list[self.x > 0.0, 1, 2] == 1)
+        # Diabatic around the first anticrossing, blended up to the gap maximum at x = 0, adiabatic at the second one.
+        assert np.all(dia_list[self.x <= -0.5, 1, 2] == 0)
+        assert np.all(dia_list[self.x >= 0.0, 1, 2] == 1)
         np.testing.assert_array_equal(dia_list[:, 1, 2], dia_list[:, 2, 1])
 
     def test_transitions_between_unoccupied_states_are_not_considered(self):
@@ -54,6 +55,27 @@ class TestBuildDiaList:
         assert np.all(dia_list[after, 0, 2] == 1)
         assert np.all(dia_list[~after, 0, 2] == -1)
         assert all(np.all(dia_list[:, i, i] == -1) for i in range(3))
+
+    def test_diabatic_and_adiabatic_exponents_are_blended_smoothly_towards_the_gap_maximum(self):
+        energies = three_level_energies(self.x, gap_01=np.full_like(self.x, 5.0))
+
+        dia_list = build_dia_list(energies, initial_state=1, final_state=2)
+
+        blend = dia_list[(self.x >= -1.0) & (self.x <= 0.0), 1, 2]
+        assert blend[0] == 0 and blend[-1] == 1
+        assert np.all(np.diff(blend) >= 0)
+        assert np.max(np.diff(blend)) < 0.05
+        # The blend starts DIABATIC_BLEND_START of the way from the anticrossing (x = -1) to the gap maximum (x = 0).
+        blend_start = -1.0 + DIABATIC_BLEND_START
+        assert np.all(dia_list[(self.x > -1.0) & (self.x < blend_start - 1e-9), 1, 2] == 0)
+        assert np.all(dia_list[(self.x > blend_start + 1e-9) & (self.x < 0.0), 1, 2] > 0)
+
+    def test_no_blending_towards_the_ends_of_the_grid(self):
+        energies = three_level_energies(self.x, gap_01=np.full_like(self.x, 5.0))
+
+        dia_list = build_dia_list(energies, initial_state=1, final_state=2)
+
+        assert np.all(dia_list[self.x < -1.0, 1, 2] == 0)
 
     def test_downward_transfer_crosses_the_first_anticrossing(self):
         energies = three_level_energies(self.x, gap_01=np.full_like(self.x, 5.0))
