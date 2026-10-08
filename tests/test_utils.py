@@ -4,7 +4,7 @@ from threadpoolctl import threadpool_info
 
 from geodesiq._utils import (
     SMALL_MATRIX_DIMENSION,
-    build_diab,
+    build_dia_list,
     finite_difference_weights,
     limit_blas_threads,
     uniform_grid_derivative,
@@ -12,26 +12,104 @@ from geodesiq._utils import (
 from geodesiq.exceptions import ValidationError
 
 # ---------------------------------------------------------------------------
-# build_diab()
+# build_dia_list()
 # ---------------------------------------------------------------------------
 
 
-class TestBuildDiab:
-    def test_build_diab_sets_zero_inside_transition_window(self):
-        diad = build_diab(initial_state=1, final_state=3, dim=5)
+def three_level_energies(x: np.ndarray, gap_01: np.ndarray) -> np.ndarray:
+    """Sorted energies whose gap between states 1 and 2 has two anticrossings, at x = -1 and x = 1."""
+    gap_12 = 0.1 + (x ** 2 - 1) ** 2
+    return np.stack([np.zeros_like(x), gap_01, gap_01 + gap_12], axis=1)
 
-        assert diad.shape == (5, 5)
-        assert diad[1, 2] == 0
-        assert diad[2, 3] == 0
-        assert diad[1, 3] == 0
 
-    def test_build_diab_sets_one_outside_transition_window_and_minus_one_diagonal(self):
-        diad = build_diab(initial_state=1, final_state=3, dim=5)
+def occupied_states(dia_list: np.ndarray) -> np.ndarray:
+    """The occupied state is the only one with a considered transition to every other state."""
+    considered = (dia_list >= 0).sum(axis=2)
+    return np.argmax(considered == dia_list.shape[1] - 1, axis=1)
 
-        assert diad[0, 4] == 1
-        assert diad[0, 1] == 1
-        assert diad[4, 3] == 1
-        assert all(diad[i, i] == -1 for i in range(5))
+
+class TestBuildDiaList:
+    x = np.linspace(-2.0, 2.0, 401)
+
+    def test_same_pair_is_only_crossed_diabatically_towards_the_final_state(self):
+        energies = three_level_energies(self.x, gap_01=np.full_like(self.x, 5.0))
+
+        dia_list = build_dia_list(energies, initial_state=1, final_state=2)
+
+        assert dia_list.shape == (self.x.size, 3, 3)
+        occupied = occupied_states(dia_list)
+        np.testing.assert_array_equal(occupied, np.where(self.x < -1.0 - 1e-9, 1, 2))
+        # Diabatic up to the gap maximum at x = 0, adiabatic at the second anticrossing at x = 1.
+        assert np.all(dia_list[self.x <= 0.0, 1, 2] == 0)
+        assert np.all(dia_list[self.x > 0.0, 1, 2] == 1)
+        np.testing.assert_array_equal(dia_list[:, 1, 2], dia_list[:, 2, 1])
+
+    def test_transitions_between_unoccupied_states_are_not_considered(self):
+        energies = three_level_energies(self.x, gap_01=np.full_like(self.x, 5.0))
+
+        dia_list = build_dia_list(energies, initial_state=1, final_state=2)
+
+        after = self.x > -1.0 - 1e-9
+        assert np.all(dia_list[after, 0, 1] == -1)
+        assert np.all(dia_list[after, 0, 2] == 1)
+        assert np.all(dia_list[~after, 0, 2] == -1)
+        assert all(np.all(dia_list[:, i, i] == -1) for i in range(3))
+
+    def test_downward_transfer_crosses_the_first_anticrossing(self):
+        energies = three_level_energies(self.x, gap_01=np.full_like(self.x, 5.0))
+
+        dia_list = build_dia_list(energies, initial_state=2, final_state=1)
+
+        np.testing.assert_array_equal(occupied_states(dia_list), np.where(self.x < -1.0 - 1e-9, 2, 1))
+        assert np.all(dia_list[self.x > 0.0, 1, 2] == 1)
+
+    def test_multi_step_transfer_follows_the_anticrossings_in_order(self):
+        energies = three_level_energies(self.x, gap_01=1.0 + (self.x + 1.5) ** 2)
+
+        dia_list = build_dia_list(energies, initial_state=0, final_state=2)
+
+        occupied = occupied_states(dia_list)
+        assert occupied[0] == 0
+        assert occupied[-1] == 2
+        assert np.all(np.diff(occupied) >= 0)
+        np.testing.assert_allclose(self.x[np.flatnonzero(np.diff(occupied)) + 1], [-1.5, -1.0], atol=1e-9)
+
+    def test_overlapping_anticrossings_are_passed_together(self):
+        # The minimum of the 1-2 gap (x = -0.1) lies just before the one of the 0-1 gap (x = 0.1), inside its flank.
+        energies = np.stack(
+            [np.zeros_like(self.x), 1.0 + (self.x - 0.1) ** 2, 2.0 + (self.x - 0.1) ** 2 + (self.x + 0.1) ** 2],
+            axis=1,
+        )
+
+        dia_list = build_dia_list(energies, initial_state=0, final_state=2)
+
+        occupied = occupied_states(dia_list)
+        np.testing.assert_array_equal(occupied, np.where(self.x < 0.1 - 1e-9, 0, 2))
+        assert np.all(dia_list[self.x < 0.1 - 1e-9, 0, 1] == 0)
+        assert np.all(dia_list[self.x > 0.1 - 1e-9, 1, 2] == 0)
+
+    def test_a_later_anticrossing_is_preferred_over_an_overlapping_one(self):
+        energies = three_level_energies(self.x, gap_01=1.0 + (self.x + 0.5) ** 2)
+
+        dia_list = build_dia_list(energies, initial_state=0, final_state=2)
+
+        occupied = occupied_states(dia_list)
+        np.testing.assert_allclose(self.x[np.flatnonzero(np.diff(occupied)) + 1], [-0.5, 1.0], atol=1e-9)
+
+    def test_equal_states_give_purely_adiabatic_transitions_of_that_state(self):
+        energies = three_level_energies(self.x, gap_01=np.full_like(self.x, 5.0))
+
+        dia_list = build_dia_list(energies, initial_state=1, final_state=1)
+
+        assert np.all(dia_list[:, 1, [0, 2]] == 1)
+        assert np.all(dia_list[:, 0, 2] == -1)
+
+    @pytest.mark.parametrize(("initial_state", "final_state"), [(-1, 0), (0, 3), (True, 1)])
+    def test_invalid_state_indices_raise(self, initial_state, final_state):
+        energies = three_level_energies(self.x, gap_01=np.full_like(self.x, 5.0))
+
+        with pytest.raises(ValidationError, match="must be an integer"):
+            build_dia_list(energies, initial_state=initial_state, final_state=final_state)
 
 
 # -----------------------------------

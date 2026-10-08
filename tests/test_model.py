@@ -1518,7 +1518,8 @@ class TestDiabaticMetricPath:
 
 
 class TestMutability:
-    def test_parameter_change_keeps_diabatic_list(self):
+    def test_parameter_change_invalidates_diabatic_list(self):
+        """The diabatic list follows the anticrossings of the spectrum, so it is recomputed with the eigenproblem."""
         model = ControlModel(lz_hamiltonian, lz_partial)
 
         model.set_parameters(delta=1.0)
@@ -1528,13 +1529,37 @@ class TestMutability:
 
         model.solve_problem()
 
-        dia_list = model._dia_list
+        assert model._flags["dia_list_computed"] is True
 
         model.set_parameters(delta=2.0)
 
         assert model._flags["eigenproblem_solved"] is False
+        assert model._flags["dia_list_computed"] is False
+
+        model.solve_problem()
+
         assert model._flags["dia_list_computed"] is True
-        assert model._dia_list is dia_list
+        assert model._dia_list is not None
+        assert model._dia_list.shape == (model.num_steps, 2, 2)
+
+    def test_diabatic_metric_skips_a_second_anticrossing_with_the_same_state(self):
+        """After a diabatic passage to the final state, a later anticrossing of the same pair is adiabatic."""
+
+        def two_anticrossings(lam: float) -> np.ndarray:
+            return np.array([[lam ** 2 - 1.0, 0.1], [0.1, 1.0 - lam ** 2]])
+
+        model = ControlModel(two_anticrossings)
+        model.set_control(control_name="lam", pulse_initial=-2.0, pulse_final=2.0, initial_state=0, final_state=1,
+                          alpha=2.0, beta=2.0, dia_alpha=-1.0, dia_beta=1.0, num_steps=257, )
+
+        model.solve_problem()
+
+        x = model._control_pulse
+        assert np.all(model._dia_list[x <= 0.0, 0, 1] == 0)
+        assert np.all(model._dia_list[x > 0.0, 0, 1] == 1)
+        # The spectrum is mirror-symmetric, but the two anticrossings use different exponents.
+        assert model._metric_tensor[np.argmin(np.abs(x - 1.0))] > 0
+        assert model._metric_tensor[np.argmin(np.abs(x - 1.0))] != model._metric_tensor[np.argmin(np.abs(x + 1.0))]
 
     def test_state_change_invalidates_diabatic_list(self):
         def hamiltonian(lam, t):

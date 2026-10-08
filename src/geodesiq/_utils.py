@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 from threadpoolctl import ThreadpoolController
 
-from .exceptions import ValidationError
+from .exceptions import InvalidControlParameterError, ValidationError
 
 
 class Flags:
@@ -187,28 +187,117 @@ def is_hermitian(matrix: np.ndarray, rtol: float = HERMITIAN_RTOL) -> bool:
     return bool(np.linalg.norm(array - array.conj().T) <= rtol * np.linalg.norm(array))
 
 
-def build_diab(initial_state: int, final_state: int, dim: int) -> np.ndarray:
-    """Build the adiabatic/diabatic transition mask with validated indices."""
-    if not isinstance(dim, int) or isinstance(dim, bool) or dim < 1:
-        raise ValidationError("dim must be a positive integer.")
+def _gap_minima(gap: np.ndarray) -> np.ndarray:
+    """Mask of the local minima of a sampled energy gap, including minima at the ends of the grid."""
+    is_min = np.ones(gap.shape, dtype=bool)
+    # Strictly below the previous sample and not above the next one, so a flat minimum is counted once.
+    is_min[1:] &= gap[1:] < gap[:-1]
+    is_min[:-1] &= gap[:-1] <= gap[1:]
+    return is_min
+
+
+def _gap_basin(gap: np.ndarray, index: int) -> tuple[int, int]:
+    """Grid range around a minimum of ``gap`` that is bounded by the nearest local maxima on each side."""
+    left = index
+    while left > 0 and gap[left - 1] >= gap[left]:
+        left -= 1
+    right = index
+    while right < gap.size - 1 and gap[right + 1] >= gap[right]:
+        right += 1
+    return left, right
+
+
+def build_dia_list(energies: np.ndarray, initial_state: int, final_state: int) -> np.ndarray:
+    """
+    Build the adiabatic/diabatic transition mask along the control grid.
+
+    The occupied instantaneous eigenstate starts in ``initial_state`` and is followed along the grid. At every
+    anticrossing (local minimum of the gap) between the occupied state ``k`` and its neighbour ``k + d``, with
+    ``d = sign(final_state - initial_state)``, the passage is diabatic and the occupied state becomes ``k + d``. All
+    other anticrossings, including those back away from ``final_state`` and all anticrossings after reaching it, are
+    passed adiabatically. A diabatic passage only acts inside its anticrossing: between the closest maxima of the
+    corresponding gap. Overlapping anticrossings, as in a fan of levels crossing at one point, are passed together:
+    if the next gap has no minimum ahead but the grid point of a passage is still inside its last anticrossing, that
+    anticrossing is passed at the same point.
+
+    Parameters
+    ----------
+    energies : np.ndarray
+        Eigenenergies sorted in increasing order, with shape (n_points, dim), sampled in the sweep direction.
+    initial_state, final_state : int
+        Indices of the instantaneous eigenstates at the start and at the end of the sweep.
+
+    Returns
+    -------
+    np.ndarray
+        Integer mask with shape (n_points, dim, dim). Entry ``[i, m, n]`` is ``1`` if the transition between states
+        ``m`` and ``n`` is adiabatic at grid point ``i``, ``0`` if it is diabatic and ``-1`` if it does not involve the
+        occupied state (and is not considered).
+
+    Raises
+    ------
+    InvalidControlParameterError
+        If ``final_state`` cannot be reached through anticrossings that lead towards it.
+    """
+    energies = np.asarray(energies, dtype=float)
+    if energies.ndim != 2 or energies.shape[0] < 2:
+        raise ValidationError("energies must have shape (n_points, dim) with at least two points.")
+    n_points, dim = energies.shape
     for label, state in (("initial_state", initial_state), ("final_state", final_state)):
-        if not isinstance(state, int) or isinstance(state, bool) or not 0 <= state < dim:
+        if not isinstance(state, (int, np.integer)) or isinstance(state, bool) or not 0 <= state < dim:
             raise ValidationError(f"{label} must be an integer in [0, {dim - 1}].")
-    diad_list = -1 * np.eye(dim, dtype=int)  # Diagonal entries are -1 by default
 
-    min_state = min(initial_state, final_state)
-    max_state = max(initial_state, final_state)
+    gaps = np.diff(energies, axis=1)  # gaps[:, j] = E_{j+1} - E_j
+    gap_minima = np.stack([_gap_minima(gaps[:, j]) for j in range(dim - 1)], axis=1) if dim > 1 else None
+    step = 1 if final_state > initial_state else -1
 
-    for i in range(dim):
-        for j in range(i + 1, dim):
-            if min_state <= i <= max_state and min_state <= j <= max_state:
-                diad_list[i, j] = 0
-                diad_list[j, i] = 0
-            else:
-                diad_list[i, j] = 1
-                diad_list[j, i] = 1
+    def overlaps(gap_index: int, index: int) -> bool:
+        # The anticrossing of this gap overlaps with a passage at ``index``: its last minimum is behind ``index``,
+        # no minimum lies ahead and ``index`` is still inside the anticrossing (no maximum in between).
+        assert gap_minima is not None
+        minima = np.flatnonzero(gap_minima[:, gap_index])
+        if minima.size == 0 or minima[-1] >= index:
+            return False
+        return _gap_basin(gaps[:, gap_index], int(minima[-1]))[1] >= index
 
-    return diad_list
+    # Follow the occupied state along the grid. It changes at the minimum of each diabatic anticrossing.
+    occupied = np.empty(n_points, dtype=int)
+    passages: list[tuple[int, int, int]] = []  # (grid index, state before, state after)
+    state = initial_state
+    for i in range(n_points):
+        passed = False
+        while state != final_state:
+            assert gap_minima is not None
+            gap_index = min(state, state + step)
+            if not (gap_minima[i, gap_index] or (passed and overlaps(gap_index, i))):
+                break
+            passages.append((i, state, state + step))
+            state += step
+            passed = True
+        occupied[i] = state
+
+    if state != final_state:
+        raise InvalidControlParameterError(
+            f"final_state={final_state} cannot be reached from initial_state={initial_state}: following the "
+            f"anticrossings towards final_state, the sweep ends in state {state}. No anticrossing between states "
+            f"{state} and {state + step} follows."
+        )
+
+    # Every transition from the occupied state is adiabatic unless it belongs to a diabatic anticrossing.
+    dia_list = -np.ones((n_points, dim, dim), dtype=int)
+    points = np.arange(n_points)
+    dia_list[points[:, None], occupied[:, None], np.arange(dim)[None, :]] = 1
+    dia_list[points[:, None], np.arange(dim)[None, :], occupied[:, None]] = 1
+    dia_list[points, occupied, occupied] = -1
+
+    for index, before, after in passages:
+        left, right = _gap_basin(gaps[:, min(before, after)], index)
+        window = np.arange(left, right + 1)
+        window = window[(occupied[window] == before) | (occupied[window] == after)]
+        dia_list[window, before, after] = 0
+        dia_list[window, after, before] = 0
+
+    return dia_list
 
 
 # -----------------------------------

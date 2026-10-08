@@ -17,6 +17,16 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 - `Dynamics.plot_populations()` plots these populations over time, with the same `fig`, `ax`, `legend` and label
   arguments as `ControlModel.plot_eigenvalues()` and an optional `states` selection.
 
+### Changed
+
+- The diabatic transition list now depends on the control value. For `initial_state != final_state` the occupied
+  instantaneous eigenstate is followed along the sweep: anticrossings with the neighbouring state towards
+  `final_state` are passed diabatically (`dia_alpha`, `dia_beta`) until `final_state` is reached, and all other
+  anticrossings adiabatically (`alpha`, `beta`). A pair of states that anticrosses twice is no longer crossed
+  diabatically back and forth. Only transitions from the occupied state contribute to the metric tensor, as in the
+  adiabatic case. Overlapping anticrossings (e.g. a fan of levels crossing at one point) are passed together. The list
+  is recomputed whenever the eigenproblem changes.
+
 ### Fixed
 
 - `ControlModel.solve_problem()` no longer fails with "Required step size is less than spacing between numbers" when

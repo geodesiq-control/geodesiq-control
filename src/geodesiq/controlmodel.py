@@ -12,7 +12,7 @@ from scipy.interpolate import PchipInterpolator
 
 from ._utils import (
     Flags,
-    build_diab,
+    build_dia_list,
     is_hermitian,
     limit_blas_threads,
     uniform_grid_derivative,
@@ -139,7 +139,7 @@ class ControlModel:
         # Initialize flags needed to track the state of the computations
         self._flags = Flags(_verbose=_flags_verbose)
         self._flags.add("eigenproblem_solved")
-        self._flags.add("dia_list_computed")
+        self._flags.add("dia_list_computed", parent="eigenproblem_solved")
         self._flags.add("metric_computed", parents=["eigenproblem_solved", "dia_list_computed"])
         self._flags.add("ode_solved", parent="metric_computed")
 
@@ -546,7 +546,11 @@ class ControlModel:
              ODE for the control pulse.
         final_state : int | None
             The index of the final state in the energy spectrum. This is used to compute the metric tensor and the ODE
-            for the control pulse. If not provided, it will be assumed to be the same as the initial state.
+            for the control pulse. If not provided, it will be assumed to be the same as the initial state. If it
+            differs from the initial state, the occupied state is followed along the sweep: each anticrossing with the
+            neighbouring state towards ``final_state`` is passed diabatically, until ``final_state`` is reached. All
+            other anticrossings are passed adiabatically, and only transitions from the occupied state contribute to
+            the metric tensor.
         alpha : float | None
             The exponent alpha used in the metric tensor computation. This parameter controls the weighting of the
              energy gaps in the metric tensor.
@@ -757,8 +761,9 @@ class ControlModel:
 
         if self._centered_energies is None:
             raise SolverError("Eigenenergies are unavailable before computing diabatic passages.")
-        dim = self._centered_energies.shape[1]
-        self._dia_list = build_diab(initial_state=config.initial_state, final_state=config.final_state, dim=dim)
+        self._dia_list = build_dia_list(
+            self._centered_energies, initial_state=config.initial_state, final_state=config.final_state
+        )
         self._flags["dia_list_computed"] = True
 
     def _solve_eigenproblem(self, config: _EigensystemParameters | None = None) -> None:
@@ -830,12 +835,16 @@ class ControlModel:
         alpha: float,
         beta: float,
         transition: tuple[int, int],
+        points: np.ndarray | None = None,
     ) -> np.ndarray:
+        """Metric contribution of one transition, on all grid points or on the grid indices ``points``."""
         if alpha > 0:
             if self._centered_energies is None:
                 raise MetricComputationError("Eigenenergies are unavailable for degeneracy detection.")
 
             bandwidth = np.ptp(self._centered_energies, axis=1)
+            if points is not None:
+                bandwidth = bandwidth[points]
 
             tolerance = self._GAP_RTOL * bandwidth
 
@@ -848,9 +857,11 @@ class ControlModel:
                     raise MetricComputationError("Control grid is unavailable for degeneracy detection.")
 
                 indices = np.flatnonzero(singular)
+                grid_indices = indices if points is None else points[indices]
 
                 details = ", ".join(
-                    f"x={control_pulse[i]:.6g}, gap={denominator[i]:.3e}, tol={tolerance[i]:.3e}" for i in indices[:5]
+                    f"x={control_pulse[g]:.6g}, gap={denominator[i]:.3e}, tol={tolerance[i]:.3e}"
+                    for i, g in zip(indices[:5], grid_indices[:5], strict=True)
                 )
 
                 raise MetricComputationError(
@@ -944,20 +955,24 @@ class ControlModel:
         num, dim = self._centered_energies.shape
         metric = np.zeros(num, dtype=float)
 
+        # Only transitions from the occupied state contribute (entries -1 of the diabatic list are skipped).
+        exponents = ((1, config.alpha, config.beta), (0, config.dia_alpha, config.dia_beta))
         for m in range(dim):
-            for n in range(dim):
-                if n == m:
-                    continue
-                adiabatic = bool(self._dia_list[m, n])
+            for n in range(m + 1, dim):
                 denominator = np.abs(self._centered_energies[:, n] - self._centered_energies[:, m])
                 numerator = self._matrix_elements[:, m, n]
-                metric += self._metric_ratio(
-                    numerator,
-                    denominator,
-                    alpha=config.alpha if adiabatic else config.dia_alpha,
-                    beta=config.beta if adiabatic else config.dia_beta,
-                    transition=(m, n),
-                )
+                for kind, alpha, beta in exponents:
+                    points = np.flatnonzero(self._dia_list[:, m, n] == kind)
+                    if points.size == 0:
+                        continue
+                    metric[points] += self._metric_ratio(
+                        numerator[points],
+                        denominator[points],
+                        alpha=alpha,
+                        beta=beta,
+                        transition=(m, n),
+                        points=points,
+                    )
         self._metric_tensor = metric
 
     def _compute_G_adiabatic(self, config: _ControlParameters) -> None:
