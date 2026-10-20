@@ -215,6 +215,9 @@ reviews/*
 
 draft/*
 
+# Local clone of the Overleaf project (its own git repo, synced with git.overleaf.com)
+/paper/
+
 .virtual_documents/*
 
 # Lock file of the benchmark runner (created while it writes the history)

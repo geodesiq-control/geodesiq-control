@@ -150,6 +150,8 @@ select = ["E", "F", "B", "I"]
 "*.ipynb" = ["E703"]
 
 [tool.ruff.format]
+# Only src/ is formatted; keeps editor format-on-save off the other directories
+exclude = ["tests/**", "dev/**", "examples/**", "benchmarks/**"]
 quote-style = "double"
 indent-style = "space"
 line-ending = "auto"
