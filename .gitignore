@@ -229,3 +229,5 @@ dev/other_qoctrl/StudyManyBody.ipynb
 dev/other_qoctrl/StudyLZ.ipynb
 dev/other_qoctrl/GradientDescend.ipynb
 Claude outputs/
+AGENTS.md
+.agents/
