@@ -102,7 +102,9 @@ def decompose_hamiltonian(
     atol
         Absolute singular-value cutoff.
     hermitian_tol
-        Relative tolerance used to verify Hermiticity: ``||H - H^dagger||_F <= hermitian_tol * ||H||_F``.
+        Relative tolerance used to verify Hermiticity:
+        ``||H - H^dagger||_F <= hermitian_tol * ||H_0||_F + 100 * eps * ||H||_F``, with ``H_0`` the traceless part of
+        ``H`` (see ``_utils.is_hermitian``).
 
     Returns
     -------

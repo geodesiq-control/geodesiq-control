@@ -54,6 +54,11 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 - `ControlModel.eigenenergies` is real (`float64`) for complex Hermitian Hamiltonians. The trace offset added back to
   the centered energies was kept complex, so the property returned `complex128` and caused `ComplexWarning`s
   downstream.
+- The Hermiticity check no longer lets a large identity offset hide a non-Hermitian part. It was relative to
+  `||H||_F`, so e.g. `1e8 * I + [[0, 1], [0.5, 0]]` was accepted and `eigh` silently used only one triangle. It is now
+  relative to the norm of the traceless part, plus an allowance of `100 * eps * ||H||_F` for rounding errors, so
+  Hermitian matrices with a large offset are still accepted. This also applies to `hermitian_tol` in
+  `decompose_hamiltonian`.
 
 ## [0.3.0] - 2026-10-01
 

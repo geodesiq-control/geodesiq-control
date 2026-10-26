@@ -173,18 +173,28 @@ class Flags:
             raise KeyError(f"Flag '{name}' is not registered.")
 
 
-# Relative tolerance for Hermiticity checks, measured against the Frobenius norm of the matrix.
+# Relative tolerance for Hermiticity checks, measured against the Frobenius norm of the traceless part of the matrix.
 HERMITIAN_RTOL = 1e-8
+# Allowance for the rounding of matrices with a large trace, in units of eps * ||A||_F.
+_HERMITIAN_ROUNDOFF_FACTOR = 100.0
 
 
 def is_hermitian(matrix: np.ndarray, rtol: float = HERMITIAN_RTOL) -> bool:
     """
     Check Hermiticity relative to the scale of the matrix, so the result does not depend on the energy units.
 
-    The matrix is Hermitian if ``||A - A^dagger||_F <= rtol * ||A||_F``. The zero matrix is Hermitian.
+    The matrix is Hermitian if ``||A - A^dagger||_F <= rtol * ||A_0||_F + 100 * eps * ||A||_F``, where
+    ``A_0 = A - tr(A)/d * I`` is its traceless part. Measuring against ``||A_0||`` keeps a large identity offset (which
+    does not affect the physics) from hiding a non-Hermitian part, e.g. ``1e8 * I + [[0, 1], [0.5, 0]]``. The second
+    term allows for the rounding errors of such an offset. The zero matrix is Hermitian.
     """
     array = np.asarray(matrix)
-    return bool(np.linalg.norm(array - array.conj().T) <= rtol * np.linalg.norm(array))
+    dimension = array.shape[0]
+    traceless = array - np.trace(array) / dimension * np.eye(dimension)
+    tolerance = rtol * np.linalg.norm(traceless) + _HERMITIAN_ROUNDOFF_FACTOR * np.finfo(float).eps * np.linalg.norm(
+        array
+    )
+    return bool(np.linalg.norm(array - array.conj().T) <= tolerance)
 
 
 def _gap_minima(gap: np.ndarray) -> np.ndarray:

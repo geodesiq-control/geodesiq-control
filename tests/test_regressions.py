@@ -8,6 +8,7 @@ import pytest
 from scipy.integrate import solve_ivp
 
 from geodesiq import ControlModel
+from geodesiq._utils import is_hermitian
 from geodesiq.exceptions import (
     InvalidControlParameterError,
     MetricComputationError,
@@ -477,6 +478,38 @@ class TestHermiticity:
 
         with pytest.raises(ValidationError, match="H_d must be Hermitian"):
             ControlModel(H_d=non_hermitian_drift, H_c=H_c)
+
+    @pytest.mark.parametrize("offset", [1e4, 1e8, 1e12])
+    def test_identity_offset_does_not_hide_non_hermitian_part(self, offset: float):
+        # The check was relative to ||A||_F, which a large identity offset dominates, so this matrix was accepted and
+        # eigh silently used only one triangle of it (C-08).
+        non_hermitian = offset * np.eye(2) + np.array([[0.0, 1.0], [0.5, 0.0]])
+
+        assert not is_hermitian(non_hermitian)
+        with pytest.raises(ValidationError, match="H_d must be Hermitian"):
+            ControlModel(H_d=non_hermitian, H_c=np.diag([1.0, -1.0]))
+
+        model = ControlModel(lambda lam: non_hermitian + lam * np.diag([1.0, -1.0]))
+        model.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0)
+        with pytest.raises(ValidationError, match="Hermitian"):
+            model.evaluate_hamiltonian(0.5)
+
+    @pytest.mark.parametrize("offset", [0.0, 1e4, 1e8, 1e12])
+    @pytest.mark.parametrize("dimension", [2, 16])
+    def test_rotated_hermitian_matrix_with_large_offset_is_accepted(self, offset: float, dimension: int):
+        # U (offset * I + h) U^dagger carries rounding errors of order eps * offset; they must not be rejected.
+        rng = np.random.default_rng(1)
+        shape = (dimension, dimension)
+        x = rng.normal(size=shape) + 1j * rng.normal(size=shape)
+        h = (x + x.conj().T) / 2
+        unitary, _ = np.linalg.qr(rng.normal(size=shape) + 1j * rng.normal(size=shape))
+
+        assert is_hermitian(unitary @ (offset * np.eye(dimension) + h) @ unitary.conj().T)
+
+    def test_multiples_of_identity(self):
+        assert is_hermitian(np.zeros((3, 3)))
+        assert is_hermitian(5.0 * np.eye(3))
+        assert not is_hermitian((5.0 + 1.0j) * np.eye(3))
 
 
 # ---------------------------------------------------------------------------
