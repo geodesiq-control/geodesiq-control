@@ -15,6 +15,7 @@ from ._utils import (
     build_dia_list,
     is_hermitian,
     limit_blas_threads,
+    traceless,
     uniform_grid_derivative,
     validate_state_index,
     values_equal,
@@ -72,7 +73,10 @@ class ControlModel:
     # difference with the order (_FD_ORDER - 2) estimate exceeds _FD_RTOL * max|dH/dx| are recomputed with the
     # adaptive scipy.differentiate.jacobian, as are all points of grids with fewer than _FD_MIN_POINTS samples.
     # Both tolerances are floored at _FD_ROUNDOFF_FACTOR * eps * max|x| / step, the relative rounding error of the
-    # control steps, which dominates when the control values carry a large offset (e.g. x = 1e6 + [0, 1]).
+    # control steps, which dominates when the control values carry a large offset (e.g. x = 1e6 + [0, 1]). Only the
+    # traceless part of H is differentiated, and the absolute tolerances are also floored at
+    # _FD_ROUNDOFF_FACTOR * eps * max|H| / step, the rounding error that a large identity offset (e.g. H = 1e8 I + ...)
+    # leaves in the samples, which no smaller step can resolve.
     _FD_ORDER = 8
     _FD_RTOL = 1e-8
     _FD_MIN_POINTS = 5
@@ -1024,11 +1028,16 @@ class ControlModel:
 
     def _compute_numerical_partial_H(self, samples: np.ndarray | None = None) -> np.ndarray:
         """
-        Evaluate dH/dx at every point of the (uniform) control grid.
+        Evaluate the derivative of the traceless part of H, d(H - tr(H) I / N)/dx, at every point of the control grid.
+
+        The trace part only adds a multiple of the identity, which does not change the off-diagonal matrix elements
+        between eigenstates that the metric uses; leaving it out keeps a large identity offset in H from dominating
+        the error estimate.
 
         The derivative is first computed with finite differences of the Hamiltonian samples on the grid, which needs
         no extra Hamiltonian evaluations. Its error is estimated by comparison with a lower-order stencil, and points
-        where the estimate is too large are recomputed with the adaptive ``scipy.differentiate.jacobian``. If the
+        where the estimate is too large are recomputed with the adaptive ``scipy.differentiate.jacobian``. The
+        tolerance is floored at the rounding error of the samples, which a smaller step cannot resolve. If the
         adaptive derivative does not converge at such a point, the finite-difference value is kept and a
         ``NumericalStabilityWarning`` is issued.
 
@@ -1040,7 +1049,7 @@ class ControlModel:
         Returns
         -------
         dH_dx
-            Complex derivative with shape (n_points, *H_shape).
+            Complex derivative of the traceless part of H, with shape (n_points, *H_shape).
         """
         if self._control_pulse is None:
             raise SolverError("x_grid is unavailable before the eigenproblem grid is initialized.")
@@ -1065,19 +1074,24 @@ class ControlModel:
         if samples.shape[0] != x_grid.size:
             raise SolverError("Hamiltonian samples do not match the control grid.")
 
+        # Rounding error of the samples, set by their full magnitude before the trace is removed.
+        sample_scale = float(np.max(np.abs(samples)))
+        samples = traceless(samples)
+
         n_points = x_grid.size
         # The grid is a linspace, so its nominal step follows from the endpoints. The individual steps differ from it
         # by rounding, which is large relative to the step when the control values carry a large offset.
         step = float(x_grid[-1] - x_grid[0]) / (n_points - 1)
         roundoff = self._FD_ROUNDOFF_FACTOR * np.finfo(float).eps * float(np.max(np.abs(x_grid))) / abs(step)
         uniform = np.allclose(np.diff(x_grid), step, rtol=max(1e-9, roundoff), atol=0.0)
+        sample_noise = self._FD_ROUNDOFF_FACTOR * np.finfo(float).eps * sample_scale / abs(step)
 
         if uniform and n_points >= self._FD_MIN_POINTS:
             stencil = min(self._FD_ORDER + 1, n_points)
             derivative = uniform_grid_derivative(samples, step, stencil)
             estimate = uniform_grid_derivative(samples, step, stencil - 2)
             error = np.max(np.abs(derivative - estimate), axis=tuple(range(1, samples.ndim)))
-            tolerance = max(self._FD_RTOL, roundoff) * float(np.max(np.abs(derivative)))
+            tolerance = max(max(self._FD_RTOL, roundoff) * float(np.max(np.abs(derivative))), sample_noise)
             inaccurate = error > tolerance
             fallback = derivative
         else:
@@ -1087,21 +1101,33 @@ class ControlModel:
 
         if np.any(inaccurate):
             derivative[inaccurate] = self._jacobian_partial_H(
-                x_grid, inaccurate, samples, fallback=None if fallback is None else fallback[inaccurate]
+                x_grid,
+                inaccurate,
+                samples,
+                fallback=None if fallback is None else fallback[inaccurate],
+                sample_scale=sample_scale,
             )
 
         return derivative
 
     def _jacobian_partial_H(
-        self, x_grid: np.ndarray, selected: np.ndarray, samples: np.ndarray, fallback: np.ndarray | None = None
+        self,
+        x_grid: np.ndarray,
+        selected: np.ndarray,
+        samples: np.ndarray,
+        fallback: np.ndarray | None = None,
+        sample_scale: float = 0.0,
     ) -> np.ndarray:
         """
-        Adaptive dH/dx at the ``selected`` points of ``x_grid`` with ``scipy.differentiate.jacobian``.
+        Adaptive derivative of the traceless part of H at the ``selected`` points of ``x_grid``, computed with
+        ``scipy.differentiate.jacobian``.
 
         H_func is assumed not to be vectorized: it accepts one scalar x and returns a real- or complex-valued
-        Hamiltonian. Steps never leave the domain of the grid (one-sided differences at its boundaries). Points where
-        ``jacobian`` does not converge take the corresponding value of ``fallback`` (shape (n_selected, *H_shape))
-        with a ``NumericalStabilityWarning``; without a fallback, a ``SolverError`` is raised.
+        Hamiltonian. ``samples`` are the traceless Hamiltonian samples on the grid, and ``sample_scale`` is max|H| of
+        the original samples, which sets their rounding error. Steps never leave the domain of the grid (one-sided
+        differences at its boundaries). Points where ``jacobian`` does not converge take the corresponding value of
+        ``fallback`` (shape (n_selected, *H_shape)) with a ``NumericalStabilityWarning``; without a fallback, a
+        ``SolverError`` is raised.
         """
         order = self._FD_ORDER
         unique_x = np.unique(x_grid)
@@ -1119,8 +1145,11 @@ class ControlModel:
         )
         # The relative accuracy is limited by the rounding of x + step when x carries a large offset.
         roundoff = self._FD_ROUNDOFF_FACTOR * np.finfo(float).eps * float(np.max(np.abs(unique_x))) / initial_step
+        # The rounding error of the Hamiltonian values (e.g. from a large identity offset) cannot be resolved by
+        # smaller steps either.
+        sample_noise = self._FD_ROUNDOFF_FACTOR * np.finfo(float).eps * sample_scale / initial_step
         tolerances = {
-            "atol": 1e-10 * derivative_scale if derivative_scale > 0 else 1e-10,
+            "atol": max(1e-10 * derivative_scale if derivative_scale > 0 else 1e-10, sample_noise),
             "rtol": max(1e-8, roundoff),
         }
 
@@ -1143,7 +1172,7 @@ class ControlModel:
             if H.shape != H_shape:
                 raise ValidationError(f"H_func returned inconsistent shapes: expected {H_shape}, got {H.shape}.")
 
-            H_flat = H.ravel()
+            H_flat = traceless(H).ravel()
 
             # scipy.differentiate.jacobian expects real outputs.
             return np.concatenate(

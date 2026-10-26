@@ -197,6 +197,18 @@ def is_hermitian(matrix: np.ndarray, rtol: float = HERMITIAN_RTOL) -> bool:
     return bool(np.linalg.norm(array - array.conj().T) <= tolerance)
 
 
+def traceless(matrices: np.ndarray) -> np.ndarray:
+    """
+    Remove the trace part ``tr(H)/d * I`` from a Hermitian matrix or a stack of them (last two axes).
+
+    The trace of a Hermitian matrix is real, so its rounding-level imaginary part is dropped.
+    """
+    array = np.asarray(matrices)
+    dimension = array.shape[-1]
+    offset = np.trace(array, axis1=-2, axis2=-1).real / dimension
+    return array - offset[..., None, None] * np.eye(dimension)
+
+
 def _gap_minima(gap: np.ndarray) -> np.ndarray:
     """Mask of the local minima of a sampled energy gap, including minima at the ends of the grid."""
     is_min = np.ones(gap.shape, dtype=bool)

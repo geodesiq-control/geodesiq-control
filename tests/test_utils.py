@@ -8,6 +8,7 @@ from geodesiq._utils import (
     build_dia_list,
     finite_difference_weights,
     limit_blas_threads,
+    traceless,
     uniform_grid_derivative,
 )
 from geodesiq.exceptions import ValidationError
@@ -179,6 +180,28 @@ class TestFiniteDifferences:
     def test_invalid_number_of_points_raises(self, n_points: int):
         with pytest.raises(ValidationError, match="n_points must be between 2"):
             uniform_grid_derivative(np.zeros((5, 2, 2)), 0.1, n_points)
+
+
+class TestTraceless:
+    def test_single_matrix(self):
+        matrix = np.array([[3.0, 1j, 0.0], [-1j, 1.0, 2.0], [0.0, 2.0, 5.0]])
+
+        result = traceless(matrix)
+
+        np.testing.assert_allclose(result, matrix - 3.0 * np.eye(3))
+        assert abs(np.trace(result)) < 1e-14
+
+    def test_stack_removes_each_trace_and_keeps_off_diagonals(self):
+        offsets = np.array([0.0, 1e8, -2.5])
+        stack = np.stack([offset * np.eye(2) + np.array([[0.3, 1j], [-1j, -0.1]]) for offset in offsets])
+
+        result = traceless(stack)
+
+        np.testing.assert_allclose(result, np.broadcast_to([[0.2, 1j], [-1j, -0.2]], stack.shape), atol=1e-8)
+        np.testing.assert_array_equal(result[:, 0, 1], stack[:, 0, 1])
+
+    def test_real_input_stays_real(self):
+        assert traceless(np.diag([1.0, 2.0])).dtype == np.float64
 
 
 # -----------------------------------

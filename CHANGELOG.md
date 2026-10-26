@@ -63,6 +63,11 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   `initial_state`, so a later `set_control(initial_state=1)` silently turned an adiabatic problem into a diabatic
   transfer `1 -> 0`, which then failed asking for `dia_alpha` and `dia_beta`. An explicitly set `final_state` keeps its
   value.
+- The numerical derivative of a callable Hamiltonian with a large identity offset (e.g. `1e8 * I + ...`) no longer
+  sends most grid points to `scipy.differentiate.jacobian`, which cost 11-28 times more Hamiltonian evaluations and
+  did not improve the result. Only the traceless part of H is differentiated (the trace part does not change the
+  metric), and the tolerances are floored at the rounding error the offset leaves in the samples. For
+  `H = 1e10 * I + x * sz + 0.1 * sx` this also reduces the metric error from 28% to 0.1%.
 
 ## [0.3.0] - 2026-10-01
 
