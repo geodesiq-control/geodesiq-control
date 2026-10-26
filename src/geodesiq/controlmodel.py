@@ -493,6 +493,9 @@ class ControlModel:
         compute the ControlModel and its partial derivative. The parameters should be provided as keyword arguments,
         e.g., set_parameters(param1=value1, param2=value2, ...), and they will be stored. If a single parameter is
         updated, others will not be affected.
+
+        The values are stored as deep copies, so changing a passed object in place (e.g. an array) does not affect the
+        model until it is passed to ``set_parameters`` again.
         """
 
         if self._affine_hamiltonian:
@@ -506,7 +509,9 @@ class ControlModel:
                 f"{self.control_name!r} is the control variable and cannot also be supplied as a fixed parameter."
             )
 
-        new_params = {**self._parameters, **parameters}
+        # Copy on store: an aliased array changed in place would otherwise compare equal to itself here and leave the
+        # cached eigensystem and pulse stale.
+        new_params = {**self._parameters, **deepcopy(parameters)}
 
         if values_equal(new_params, self._parameters):
             return

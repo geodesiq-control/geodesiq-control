@@ -424,6 +424,60 @@ class TestSetParameters:
         model.set_parameters(letter="y")
         assert np.allclose(model(value=1), hamiltonian(value=1, letter="y"))
 
+    @staticmethod
+    def _array_coupling_model(coupling) -> ControlModel:
+        def array_hamiltonian(lam, coupling):
+            return np.array([[lam, coupling[0]], [coupling[0], -lam]])
+
+        model = ControlModel(array_hamiltonian)
+        model.set_control(control_name="lam", pulse_initial=-5.0, pulse_final=5.0, initial_state=0, final_state=0,
+                          alpha=2.0, beta=2.0, num_steps=2 ** 8 + 1, )
+        model.set_parameters(coupling=coupling)
+        return model
+
+    def test_set_parameters_after_in_place_array_change_resolves(self):
+        coupling = np.array([0.5])
+        model = self._array_coupling_model(coupling)
+        model.solve_problem()
+        stale_pulse = model.control_sol.copy()
+
+        coupling[0] = 0.05
+        model.set_parameters(coupling=coupling)
+        assert model._flags["eigenproblem_solved"] is False
+
+        model.solve_problem()
+        fresh = self._array_coupling_model(np.array([0.05]))
+        fresh.solve_problem()
+        assert not np.allclose(model.control_sol, stale_pulse)
+        assert np.allclose(model.control_sol, fresh.control_sol)
+
+    def test_in_place_array_change_without_set_parameters_does_not_leak(self):
+        coupling = np.array([0.5])
+        model = self._array_coupling_model(coupling)
+        model.solve_problem()
+
+        coupling[0] = 0.05
+
+        assert not np.shares_memory(model._parameters["coupling"], coupling)
+        assert model.parameters["coupling"][0] == 0.5
+        assert np.allclose(model(lam=0.0), [[0.0, 0.5], [0.5, 0.0]])
+        assert model._flags["eigenproblem_solved"] is True
+
+    def test_set_parameters_copies_nested_arrays(self):
+        model = ControlModel(hamiltonian)
+        config = {"values": np.array([1.0, 2.0]), "weights": [np.array([3.0])], }
+        model.set_parameters(config=config)
+        model._flags["eigenproblem_solved"] = True
+
+        config["values"][0] = 100.0
+        config["weights"][0][0] = 100.0
+        assert model.parameters["config"]["values"][0] == 1.0
+        assert model.parameters["config"]["weights"][0][0] == 3.0
+
+        model.set_parameters(config=config)
+        assert model._flags["eigenproblem_solved"] is False
+        assert model.parameters["config"]["values"][0] == 100.0
+
 
 # ---------------------------------------------------------------------------
 # get_parameters

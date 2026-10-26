@@ -48,6 +48,9 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   integral of the PCHIP interpolant it uses (the same interpolant as the default solver), the speed vanishes beyond
   `pulse_final`, and both endpoints are set exactly. The result must follow the exact normalized time `s(x)` to within
   1e-2 at every sample, otherwise `SolverError` is raised.
+- `ControlModel.set_parameters()` now stores deep copies of the values. Before, an array changed in place and passed
+  again compared equal to the stored (same) object, so `solve_problem()` returned the old eigensystem and pulse; and
+  changing it without calling `set_parameters()` silently changed what later Hamiltonian evaluations saw.
 
 ## [0.3.0] - 2026-10-01
 
