@@ -71,9 +71,12 @@ class ControlModel:
     # Numerical dH/dx: finite differences of order _FD_ORDER on the already sampled control grid. Points where the
     # difference with the order (_FD_ORDER - 2) estimate exceeds _FD_RTOL * max|dH/dx| are recomputed with the
     # adaptive scipy.differentiate.jacobian, as are all points of grids with fewer than _FD_MIN_POINTS samples.
+    # Both tolerances are floored at _FD_ROUNDOFF_FACTOR * eps * max|x| / step, the relative rounding error of the
+    # control steps, which dominates when the control values carry a large offset (e.g. x = 1e6 + [0, 1]).
     _FD_ORDER = 8
     _FD_RTOL = 1e-8
     _FD_MIN_POINTS = 5
+    _FD_ROUNDOFF_FACTOR = 100.0
 
     def __init__(
         self,
@@ -1006,7 +1009,9 @@ class ControlModel:
 
         The derivative is first computed with finite differences of the Hamiltonian samples on the grid, which needs
         no extra Hamiltonian evaluations. Its error is estimated by comparison with a lower-order stencil, and points
-        where the estimate is too large are recomputed with the adaptive ``scipy.differentiate.jacobian``.
+        where the estimate is too large are recomputed with the adaptive ``scipy.differentiate.jacobian``. If the
+        adaptive derivative does not converge at such a point, the finite-difference value is kept and a
+        ``NumericalStabilityWarning`` is issued.
 
         Parameters
         ----------
@@ -1042,32 +1047,42 @@ class ControlModel:
             raise SolverError("Hamiltonian samples do not match the control grid.")
 
         n_points = x_grid.size
-        steps = np.diff(x_grid)
-        step = float(steps[0])
-        uniform = step != 0 and np.allclose(steps, step, rtol=1e-9, atol=0.0)
+        # The grid is a linspace, so its nominal step follows from the endpoints. The individual steps differ from it
+        # by rounding, which is large relative to the step when the control values carry a large offset.
+        step = float(x_grid[-1] - x_grid[0]) / (n_points - 1)
+        roundoff = self._FD_ROUNDOFF_FACTOR * np.finfo(float).eps * float(np.max(np.abs(x_grid))) / abs(step)
+        uniform = np.allclose(np.diff(x_grid), step, rtol=max(1e-9, roundoff), atol=0.0)
 
         if uniform and n_points >= self._FD_MIN_POINTS:
             stencil = min(self._FD_ORDER + 1, n_points)
             derivative = uniform_grid_derivative(samples, step, stencil)
             estimate = uniform_grid_derivative(samples, step, stencil - 2)
             error = np.max(np.abs(derivative - estimate), axis=tuple(range(1, samples.ndim)))
-            tolerance = self._FD_RTOL * float(np.max(np.abs(derivative)))
+            tolerance = max(self._FD_RTOL, roundoff) * float(np.max(np.abs(derivative)))
             inaccurate = error > tolerance
+            fallback = derivative
         else:
             derivative = np.zeros_like(samples)
             inaccurate = np.ones(n_points, dtype=bool)
+            fallback = None
 
         if np.any(inaccurate):
-            derivative[inaccurate] = self._jacobian_partial_H(x_grid, inaccurate, samples)
+            derivative[inaccurate] = self._jacobian_partial_H(
+                x_grid, inaccurate, samples, fallback=None if fallback is None else fallback[inaccurate]
+            )
 
         return derivative
 
-    def _jacobian_partial_H(self, x_grid: np.ndarray, selected: np.ndarray, samples: np.ndarray) -> np.ndarray:
+    def _jacobian_partial_H(
+        self, x_grid: np.ndarray, selected: np.ndarray, samples: np.ndarray, fallback: np.ndarray | None = None
+    ) -> np.ndarray:
         """
         Adaptive dH/dx at the ``selected`` points of ``x_grid`` with ``scipy.differentiate.jacobian``.
 
         H_func is assumed not to be vectorized: it accepts one scalar x and returns a real- or complex-valued
-        Hamiltonian. Steps never leave the domain of the grid (one-sided differences at its boundaries).
+        Hamiltonian. Steps never leave the domain of the grid (one-sided differences at its boundaries). Points where
+        ``jacobian`` does not converge take the corresponding value of ``fallback`` (shape (n_selected, *H_shape))
+        with a ``NumericalStabilityWarning``; without a fallback, a ``SolverError`` is raised.
         """
         order = self._FD_ORDER
         unique_x = np.unique(x_grid)
@@ -1083,9 +1098,11 @@ class ControlModel:
         derivative_scale = max(float(np.max(np.abs(H_reference))), float(np.max(np.abs(H_end)))) / float(
             unique_x[-1] - unique_x[0]
         )
+        # The relative accuracy is limited by the rounding of x + step when x carries a large offset.
+        roundoff = self._FD_ROUNDOFF_FACTOR * np.finfo(float).eps * float(np.max(np.abs(unique_x))) / initial_step
         tolerances = {
             "atol": 1e-10 * derivative_scale if derivative_scale > 0 else 1e-10,
-            "rtol": 1e-8,
+            "rtol": max(1e-8, roundoff),
         }
 
         def evaluate_and_pack(
@@ -1151,6 +1168,7 @@ class ControlModel:
         )
 
         success = np.asarray(result.success, dtype=bool)
+        failed_points = np.zeros(points.size, dtype=bool)
         if not np.all(success):
             status = np.asarray(result.status)
             error = np.asarray(result.error, dtype=float)
@@ -1173,25 +1191,35 @@ class ControlModel:
 
                 details.append(f"x={points[index]:.6g}: status={statuses.tolist()}, max_error={max_error:.3e}")
 
-            raise SolverError(
+            message = (
                 "Numerical differentiation failed to converge at "
                 f"{failed_indices.size} control point(s): " + "; ".join(details)
+            )
+            if fallback is None:
+                raise SolverError(message)
+            warnings.warn(
+                message + ". The finite-difference derivative on the control grid is used there instead.",
+                NumericalStabilityWarning,
+                stacklevel=3,
             )
 
         # result.df shape:
         # (2 * n_elements, 1, n_points)
         derivative = np.asarray(result.df[:, 0, :])
 
-        if not np.all(np.isfinite(derivative)):
-            raise SolverError("Numerical Hamiltonian derivative contains non-finite values.")
-
         dH_flat = derivative[:n_elements] + 1j * derivative[n_elements:]
 
         # Convert from (*H_shape, n_points) to
         # (n_points, *H_shape).
-        dH_dx = dH_flat.reshape(H_shape + (points.size,))
+        dH_dx = np.moveaxis(dH_flat.reshape(H_shape + (points.size,)), -1, 0)
 
-        return np.moveaxis(dH_dx, -1, 0)
+        if fallback is not None:
+            dH_dx[failed_points] = fallback[failed_points]
+
+        if not np.all(np.isfinite(dH_dx)):
+            raise SolverError("Numerical Hamiltonian derivative contains non-finite values.")
+
+        return dH_dx
 
     def _solve_ode(self, pulse_accuracy: int) -> None:
         """Solve the normalized geodesic ODE and validate the solver result."""

@@ -1,3 +1,4 @@
+import warnings
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -12,6 +13,7 @@ from geodesiq.exceptions import (
     SolverError,
     ValidationError,
 )
+from geodesiq.warnings import NumericalStabilityWarning
 
 # ---------------------------------------------------------------------------
 # Configures Hamiltonians and models
@@ -591,3 +593,89 @@ class TestGridNumericalDerivative:
         assert 0 < len(fallback_points) < x.size // 2
         assert all(abs(point - kink) < 0.3 for point in fallback_points)
         np.testing.assert_allclose(derivative[:, 0, 0].real, np.sign(x - kink), atol=1e-6)
+
+    @pytest.mark.parametrize("offset", [1e4, 1e6, 1e9])
+    def test_large_control_offset_uses_grid_derivative(self, monkeypatch, offset: float):
+        # Rounding of x on a linspace with a large offset made the uniformity check fail, and all points went to
+        # scipy.differentiate.jacobian, which then raised (C-02).
+        sz = np.diag([1.0, -1.0])
+        sx = np.array([[0.0, 1.0], [1.0, 0.0]])
+
+        model = ControlModel(lambda x: (x - offset) * sz + 0.1 * sx)
+        model.set_control(control_name="x", pulse_initial=offset - 0.3, pulse_final=offset + 0.3, initial_state=0,
+                          alpha=2.0, beta=2.0, )
+        model._solve_eigenproblem()
+
+        def no_jacobian(*args, **kwargs):
+            raise AssertionError("A Hamiltonian linear in x should not need the adaptive fallback.")
+
+        monkeypatch.setattr("geodesiq.controlmodel.jacobian", no_jacobian)
+        derivative = model._compute_numerical_partial_H()
+
+        # Accuracy is limited by the rounding of x relative to the step: eps * offset / step.
+        step = 0.6 / (model.control_pulse.size - 1)
+        roundoff = np.finfo(float).eps * offset / step
+        np.testing.assert_allclose(derivative, np.broadcast_to(sz, derivative.shape), atol=max(1e-9, 1e2 * roundoff))
+
+    def test_large_control_offset_solves_problem(self):
+        offset = 1e6
+        sz = np.diag([1.0, -1.0])
+        sx = np.array([[0.0, 1.0], [1.0, 0.0]])
+
+        model = ControlModel(lambda x: (x - offset) * sz + 0.1 * sx)
+        model.set_control(control_name="x", pulse_initial=offset - 0.3, pulse_final=offset + 0.3, initial_state=0,
+                          alpha=2.0, beta=2.0, )
+        model.solve_problem(pulse_accuracy=100)
+
+        reference = ControlModel(H_d=0.1 * sx, H_c=sz)
+        reference.set_control(control_name="x", pulse_initial=-0.3, pulse_final=0.3, initial_state=0, alpha=2.0,
+                              beta=2.0, )
+        reference.solve_problem(pulse_accuracy=100)
+
+        np.testing.assert_allclose(model.control_sol - offset, reference.control_sol, atol=1e-6)
+
+    def test_kink_with_large_offset_converges_in_adaptive_jacobian(self):
+        offset = 1e6
+        kink = offset + 0.0123
+
+        def hamiltonian(lam: float) -> np.ndarray:
+            return np.array([[abs(lam - kink), 1.0], [1.0, -abs(lam - kink)]])
+
+        model = ControlModel(hamiltonian)
+        model.set_control(control_name="lam", pulse_initial=offset - 1.0, pulse_final=offset + 1.0, initial_state=0,
+                          alpha=2.0, beta=2.0, num_steps=65, )
+        model._solve_eigenproblem()
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", NumericalStabilityWarning)
+            derivative = model._compute_numerical_partial_H()
+
+        x = model.control_pulse
+        np.testing.assert_allclose(derivative[:, 0, 0].real, np.sign(x - kink), atol=1e-4)
+
+    def test_failed_jacobian_falls_back_to_grid_derivative_with_warning(self, monkeypatch):
+        kink = 0.0123
+
+        def hamiltonian(lam: float) -> np.ndarray:
+            return np.array([[abs(lam - kink), 1.0], [1.0, -abs(lam - kink)]])
+
+        model = ControlModel(hamiltonian)
+        model.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0,
+                          beta=2.0, num_steps=65, )
+        model._solve_eigenproblem()
+
+        def failed_jacobian(func, x, **kwargs):
+            del func, kwargs
+            shape = (8, 1, x.shape[-1])
+            return SimpleNamespace(df=np.full(shape, np.nan), success=np.zeros(shape, dtype=bool),
+                                   status=np.full(shape, -2), error=np.full(shape, 1e-2), )
+
+        monkeypatch.setattr("geodesiq.controlmodel.jacobian", failed_jacobian)
+        with pytest.warns(NumericalStabilityWarning, match="finite-difference derivative"):
+            derivative = model._compute_numerical_partial_H()
+
+        x = model.control_pulse
+        assert np.all(np.isfinite(derivative))
+        # Away from the kink, the grid derivative is exact for the piecewise-linear Hamiltonian.
+        far = np.abs(x - kink) > 0.3
+        np.testing.assert_allclose(derivative[far, 0, 0].real, np.sign(x[far] - kink), atol=1e-8)

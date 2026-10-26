@@ -35,6 +35,13 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   the inverse equation `ds/dx = sqrt(G)/a` and inverts it, exactly through the PCHIP antiderivative when no
   `solver_kwargs` are given, or with `solve_ivp` (default `rtol=1e-10`, `atol=1e-12`) otherwise. Custom solvers are
   unchanged.
+- The numerical derivative of a callable Hamiltonian no longer fails with "Numerical differentiation failed to
+  converge" when the control values carry a large offset (e.g. a sweep from `1e6 - 0.3` to `1e6 + 0.3`). The rounding
+  of the control grid made the uniformity check fail, so every point was sent to `scipy.differentiate.jacobian`, which
+  could not reach its tolerance. The step is now taken from the grid endpoints, and the finite-difference and
+  `jacobian` tolerances are floored at the relative rounding error of the control steps. If `jacobian` still does not
+  converge at a point where a finite-difference value exists, that value is used with a `NumericalStabilityWarning`
+  instead of raising `SolverError`.
 
 ## [0.3.0] - 2026-10-01
 
@@ -82,7 +89,7 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 ### Dev
 
 - Documentation site built with MkDocs and mkdocstrings and hosted on Read the Docs (`.readthedocs.yaml`):
-  https://geodesiq.readthedocs.io. Docstrings use the numpy style.
+  <https://geodesiq.readthedocs.io>. Docstrings use the numpy style.
 - `tests/conftest.py` selects the non-interactive matplotlib backend for all tests.
 - Coverage gate raised from 70% to 90%; CI also lints `tests/` and checks the formatting of `src/`.
 - New tests: Landau-Zener transition probability of `Dynamics`, finite-difference derivative and its fallback, BLAS
