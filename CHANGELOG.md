@@ -68,6 +68,10 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   did not improve the result. Only the traceless part of H is differentiated (the trace part does not change the
   metric), and the tolerances are floored at the rounding error the offset leaves in the samples. For
   `H = 1e10 * I + x * sz + 0.1 * sx` this also reduces the metric error from 28% to 0.1%.
+- `solve_problem()` accepts array values in `solver_kwargs` and `metric_integrator_kwargs` (e.g. `x` for
+  `scipy.integrate.trapezoid`) on repeated calls. Comparing them with the stored kwargs raised "The truth value of an
+  array ... is ambiguous". They are now compared element-wise and stored as deep copies, so an array changed in place
+  and passed again also invalidates the cached results.
 
 ## [0.3.0] - 2026-10-01
 

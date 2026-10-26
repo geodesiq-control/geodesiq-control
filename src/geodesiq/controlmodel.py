@@ -714,12 +714,14 @@ class ControlModel:
             endpoints are then set exactly. The forward equation is badly conditioned for large exponents, where the
             default solver (which integrates the inverse equation ds/dx) is preferable.
         solver_kwargs : dict[str, Any] | None
-            Additional keyword arguments forwarded to ``solver``.
+            Additional keyword arguments forwarded to ``solver``. Stored as a deep copy and reused by later calls until
+            replaced; values may be arrays.
         metric_integrator : Callable[..., Any] | None
             Callable used to compute ``a_tilde`` from ``sqrt(metric_tensor)``. Defaults to
             ``scipy.integrate.romb``.
         metric_integrator_kwargs : dict[str, Any] | None
-            Additional keyword arguments forwarded to ``metric_integrator``.
+            Additional keyword arguments forwarded to ``metric_integrator``. Stored as a deep copy and reused by later
+            calls until replaced; values may be arrays (e.g. ``x`` for ``scipy.integrate.trapezoid``).
         """
         if pulse_accuracy is None:
             pulse_accuracy = (
@@ -767,16 +769,18 @@ class ControlModel:
         if not callable(selected_metric_integrator):
             raise ValidationError("metric_integrator must be a callable integration function.")
 
+        # values_equal handles array values (a plain != raises for them), and the stored deep copies keep an array
+        # changed in place and passed again from comparing equal to itself.
         integrator_changed = selected_metric_integrator is not self._metric_integrator
-        kwargs_changed = selected_metric_kwargs != self._metric_integrator_kwargs
+        kwargs_changed = not values_equal(selected_metric_kwargs, self._metric_integrator_kwargs)
 
         if integrator_changed or kwargs_changed:
             self._metric_integrator = selected_metric_integrator
-            self._metric_integrator_kwargs = dict(selected_metric_kwargs)
+            self._metric_integrator_kwargs = deepcopy(selected_metric_kwargs)
             self._flags["metric_computed"] = False
-        if selected_solver is not self._solver or selected_solver_kwargs != self._solver_kwargs:
+        if selected_solver is not self._solver or not values_equal(selected_solver_kwargs, self._solver_kwargs):
             self._solver = selected_solver
-            self._solver_kwargs = dict(selected_solver_kwargs)
+            self._solver_kwargs = deepcopy(selected_solver_kwargs)
             self._flags["ode_solved"] = False
 
     def _solve_dia_list(self, config: _ControlParameters) -> None:

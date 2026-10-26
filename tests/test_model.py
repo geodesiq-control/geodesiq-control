@@ -991,6 +991,50 @@ class TestSolveProblem:
         assert configured_ham._flags["ode_solved"]
         np.testing.assert_allclose(configured_ham._control_sol, baseline, atol=1e-4)
 
+    def test_array_valued_metric_integrator_kwargs_are_compared_elementwise(self, configured_ham):
+        # Comparing the kwargs dicts with != raised "The truth value of an array ... is ambiguous" (C-11).
+        def integrator(values, dx=1.0, x=None):
+            return np.trapezoid(values, x=x)
+
+        x = configured_ham.control_pulse
+        configured_ham.solve_problem(metric_integrator=integrator, metric_integrator_kwargs={"x": x.copy()})
+        a_tilde = configured_ham._a_tilde
+
+        configured_ham.solve_problem(metric_integrator_kwargs={"x": x.copy()})
+        assert configured_ham._flags["metric_computed"] is True
+
+        configured_ham.solve_problem(metric_integrator_kwargs={"x": 2 * x})
+        assert np.isclose(configured_ham._a_tilde, 2 * a_tilde)
+
+    def test_array_valued_solver_kwargs_are_compared_elementwise(self, configured_ham):
+        calls = []
+
+        def solver_with_array_option(fun, t_span, y0, t_eval=None, weights=None, **kwargs):
+            calls.append(weights.copy())
+            return solve_ivp(fun, t_span, y0, t_eval=t_eval, rtol=1e-10, atol=1e-12, **kwargs)
+
+        weights = np.array([1.0, 2.0, 3.0])
+        configured_ham.solve_problem(solver=solver_with_array_option, solver_kwargs={"weights": weights.copy()})
+        configured_ham.solve_problem(solver_kwargs={"weights": weights.copy()})
+        assert len(calls) == 1
+
+        configured_ham.solve_problem(solver_kwargs={"weights": 2 * weights})
+        assert len(calls) == 2
+
+    def test_array_kwargs_changed_in_place_invalidate_the_cache(self, configured_ham):
+        def integrator(values, dx=1.0, x=None):
+            return np.trapezoid(values, x=x)
+
+        x = configured_ham.control_pulse.copy()
+        kwargs = {"x": x}
+        configured_ham.solve_problem(metric_integrator=integrator, metric_integrator_kwargs=kwargs)
+        a_tilde = configured_ham._a_tilde
+
+        x *= 2
+        assert np.isclose(configured_ham._metric_integrator_kwargs["x"][-1], x[-1] / 2)
+        configured_ham.solve_problem(metric_integrator_kwargs=kwargs)
+        assert np.isclose(configured_ham._a_tilde, 2 * a_tilde)
+
     def test_solve_problem_rejects_non_callable_solver(self, configured_ham):
         with pytest.raises(ValidationError, match="solver must be a callable"):
             configured_ham.solve_problem(solver=cast(Any, "RK45"))
