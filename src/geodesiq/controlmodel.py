@@ -77,6 +77,10 @@ class ControlModel:
     _FD_RTOL = 1e-8
     _FD_MIN_POINTS = 5
     _FD_ROUNDOFF_FACTOR = 100.0
+    # A custom ODE solver's pulse x(s) may deviate from the exact geodesic by at most _SOLVER_S_TOL in normalized
+    # time s, i.e. |s(x(s_i)) - s_i| <= _SOLVER_S_TOL at every sample (solve_ivp at its default rtol=1e-3 stays below
+    # about 5e-3).
+    _SOLVER_S_TOL = 1e-2
 
     def __init__(
         self,
@@ -690,7 +694,11 @@ class ControlModel:
         solver : Callable[..., Any] | None
             Callable used to integrate the ODE. Defaults to ``scipy.integrate.solve_ivp``.
             Expected signature is solver(fun, t_span, y0, t_eval=..., **kwargs), and the return
-            value must expose ``t`` and ``y`` (or be a ``(t, y)`` tuple).
+            value must expose ``t`` and ``y`` (or be a ``(t, y)`` tuple). A custom solver integrates the forward
+            equation dx/ds, normalized so that its exact solution ends at ``pulse_final``. Its result must follow the
+            exact normalized time s(x) to within 1e-2 at every sample, otherwise a ``SolverError`` is raised; both
+            endpoints are then set exactly. The forward equation is badly conditioned for large exponents, where the
+            default solver (which integrates the inverse equation ds/dx) is preferable.
         solver_kwargs : dict[str, Any] | None
             Additional keyword arguments forwarded to ``solver``.
         metric_integrator : Callable[..., Any] | None
@@ -1235,19 +1243,19 @@ class ControlModel:
             raise MetricComputationError("ODE speed factor is non-finite or non-positive.")
 
         order = np.argsort(self._control_pulse)
-        interpolation = PchipInterpolator(
+        # Both solver paths use the PCHIP interpolant of ds/dx = 1 / factor(x), which keeps the samples positive.
+        inverse_interpolation = PchipInterpolator(
             self._control_pulse[order],
-            factor[order],
+            1.0 / factor[order],
             extrapolate=False,
         )
+        antiderivative = inverse_interpolation.antiderivative()
 
         direction = float(np.sign(self._control_pulse[-1] - self._control_pulse[0]))
         lower = float(np.min(self._control_pulse))
         upper = float(np.max(self._control_pulse))
-
-        def model(_: float, y: np.ndarray) -> np.ndarray:
-            clipped = np.clip(y, lower, upper)
-            return np.asarray(direction * interpolation(clipped), dtype=float)
+        x_start = float(self._control_pulse[0])
+        x_end = float(self._control_pulse[-1])
 
         s = np.linspace(0.0, 1.0, pulse_accuracy)
         kwargs = dict(self._solver_kwargs)
@@ -1259,13 +1267,6 @@ class ControlModel:
             # The ODE dx/ds = factor(x) is autonomous, so solve its inverse ds/dx = 1 / factor(x) and invert s(x)
             # afterward. The speed factor can span many orders of magnitude (e.g. large alpha/beta), which makes the
             # forward problem require steps below floating-point spacing, while the inverse is well conditioned.
-            inverse_interpolation = PchipInterpolator(
-                self._control_pulse[order],
-                1.0 / factor[order],
-                extrapolate=False,
-            )
-            x_start = float(self._control_pulse[0])
-            x_end = float(self._control_pulse[-1])
             x_grid = np.linspace(x_start, x_end, max(self._control_pulse.size, 8 * pulse_accuracy))
 
             if kwargs:
@@ -1288,7 +1289,6 @@ class ControlModel:
             else:
                 # Without solver options, integrate the interpolant exactly through its piecewise-polynomial
                 # antiderivative, which is deterministic and free of step-size control.
-                antiderivative = inverse_interpolation.antiderivative()
                 s_grid = direction * (antiderivative(x_grid) - antiderivative(x_start))
 
             endpoint_time = float(s_grid[-1])
@@ -1302,8 +1302,20 @@ class ControlModel:
             t = s
             y = PchipInterpolator(s_grid[keep], x_grid[keep])(np.clip(s, s_grid[keep][0], s_grid[keep][-1]))
         else:
+            # Normalize the forward ODE with the exact integral of the interpolant it uses, so that x(1) = x_end.
+            # (a_tilde comes from the raw samples and differs from it, which made the pulse overshoot or fall short.)
+            length = direction * float(antiderivative(x_end) - antiderivative(x_start))
+            if not np.isfinite(length) or length <= 0:
+                raise SolverError("ODE normalization must be finite and strictly positive.")
+
+            def model(_: float, y: np.ndarray) -> np.ndarray:
+                y = np.asarray(y, dtype=float)
+                speed = length / inverse_interpolation(np.clip(y, lower, upper))
+                # Stop at x_end, so that an overshooting step cannot run away beyond the control grid.
+                return np.where(direction * (x_end - y) > 0, direction * speed, 0.0)
+
             try:
-                sol = self._solver(model, [0.0, 1.0], [self._control_pulse[0]], t_eval=s, **kwargs)
+                sol = self._solver(model, [0.0, 1.0], [x_start], t_eval=s, **kwargs)
             except TypeError as exc:
                 raise ValidationError(
                     "Invalid solver call: ensure solver accepts (fun, t_span, y0, t_eval=..., **kwargs)."
@@ -1337,9 +1349,19 @@ class ControlModel:
             raise SolverError("Solver output contains NaN or infinite values.")
         if np.any(np.diff(t) <= 0) or not np.isclose(t[0], 0.0) or not np.isclose(t[-1], 1.0):
             raise SolverError("Solver time grid must be strictly increasing and span [0, 1].")
-        if self._solver is solve_ivp:
-            control[0] = self._control_pulse[0]
-            control[-1] = self._control_pulse[-1]
+        if self._solver is not solve_ivp:
+            # Validate the whole trajectory against the exact normalized time s(x) of the interpolant: an endpoint
+            # check alone would accept a pulse that reaches x_end early and then stays there.
+            s_exact = direction * (antiderivative(np.clip(control, lower, upper)) - antiderivative(x_start)) / length
+            deviation = float(np.max(np.abs(s_exact - t)))
+            if not np.isfinite(deviation) or deviation > self._SOLVER_S_TOL:
+                raise SolverError(
+                    f"Custom solver result deviates from the geodesic by {deviation:.3g} in normalized time "
+                    f"(tolerance {self._SOLVER_S_TOL:g}). Tighten its tolerances (e.g. rtol) or use the default "
+                    "solver."
+                )
+        control[0] = x_start
+        control[-1] = x_end
         self._s = t.copy()
         self._control_sol = control.copy()
         self._previous_pulse_accuracy = pulse_accuracy

@@ -1,3 +1,4 @@
+import functools
 import warnings
 from types import SimpleNamespace
 from typing import Any, cast
@@ -178,6 +179,60 @@ def test_synthesis_preserves_custom_solver_configuration():
     model.synthesize_pulse(duration=1.0)
 
     assert calls["count"] == 1
+
+
+def affine_lz_model(num_steps: int, alpha: float, beta: float, pulse_initial: float = -5.0,
+                    pulse_final: float = 5.0) -> ControlModel:
+    model = ControlModel(H_d=0.1 * np.array([[0.0, 1.0], [1.0, 0.0]]), H_c=np.diag([1.0, -1.0]))
+    model.set_control(control_name="x", pulse_initial=pulse_initial, pulse_final=pulse_final, initial_state=0,
+                      alpha=alpha, beta=beta, num_steps=num_steps, )
+    return model
+
+
+def wrapped_solve_ivp(fun, t_span, y0, t_eval=None, **kwargs):
+    return solve_ivp(fun, t_span, y0, t_eval=t_eval, **kwargs)
+
+
+@pytest.mark.parametrize(("num_steps", "alpha", "beta"), [(17, 2.0, 2.0), (17, 4.0, 2.0), (65, 2.0, 2.0),
+                                                          (1025, 4.0, 2.0), ], )
+@pytest.mark.parametrize(("pulse_initial", "pulse_final"), [(-5.0, 5.0), (5.0, -5.0)])
+def test_custom_solver_ends_at_pulse_final_and_matches_default(num_steps: int, alpha: float, beta: float,
+                                                               pulse_initial: float, pulse_final: float, ) -> None:
+    # The forward ODE was normalized with a_tilde from romb instead of the integral of its interpolant, so a custom
+    # solver ended far from pulse_final, e.g. at x = 414 or 34801 instead of 5 for num_steps=17 (C-03).
+    reference = affine_lz_model(num_steps, alpha, beta, pulse_initial, pulse_final)
+    reference.solve_problem(pulse_accuracy=200)
+
+    model = affine_lz_model(num_steps, alpha, beta, pulse_initial, pulse_final)
+    model.solve_problem(pulse_accuracy=200, solver=wrapped_solve_ivp, solver_kwargs={"rtol": 1e-10, "atol": 1e-12}, )
+
+    control = model.control_sol
+    assert control[0] == pulse_initial
+    assert control[-1] == pulse_final
+    np.testing.assert_allclose(control, reference.control_sol, atol=1e-4)
+
+
+def test_partial_solve_ivp_with_default_tolerances_ends_at_pulse_final() -> None:
+    model = affine_lz_model(1025, 4.0, 2.0)
+    model.solve_problem(pulse_accuracy=200, solver=functools.partial(solve_ivp))
+
+    control = model.control_sol
+    assert control[0] == -5.0
+    assert control[-1] == 5.0
+    assert np.all(np.diff(control) >= 0)
+    assert np.all((control >= -5.0) & (control <= 5.0))
+
+
+def test_custom_solver_that_leaves_the_geodesic_is_rejected() -> None:
+    model = affine_lz_model(65, 2.0, 2.0)
+
+    def early_arrival(fun, t_span, y0, t_eval=None, **kwargs):
+        # Reaches pulse_final at s = 0.5 and then stays there: right endpoint, wrong pulse.
+        del fun, t_span, kwargs
+        return t_eval, np.interp(t_eval, [0.0, 0.5, 1.0], [y0[0], 5.0, 5.0])[np.newaxis, :]
+
+    with pytest.raises(SolverError, match="deviates from the geodesic"):
+        model.solve_problem(pulse_accuracy=100, solver=early_arrival)
 
 
 def test_decreasing_control_sweep_is_supported():

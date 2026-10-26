@@ -890,13 +890,18 @@ class TestSolveProblem:
         configured_ham.solve_problem()
         baseline = configured_ham._control_sol.copy()
 
-        def synthetic_solver(_, __, y0, t_eval=None, **kwargs):
-            return t_eval, np.array([np.full_like(t_eval, y0[0] + kwargs.get("offset", 0.0), dtype=float)])
+        calls = []
 
-        configured_ham.solve_problem(solver=synthetic_solver, solver_kwargs={"offset": 0.123})
+        # A custom solver must follow the geodesic (C-03), so this one records its call and integrates correctly.
+        def recording_solver(fun, t_span, y0, t_eval=None, **kwargs):
+            calls.append(kwargs)
+            return solve_ivp(fun, t_span, y0, t_eval=t_eval, **kwargs)
 
-        assert np.allclose(configured_ham._control_sol, configured_ham.pulse_initial + 0.123)
-        assert not np.allclose(configured_ham._control_sol, baseline)
+        configured_ham.solve_problem(solver=recording_solver, solver_kwargs={"rtol": 1e-10, "atol": 1e-12})
+
+        assert calls == [{"rtol": 1e-10, "atol": 1e-12}]
+        assert configured_ham._flags["ode_solved"]
+        np.testing.assert_allclose(configured_ham._control_sol, baseline, atol=1e-4)
 
     def test_solve_problem_rejects_non_callable_solver(self, configured_ham):
         with pytest.raises(ValidationError, match="solver must be a callable"):

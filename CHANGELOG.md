@@ -33,8 +33,8 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 - `ControlModel.solve_problem()` no longer fails with "Required step size is less than spacing between numbers" when
   the metric tensor spans many orders of magnitude (e.g. large `alpha` and `beta`). The default solver now integrates
   the inverse equation `ds/dx = sqrt(G)/a` and inverts it, exactly through the PCHIP antiderivative when no
-  `solver_kwargs` are given, or with `solve_ivp` (default `rtol=1e-10`, `atol=1e-12`) otherwise. Custom solvers are
-  unchanged.
+  `solver_kwargs` are given, or with `solve_ivp` (default `rtol=1e-10`, `atol=1e-12`) otherwise. Custom solvers still
+  integrate the forward equation (see below).
 - The numerical derivative of a callable Hamiltonian no longer fails with "Numerical differentiation failed to
   converge" when the control values carry a large offset (e.g. a sweep from `1e6 - 0.3` to `1e6 + 0.3`). The rounding
   of the control grid made the uniformity check fail, so every point was sent to `scipy.differentiate.jacobian`, which
@@ -42,6 +42,12 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   `jacobian` tolerances are floored at the relative rounding error of the control steps. If `jacobian` still does not
   converge at a point where a finite-difference value exists, that value is used with a `NumericalStabilityWarning`
   instead of raising `SolverError`.
+- A custom `solver` in `ControlModel.solve_problem()` (any callable other than `scipy.integrate.solve_ivp` itself,
+  including wrappers and `functools.partial(solve_ivp, ...)`) no longer gives a pulse that misses `pulse_final`, e.g.
+  ending at x = 414 instead of 5 on a coarse grid. The forward equation `dx/ds` is now normalized with the exact
+  integral of the PCHIP interpolant it uses (the same interpolant as the default solver), the speed vanishes beyond
+  `pulse_final`, and both endpoints are set exactly. The result must follow the exact normalized time `s(x)` to within
+  1e-2 at every sample, otherwise `SolverError` is raised.
 
 ## [0.3.0] - 2026-10-01
 
