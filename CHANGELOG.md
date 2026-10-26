@@ -27,6 +27,9 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   adiabatic case. Towards the gap maxima that bound a diabatic anticrossing, the exponents are blended smoothly
   (C1) into the adiabatic ones, so the metric does not jump where a diabatic passage ends. Overlapping anticrossings (e.g. a fan of levels crossing at one point) are passed together. The list
   is recomputed whenever the eigenproblem changes.
+- `solve_problem()` and `plot_metric_tensor()` no longer evaluate the Hamiltonian once per call just to get its
+  dimension once it is known, and a `num_steps` that is incompatible with the default `romb` integrator (not
+  `2**k + 1`) is rejected before the eigenproblem is solved instead of after.
 
 ### Fixed
 

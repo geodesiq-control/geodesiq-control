@@ -1422,6 +1422,60 @@ class TestSolveProblemErrors:
         with pytest.raises(InvalidControlParameterError, match="incompatible with romb"):
             ham.solve_problem()
 
+    def test_romb_incompatible_num_steps_fails_before_the_eigenproblem(self):
+        # The romb check ran only after the full eigenproblem had been solved (C-18).
+        calls = []
+
+        def hamiltonian(lam, delta):
+            calls.append(lam)
+            return lz_hamiltonian(lam, delta)
+
+        ham = ControlModel(hamiltonian, partial_H_func=lz_partial)
+        ham.set_parameters(delta=0.5)
+        ham.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0, beta=2.0,
+                        num_steps=100)
+
+        with pytest.raises(InvalidControlParameterError, match="incompatible with romb"):
+            ham.solve_problem()
+        assert len(calls) <= 1
+        assert ham._flags["eigenproblem_solved"] is False
+
+    def test_non_romb_integrator_passed_to_solve_problem_accepts_any_num_steps(self):
+        ham = ControlModel(lz_hamiltonian, partial_H_func=lz_partial)
+        ham.set_parameters(delta=0.5)
+        ham.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0, beta=2.0,
+                        num_steps=100)
+
+        ham.solve_problem(metric_integrator=lambda values, dx: np.trapezoid(values, dx=dx))
+        assert ham._flags["ode_solved"]
+
+    def test_warm_solve_does_not_evaluate_the_hamiltonian(self):
+        # _check_control_parameters evaluated H(pulse_initial) on every call only to get the dimension (C-18).
+        calls = []
+
+        def hamiltonian(lam, delta):
+            calls.append(lam)
+            return lz_hamiltonian(lam, delta)
+
+        ham = ControlModel(hamiltonian, partial_H_func=lz_partial)
+        ham.set_parameters(delta=0.5)
+        ham.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0, beta=2.0,
+                        num_steps=33)
+        ham.solve_problem()
+        calls.clear()
+
+        ham.solve_problem()
+        fig, _ = ham.plot_metric_tensor()
+        _get_pyplot().close(fig)
+        assert calls == []
+
+    def test_state_index_is_validated_against_the_known_dimension(self, configured_ham):
+        configured_ham.solve_problem()
+        configured_ham.set_control(initial_state=2)
+
+        with pytest.raises(ValidationError, match="between 0 and 1"):
+            configured_ham.solve_problem()
+
 
 # ---------------------------------------------------------------------------
 # _generate_summary content

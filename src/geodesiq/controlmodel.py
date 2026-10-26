@@ -732,7 +732,7 @@ class ControlModel:
         pulse_accuracy = int(pulse_accuracy)
         if pulse_accuracy < 3:
             raise InvalidControlParameterError("pulse_accuracy must be an integer >= 3.")
-        config = self._check_control_parameters()
+        config = self._check_control_parameters(metric_integrator)
 
         self._configure_integration(
             solver=solver,
@@ -957,15 +957,7 @@ class ControlModel:
         dx = float(np.abs(self._control_pulse[1] - self._control_pulse[0]))
         metric_values = np.sqrt(metric)
 
-        # scipy.integrate.romb requires sample count n = 2**k + 1.
-        if self._metric_integrator is romb:
-            n_samples = metric_values.size
-            power_minus_one = n_samples - 1
-            if power_minus_one <= 0 or (power_minus_one & (power_minus_one - 1)) != 0:
-                raise InvalidControlParameterError(
-                    f"num_steps={n_samples} is incompatible with romb. Use num_steps=2**k+1, "
-                    "or pass a different metric_integrator to solve_problem(...)."
-                )
+        self._check_metric_integrator_samples(metric_values.size, self._metric_integrator)
 
         try:
             result = self._metric_integrator(metric_values, dx=dx, **self._metric_integrator_kwargs)
@@ -1615,8 +1607,24 @@ class ControlModel:
             raise SolverError("Cannot synthesize a pulse before the control solution is available.")
         return PulseControl(self._control_sol, duration)
 
-    def _check_control_parameters(self) -> _ControlParameters:
-        """Validate and return all parameters required for a complete solve."""
+    @staticmethod
+    def _check_metric_integrator_samples(n_samples: int, metric_integrator: Callable[..., Any]) -> None:
+        """Raise if ``metric_integrator`` is ``scipy.integrate.romb`` and ``n_samples`` is not ``2**k + 1``."""
+        if metric_integrator is romb:
+            power_minus_one = n_samples - 1
+            if power_minus_one <= 0 or (power_minus_one & (power_minus_one - 1)) != 0:
+                raise InvalidControlParameterError(
+                    f"num_steps={n_samples} is incompatible with romb. Use num_steps=2**k+1, "
+                    "or pass a different metric_integrator to solve_problem(...)."
+                )
+
+    def _check_control_parameters(self, metric_integrator: Callable[..., Any] | None = None) -> _ControlParameters:
+        """
+        Validate and return all parameters required for a complete solve.
+
+        ``metric_integrator`` is the integrator the solve will use (the stored one if None); ``num_steps`` is checked
+        against it here, before the eigenproblem is solved.
+        """
         control_name = self.control_name
         pulse_initial = self.pulse_initial
         pulse_final = self.pulse_final
@@ -1675,8 +1683,14 @@ class ControlModel:
                 f"({', '.join(f'{name}=<...>' for name in missing_params)})."
             )
 
-        hamiltonian = self.evaluate_hamiltonian(pulse_initial)
-        dimension = hamiltonian.shape[0]
+        self._check_metric_integrator_samples(
+            num_steps, self._metric_integrator if metric_integrator is None else metric_integrator
+        )
+
+        # The dimension is fixed once known, so H is evaluated only when it is not known yet.
+        dimension = self._hamiltonian_dimension
+        if dimension is None:
+            dimension = self.evaluate_hamiltonian(pulse_initial).shape[0]
         validate_state_index(initial_state, dimension, "initial_state")
         validate_state_index(final_state, dimension, "final_state")
 
