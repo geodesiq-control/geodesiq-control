@@ -159,6 +159,8 @@ class ControlModel:
         self._pulse_final: float | None = None
         self._initial_state: int | None = None
         self._final_state: int | None = None
+        # Until final_state is given explicitly, it follows initial_state (adiabatic transfer).
+        self._final_state_explicit = False
         self._alpha: float | None = None
         self._beta: float | None = None
         self._dia_alpha: float | None = None
@@ -558,11 +560,11 @@ class ControlModel:
              ODE for the control pulse.
         final_state : int | None
             The index of the final state in the energy spectrum. This is used to compute the metric tensor and the ODE
-            for the control pulse. If not provided, it will be assumed to be the same as the initial state. If it
-            differs from the initial state, the occupied state is followed along the sweep: each anticrossing with the
-            neighbouring state towards ``final_state`` is passed diabatically, until ``final_state`` is reached. All
-            other anticrossings are passed adiabatically, and only transitions from the occupied state contribute to
-            the metric tensor.
+            for the control pulse. As long as it has never been provided, it follows ``initial_state`` (also when
+            ``initial_state`` changes later); once provided, it keeps its value. If it differs from the initial state,
+            the occupied state is followed along the sweep: each anticrossing with the neighbouring state towards
+            ``final_state`` is passed diabatically, until ``final_state`` is reached. All other anticrossings are passed
+            adiabatically, and only transitions from the occupied state contribute to the metric tensor.
         alpha : float | None
             The exponent alpha used in the metric tensor computation. This parameter controls the weighting of the
              energy gaps in the metric tensor.
@@ -600,9 +602,11 @@ class ControlModel:
         candidate_final_state = (
             self._final_state if final_state is None else self._validate_state_index(final_state, "Final")
         )
+        candidate_final_state_explicit = self._final_state_explicit or final_state is not None
 
-        # Preserve the existing behavior on first configuration.
-        if candidate_final_state is None and candidate_initial_state is not None:
+        # A final state that was never given explicitly follows the initial state, so changing initial_state alone
+        # keeps an adiabatic problem adiabatic instead of silently turning it into a diabatic transfer.
+        if not candidate_final_state_explicit:
             candidate_final_state = candidate_initial_state
 
         candidate_alpha = self._alpha if alpha is None else self._validate_exponent(alpha, "Alpha")
@@ -657,6 +661,7 @@ class ControlModel:
         self._pulse_final = candidate_pulse_final
         self._initial_state = candidate_initial_state
         self._final_state = candidate_final_state
+        self._final_state_explicit = candidate_final_state_explicit
         self._alpha = candidate_alpha
         self._beta = candidate_beta
         self._dia_alpha = candidate_dia_alpha

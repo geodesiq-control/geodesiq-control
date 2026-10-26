@@ -59,6 +59,10 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   relative to the norm of the traceless part, plus an allowance of `100 * eps * ||H||_F` for rounding errors, so
   Hermitian matrices with a large offset are still accepted. This also applies to `hermitian_tol` in
   `decompose_hamiltonian`.
+- A `final_state` that was never set explicitly now follows `initial_state`. Before, it kept the value of the first
+  `initial_state`, so a later `set_control(initial_state=1)` silently turned an adiabatic problem into a diabatic
+  transfer `1 -> 0`, which then failed asking for `dia_alpha` and `dia_beta`. An explicitly set `final_state` keeps its
+  value.
 
 ## [0.3.0] - 2026-10-01
 

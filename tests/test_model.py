@@ -673,6 +673,40 @@ class TestSetControl:
         assert model.dia_beta == 2.0
         assert model.num_steps == 129
 
+    def test_implicit_final_state_follows_initial_state(self, configured_ham):
+        # final_state kept its first (implicit) value, so this turned into a diabatic transfer 1 -> 0 that then
+        # failed asking for dia_alpha/dia_beta (C-12).
+        configured_ham._flags["metric_computed"] = True
+        configured_ham.set_control(initial_state=1)
+
+        assert configured_ham.final_state == 1
+        assert configured_ham._flags["metric_computed"] is False
+        configured_ham.solve_problem()
+        assert configured_ham._flags["ode_solved"]
+
+        configured_ham.initial_state = 0
+        assert configured_ham.final_state == 0
+
+    def test_explicit_final_state_is_kept_when_initial_state_changes(self, configured_ham):
+        configured_ham.set_control(final_state=0)
+        configured_ham.set_control(initial_state=1, dia_alpha=1.0, dia_beta=1.0)
+
+        assert (configured_ham.initial_state, configured_ham.final_state) == (1, 0)
+
+    def test_final_state_set_together_with_initial_state_is_explicit(self, ham_with_partial):
+        ham_with_partial.set_control(control_name="lam", pulse_initial=-2.0, pulse_final=2.0, initial_state=0,
+                                     final_state=0, alpha=2.0, beta=2.0, )
+        ham_with_partial.set_control(initial_state=1, dia_alpha=1.0, dia_beta=1.0)
+
+        assert ham_with_partial.final_state == 0
+
+    def test_failed_set_control_does_not_make_final_state_explicit(self, configured_ham):
+        with pytest.raises(InvalidControlParameterError):
+            configured_ham.set_control(final_state=1, alpha=np.inf)
+
+        configured_ham.set_control(initial_state=1)
+        assert configured_ham.final_state == 1
+
 
 # ---------------------------------------------------------------------------
 # _check_control_parameters
