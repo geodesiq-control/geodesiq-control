@@ -51,6 +51,9 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 - `ControlModel.set_parameters()` now stores deep copies of the values. Before, an array changed in place and passed
   again compared equal to the stored (same) object, so `solve_problem()` returned the old eigensystem and pulse; and
   changing it without calling `set_parameters()` silently changed what later Hamiltonian evaluations saw.
+- `ControlModel.eigenenergies` is real (`float64`) for complex Hermitian Hamiltonians. The trace offset added back to
+  the centered energies was kept complex, so the property returned `complex128` and caused `ComplexWarning`s
+  downstream.
 
 ## [0.3.0] - 2026-10-01
 

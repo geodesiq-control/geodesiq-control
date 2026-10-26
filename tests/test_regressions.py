@@ -235,6 +235,31 @@ def test_custom_solver_that_leaves_the_geodesic_is_rejected() -> None:
         model.solve_problem(pulse_accuracy=100, solver=early_arrival)
 
 
+def complex_hamiltonian(x: float) -> np.ndarray:
+    # sz + 0.3 sy + x sx + 2 * identity: complex entries and a nonzero trace.
+    return np.array([[3.0, x - 0.3j], [x + 0.3j, 1.0]], dtype=complex)
+
+
+@pytest.mark.parametrize("mode", ["affine", "callable"])
+def test_eigenenergies_of_complex_hamiltonian_are_real(mode: str) -> None:
+    # The trace offset was kept complex, so eigenenergies came out as complex128 (C-06).
+    if mode == "affine":
+        model = ControlModel(H_d=complex_hamiltonian(0.0), H_c=complex_hamiltonian(1.0) - complex_hamiltonian(0.0))
+    else:
+        model = ControlModel(complex_hamiltonian)
+    model.set_control(control_name="x", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0, beta=2.0,
+                      num_steps=33, )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", np.exceptions.ComplexWarning)
+        energies = model.eigenenergies
+        model.solve_problem(pulse_accuracy=50)
+
+    assert energies.dtype == np.float64
+    expected = np.array([np.linalg.eigvalsh(complex_hamiltonian(x)) for x in model.control_pulse])
+    np.testing.assert_allclose(energies, expected, atol=1e-12)
+
+
 def test_decreasing_control_sweep_is_supported():
     model = ControlModel(lz_hamiltonian, lz_partial)
     model.set_parameters(delta=0.5)

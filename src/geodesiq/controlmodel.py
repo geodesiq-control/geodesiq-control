@@ -469,7 +469,7 @@ class ControlModel:
 
     @property
     def eigenenergies(self) -> np.ndarray:
-        """Return ControlModel eigenenergies, solving the eigenproblem if needed."""
+        """Return the real (float64) eigenenergies, also for complex H, solving the eigenproblem if needed."""
         if not self._flags["eigenproblem_solved"]:
             self._check_eigensystem_parameters()
             self._solve_eigenproblem()
@@ -804,7 +804,8 @@ class ControlModel:
             full_hamiltonian = np.stack([self.evaluate_hamiltonian(value) for value in self._control_pulse])
         dimension = full_hamiltonian.shape[1]
 
-        energy_offset = np.trace(full_hamiltonian, axis1=1, axis2=2) / dimension
+        # The trace of a Hermitian matrix is real; keeping it complex would make the public eigenenergies complex.
+        energy_offset = np.trace(full_hamiltonian, axis1=1, axis2=2).real / dimension
         hamiltonian_centered = full_hamiltonian - energy_offset[:, None, None] * np.eye(dimension)
 
         # State indices are required for a full solve, but not for plotting/eigenenergy access.
@@ -1466,7 +1467,7 @@ class ControlModel:
             assert control_grid is not None
 
             for level in range(energies.shape[1]):
-                ax.plot(control_grid, energies[:, level].real, label=f"E{level}", **plot_kwargs)
+                ax.plot(control_grid, energies[:, level], label=f"E{level}", **plot_kwargs)
 
             ax.set_xlabel(control_name if xlabel is None else xlabel)
             ax.set_ylabel("Energy" if ylabel is None else ylabel)
