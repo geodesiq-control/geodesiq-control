@@ -1,5 +1,6 @@
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from fractions import Fraction
 from functools import lru_cache
 from math import factorial
@@ -254,7 +255,43 @@ def _diabatic_weight(gap: np.ndarray, index: int, left: int, right: int) -> np.n
     return weight
 
 
-def build_dia_list(energies: np.ndarray, initial_state: int, final_state: int) -> np.ndarray:
+@dataclass(frozen=True)
+class DiabaticList:
+    """
+    Adiabatic fraction of the transitions out of the occupied eigenstate along the control grid.
+
+    Only these transitions enter the metric, so the list stores one row per grid point instead of a full
+    (n_points, dim, dim) matrix.
+
+    Attributes
+    ----------
+    occupied : np.ndarray
+        Index of the occupied instantaneous eigenstate at each grid point, with shape (n_points,).
+    adiabatic_fraction : np.ndarray
+        Shape (n_points, dim). Entry ``[i, n]`` is ``1`` if the transition from ``occupied[i]`` to state ``n`` is
+        adiabatic at grid point ``i``, ``0`` if it is diabatic, and a value in between where the two are blended. The
+        entry of the occupied state itself is ``-1``.
+    """
+
+    occupied: np.ndarray
+    adiabatic_fraction: np.ndarray
+
+    def dense(self) -> np.ndarray:
+        """
+        Expand to the full transition matrix with shape (n_points, dim, dim), e.g. for plotting.
+
+        Entry ``[i, m, n]`` is the adiabatic fraction of the transition between ``m`` and ``n`` if one of them is the
+        occupied state, and ``-1`` otherwise (including the diagonal).
+        """
+        n_points, dim = self.adiabatic_fraction.shape
+        points = np.arange(n_points)
+        matrix = -np.ones((n_points, dim, dim), dtype=float)
+        matrix[points, self.occupied, :] = self.adiabatic_fraction
+        matrix[points, :, self.occupied] = self.adiabatic_fraction
+        return matrix
+
+
+def build_dia_list(energies: np.ndarray, initial_state: int, final_state: int) -> DiabaticList:
     """
     Build the adiabatic/diabatic transition mask along the control grid.
 
@@ -277,10 +314,9 @@ def build_dia_list(energies: np.ndarray, initial_state: int, final_state: int) -
 
     Returns
     -------
-    np.ndarray
-        Adiabatic fraction with shape (n_points, dim, dim). Entry ``[i, m, n]`` is ``1`` if the transition between
-        states ``m`` and ``n`` is adiabatic at grid point ``i``, ``0`` if it is diabatic, a value in between where the
-        two are blended, and ``-1`` if it does not involve the occupied state (and is not considered).
+    DiabaticList
+        The occupied state at each grid point and the adiabatic fraction of the transitions out of it, with shapes
+        (n_points,) and (n_points, dim). ``DiabaticList.dense()`` expands it to a (n_points, dim, dim) matrix.
 
     Raises
     ------
@@ -332,23 +368,20 @@ def build_dia_list(energies: np.ndarray, initial_state: int, final_state: int) -
         )
 
     # Every transition from the occupied state is adiabatic unless it belongs to a diabatic anticrossing.
-    dia_list = -np.ones((n_points, dim, dim), dtype=float)
-    points = np.arange(n_points)
-    dia_list[points[:, None], occupied[:, None], np.arange(dim)[None, :]] = 1
-    dia_list[points[:, None], np.arange(dim)[None, :], occupied[:, None]] = 1
-    dia_list[points, occupied, occupied] = -1
+    fraction = np.ones((n_points, dim), dtype=float)
+    fraction[np.arange(n_points), occupied] = -1
 
     for index, before, after in passages:
         gap = gaps[:, min(before, after)]
         left, right = _gap_basin(gap, index)
         window = np.arange(left, right + 1)
         adiabatic_fraction = 1.0 - _diabatic_weight(gap, index, left, right)
-        involved = (occupied[window] == before) | (occupied[window] == after)
-        window, adiabatic_fraction = window[involved], adiabatic_fraction[involved]
-        dia_list[window, before, after] = adiabatic_fraction
-        dia_list[window, after, before] = adiabatic_fraction
+        # Inside the anticrossing the occupied state is one of the pair; the transition is to the other one.
+        for source, target in ((before, after), (after, before)):
+            on_source = occupied[window] == source
+            fraction[window[on_source], target] = adiabatic_fraction[on_source]
 
-    return dia_list
+    return DiabaticList(occupied=occupied, adiabatic_fraction=fraction)
 
 
 # -----------------------------------

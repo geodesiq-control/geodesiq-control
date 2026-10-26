@@ -11,6 +11,7 @@ from scipy.integrate import romb, solve_ivp
 from scipy.interpolate import PchipInterpolator
 
 from ._utils import (
+    DiabaticList,
     Flags,
     build_dia_list,
     is_hermitian,
@@ -177,7 +178,7 @@ class ControlModel:
         self._matrix_elements: np.ndarray | None = None
 
         # Initialize metric tensor and normalization factor to None (to be computed in self.solve_problem())
-        self._dia_list: np.ndarray | None = None
+        self._dia_list: DiabaticList | None = None
         self._metric_tensor: np.ndarray | None = None
         self._a_tilde: float | None = None
 
@@ -864,13 +865,15 @@ class ControlModel:
         denominator: np.ndarray,
         alpha: float | np.ndarray,
         beta: float | np.ndarray,
-        transition: tuple[int, int],
+        transition: tuple[int | np.ndarray, int | np.ndarray],
         points: np.ndarray | None = None,
     ) -> np.ndarray:
         """
         Metric contribution of one transition, on all grid points or on the grid indices ``points``.
 
-        The exponents are scalars or arrays with one value per point.
+        The exponents are scalars or arrays with one value per point. Several transitions can be evaluated at once by
+        passing one entry per (point, transition) pair, with ``points`` holding the grid index of each entry and the two
+        states of ``transition`` given as arrays.
         """
         positive_alpha = np.asarray(alpha) > 0
         if np.any(positive_alpha):
@@ -893,6 +896,8 @@ class ControlModel:
 
                 indices = np.flatnonzero(singular)
                 grid_indices = indices if points is None else points[indices]
+                states = [np.broadcast_to(state, denominator.shape) for state in transition]
+                first = indices[0]
 
                 details = ", ".join(
                     f"x={control_pulse[g]:.6g}, gap={denominator[i]:.3e}, tol={tolerance[i]:.3e}"
@@ -900,7 +905,8 @@ class ControlModel:
                 )
 
                 raise MetricComputationError(
-                    f"Degenerate or near-degenerate energy gap encountered for transition {transition}: {details}"
+                    "Degenerate or near-degenerate energy gap encountered for transition "
+                    f"({int(states[0][first])}, {int(states[1][first])}): {details}"
                 )
 
         with np.errstate(
@@ -979,27 +985,24 @@ class ControlModel:
         if config.dia_alpha is None or config.dia_beta is None:
             raise MissingControlParameterError("Diabatic metric exponents are required.")
 
-        num, dim = self._centered_energies.shape
-        metric = np.zeros(num, dtype=float)
+        num = self._centered_energies.shape[0]
 
-        # Only transitions from the occupied state contribute (entries -1 of the diabatic list are skipped). The entries
-        # are the adiabatic fraction, which blends the adiabatic and diabatic exponents.
-        for m in range(dim):
-            for n in range(m + 1, dim):
-                points = np.flatnonzero(self._dia_list[:, m, n] >= 0)
-                if points.size == 0:
-                    continue
-                adiabatic_fraction = self._dia_list[points, m, n]
-                denominator = np.abs(self._centered_energies[points, n] - self._centered_energies[points, m])
-                metric[points] += self._metric_ratio(
-                    self._matrix_elements[points, m, n],
-                    denominator,
-                    alpha=adiabatic_fraction * config.alpha + (1.0 - adiabatic_fraction) * config.dia_alpha,
-                    beta=adiabatic_fraction * config.beta + (1.0 - adiabatic_fraction) * config.dia_beta,
-                    transition=(m, n),
-                    points=points,
-                )
-        self._metric_tensor = metric
+        # Only transitions from the occupied state contribute. They are evaluated together, one entry per (point,
+        # target state) pair; the adiabatic fraction blends the adiabatic and diabatic exponents.
+        fraction = self._dia_list.adiabatic_fraction
+        points, targets = np.nonzero(fraction >= 0)
+        sources = self._dia_list.occupied[points]
+        adiabatic_fraction = fraction[points, targets]
+        denominator = np.abs(self._centered_energies[points, targets] - self._centered_energies[points, sources])
+        ratio = self._metric_ratio(
+            self._matrix_elements[points, sources, targets],
+            denominator,
+            alpha=adiabatic_fraction * config.alpha + (1.0 - adiabatic_fraction) * config.dia_alpha,
+            beta=adiabatic_fraction * config.beta + (1.0 - adiabatic_fraction) * config.dia_beta,
+            transition=(sources, targets),
+            points=points,
+        )
+        self._metric_tensor = np.bincount(points, weights=ratio, minlength=num)
 
     def _compute_G_adiabatic(self, config: _ControlParameters) -> None:
         """Compute the adiabatic contribution to the metric tensor."""

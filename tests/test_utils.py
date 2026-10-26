@@ -1,3 +1,5 @@
+import tracemalloc
+
 import numpy as np
 import pytest
 from threadpoolctl import threadpool_info
@@ -36,7 +38,7 @@ class TestBuildDiaList:
     def test_same_pair_is_only_crossed_diabatically_towards_the_final_state(self):
         energies = three_level_energies(self.x, gap_01=np.full_like(self.x, 5.0))
 
-        dia_list = build_dia_list(energies, initial_state=1, final_state=2)
+        dia_list = build_dia_list(energies, initial_state=1, final_state=2).dense()
 
         assert dia_list.shape == (self.x.size, 3, 3)
         occupied = occupied_states(dia_list)
@@ -49,7 +51,7 @@ class TestBuildDiaList:
     def test_transitions_between_unoccupied_states_are_not_considered(self):
         energies = three_level_energies(self.x, gap_01=np.full_like(self.x, 5.0))
 
-        dia_list = build_dia_list(energies, initial_state=1, final_state=2)
+        dia_list = build_dia_list(energies, initial_state=1, final_state=2).dense()
 
         after = self.x > -1.0 - 1e-9
         assert np.all(dia_list[after, 0, 1] == -1)
@@ -60,7 +62,7 @@ class TestBuildDiaList:
     def test_diabatic_and_adiabatic_exponents_are_blended_smoothly_towards_the_gap_maximum(self):
         energies = three_level_energies(self.x, gap_01=np.full_like(self.x, 5.0))
 
-        dia_list = build_dia_list(energies, initial_state=1, final_state=2)
+        dia_list = build_dia_list(energies, initial_state=1, final_state=2).dense()
 
         blend = dia_list[(self.x >= -1.0) & (self.x <= 0.0), 1, 2]
         assert blend[0] == 0 and blend[-1] == 1
@@ -74,14 +76,14 @@ class TestBuildDiaList:
     def test_no_blending_towards_the_ends_of_the_grid(self):
         energies = three_level_energies(self.x, gap_01=np.full_like(self.x, 5.0))
 
-        dia_list = build_dia_list(energies, initial_state=1, final_state=2)
+        dia_list = build_dia_list(energies, initial_state=1, final_state=2).dense()
 
         assert np.all(dia_list[self.x < -1.0, 1, 2] == 0)
 
     def test_downward_transfer_crosses_the_first_anticrossing(self):
         energies = three_level_energies(self.x, gap_01=np.full_like(self.x, 5.0))
 
-        dia_list = build_dia_list(energies, initial_state=2, final_state=1)
+        dia_list = build_dia_list(energies, initial_state=2, final_state=1).dense()
 
         np.testing.assert_array_equal(occupied_states(dia_list), np.where(self.x < -1.0 - 1e-9, 2, 1))
         assert np.all(dia_list[self.x > 0.0, 1, 2] == 1)
@@ -89,7 +91,7 @@ class TestBuildDiaList:
     def test_multi_step_transfer_follows_the_anticrossings_in_order(self):
         energies = three_level_energies(self.x, gap_01=1.0 + (self.x + 1.5) ** 2)
 
-        dia_list = build_dia_list(energies, initial_state=0, final_state=2)
+        dia_list = build_dia_list(energies, initial_state=0, final_state=2).dense()
 
         occupied = occupied_states(dia_list)
         assert occupied[0] == 0
@@ -104,7 +106,7 @@ class TestBuildDiaList:
             axis=1,
         )
 
-        dia_list = build_dia_list(energies, initial_state=0, final_state=2)
+        dia_list = build_dia_list(energies, initial_state=0, final_state=2).dense()
 
         occupied = occupied_states(dia_list)
         np.testing.assert_array_equal(occupied, np.where(self.x < 0.1 - 1e-9, 0, 2))
@@ -114,7 +116,7 @@ class TestBuildDiaList:
     def test_a_later_anticrossing_is_preferred_over_an_overlapping_one(self):
         energies = three_level_energies(self.x, gap_01=1.0 + (self.x + 0.5) ** 2)
 
-        dia_list = build_dia_list(energies, initial_state=0, final_state=2)
+        dia_list = build_dia_list(energies, initial_state=0, final_state=2).dense()
 
         occupied = occupied_states(dia_list)
         np.testing.assert_allclose(self.x[np.flatnonzero(np.diff(occupied)) + 1], [-0.5, 1.0], atol=1e-9)
@@ -122,7 +124,7 @@ class TestBuildDiaList:
     def test_equal_states_give_purely_adiabatic_transitions_of_that_state(self):
         energies = three_level_energies(self.x, gap_01=np.full_like(self.x, 5.0))
 
-        dia_list = build_dia_list(energies, initial_state=1, final_state=1)
+        dia_list = build_dia_list(energies, initial_state=1, final_state=1).dense()
 
         assert np.all(dia_list[:, 1, [0, 2]] == 1)
         assert np.all(dia_list[:, 0, 2] == -1)
@@ -133,6 +135,36 @@ class TestBuildDiaList:
 
         with pytest.raises(ValidationError, match="must be an integer"):
             build_dia_list(energies, initial_state=initial_state, final_state=final_state)
+
+    def test_compact_list_stores_one_row_per_point(self):
+        energies = three_level_energies(self.x, gap_01=1.0 + (self.x + 1.5) ** 2)
+
+        dia_list = build_dia_list(energies, initial_state=0, final_state=2)
+        dense = dia_list.dense()
+
+        assert dia_list.occupied.shape == (self.x.size,)
+        assert dia_list.adiabatic_fraction.shape == (self.x.size, 3)
+        np.testing.assert_array_equal(dia_list.occupied, occupied_states(dense))
+        points = np.arange(self.x.size)
+        assert np.all(dia_list.adiabatic_fraction[points, dia_list.occupied] == -1)
+        np.testing.assert_array_equal(dense[points, dia_list.occupied, :], dia_list.adiabatic_fraction)
+        np.testing.assert_array_equal(dense, dense.transpose(0, 2, 1))
+
+    def test_large_dimension_does_not_allocate_a_dense_matrix(self):
+        # The dense (n_points, dim, dim) list took 328 MB for dim = 200 and n_points = 1025 (C-16).
+        n_points, dim = 1025, 200
+        x = np.linspace(-1.0, 1.0, n_points)
+        energies = np.sort(np.add.outer(x ** 2, np.arange(dim, dtype=float)), axis=1)
+
+        tracemalloc.start()
+        try:
+            dia_list = build_dia_list(energies, initial_state=0, final_state=0)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+        assert dia_list.adiabatic_fraction.shape == (n_points, dim)
+        assert peak < 10 * n_points * dim * 8
 
 
 # -----------------------------------

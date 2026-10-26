@@ -27,6 +27,10 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   adiabatic case. Towards the gap maxima that bound a diabatic anticrossing, the exponents are blended smoothly
   (C1) into the adiabatic ones, so the metric does not jump where a diabatic passage ends. Overlapping anticrossings (e.g. a fan of levels crossing at one point) are passed together. The list
   is recomputed whenever the eigenproblem changes.
+- The diabatic transition list stores only the transitions out of the occupied state, as an `(n_points, dim)`
+  adiabatic fraction plus the occupied state at each point, instead of a dense `(n_points, dim, dim)` array, and the
+  diabatic metric is evaluated without a Python loop over all pairs of states. For `dim = 200` and `num_steps = 1025`
+  building the list drops from 658 MB peak memory and 136 ms to 3 MB and 3 ms. The metric is unchanged.
 - `solve_problem()` and `plot_metric_tensor()` no longer evaluate the Hamiltonian once per call just to get its
   dimension once it is known, and a `num_steps` that is incompatible with the default `romb` integrator (not
   `2**k + 1`) is rejected before the eigenproblem is solved instead of after.

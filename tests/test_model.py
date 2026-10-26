@@ -1731,7 +1731,8 @@ class TestMutability:
 
         assert model._flags["dia_list_computed"] is True
         assert model._dia_list is not None
-        assert model._dia_list.shape == (model.num_steps, 2, 2)
+        assert model._dia_list.occupied.shape == (model.num_steps,)
+        assert model._dia_list.adiabatic_fraction.shape == (model.num_steps, 2)
 
     def test_diabatic_metric_skips_a_second_anticrossing_with_the_same_state(self):
         """After a diabatic passage to the final state, a later anticrossing of the same pair is adiabatic."""
@@ -1746,8 +1747,10 @@ class TestMutability:
         model.solve_problem()
 
         x = model._control_pulse
-        assert np.all(model._dia_list[x <= -0.8, 0, 1] == 0)
-        assert np.all(model._dia_list[x >= 0.0, 0, 1] == 1)
+        assert model._dia_list is not None
+        dia_list = model._dia_list.dense()
+        assert np.all(dia_list[x <= -0.8, 0, 1] == 0)
+        assert np.all(dia_list[x >= 0.0, 0, 1] == 1)
         # The spectrum is mirror-symmetric, but the two anticrossings use different exponents.
         assert model._metric_tensor[np.argmin(np.abs(x - 1.0))] > 0
         assert model._metric_tensor[np.argmin(np.abs(x - 1.0))] != model._metric_tensor[np.argmin(np.abs(x + 1.0))]

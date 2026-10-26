@@ -860,3 +860,35 @@ class TestGridNumericalDerivative:
         # Away from the kink, the grid derivative is exact for the piecewise-linear Hamiltonian.
         far = np.abs(x - kink) > 0.3
         np.testing.assert_allclose(derivative[far, 0, 0].real, np.sign(x[far] - kink), atol=1e-8)
+
+
+# ---------------------------------------------------------------------------
+# Compact diabatic list (C-16)
+# ---------------------------------------------------------------------------
+def test_vectorized_diabatic_metric_matches_the_sum_over_transitions():
+    # A chain of four levels with neighbouring anticrossings; the transfer 1 -> 3 passes two of them diabatically,
+    # with blending towards the gap maxima.
+    dim = 4
+    hopping = 0.3 * (np.eye(dim, k=1) + np.eye(dim, k=-1))
+    model = ControlModel(H_d=hopping + np.diag(np.linspace(0.0, -2.0 * dim, dim)), H_c=np.diag(np.arange(dim) * 1.0))
+    model.set_control(pulse_initial=-2.0, pulse_final=10.0, initial_state=1, final_state=3, alpha=3.75, beta=2.78,
+                      dia_alpha=-7.03, dia_beta=9.79, num_steps=257, )
+    model.solve_problem(pulse_accuracy=100)
+
+    assert model._dia_list is not None
+    dense = model._dia_list.dense()
+    assert 0 < np.count_nonzero((dense >= 0) & (dense < 1))
+    energies, elements = model._centered_energies, model._matrix_elements
+    assert energies is not None and elements is not None
+    expected = np.zeros(energies.shape[0])
+    for i in range(energies.shape[0]):
+        for m in range(dim):
+            for n in range(m + 1, dim):
+                fraction = dense[i, m, n]
+                if fraction < 0:
+                    continue
+                alpha = fraction * 3.75 + (1.0 - fraction) * -7.03
+                beta = fraction * 2.78 + (1.0 - fraction) * 9.79
+                expected[i] += elements[i, m, n] ** beta / abs(energies[i, n] - energies[i, m]) ** alpha
+
+    np.testing.assert_allclose(model._metric_tensor, expected, rtol=1e-12)
