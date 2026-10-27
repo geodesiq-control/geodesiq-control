@@ -76,6 +76,8 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Fixed
 
+- Align plotting docstrings with the supported `Figure`/`SubFigure` inputs, tuple returns and validation errors;
+  correct the documented eigenvalue-plot default title and document Dynamics configuration errors.
 - Complete API docstrings for Hamiltonian evaluation, fixed parameters, decomposition helpers and state fidelity;
   document the `Dynamics` class and `about` module, and remove the unused installation-path reporting helper.
 - `ControlModel.plot_eigenvalues()` and `ControlModel.plot_metric_tensor()` raise `ValidationError` when `ax` is not

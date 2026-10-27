@@ -78,6 +78,16 @@ class Dynamics:
         ``max_step`` to less than half the narrowest pulse feature; sample times alone do not bound internal steps.
         QuTiP's default state normalization can hide norm drift; use ``normalize_output=False`` to inspect it.
         Propagated operators are not normalized. Solver options do not control pulse interpolation or SVD truncation.
+
+        Raises
+        ------
+        ValidationError
+            If ``model`` is not a ControlModel, pulse inputs or scalar settings are invalid, or optimal and custom
+            pulse inputs are combined.
+        MissingArgsError
+            If neither pulse source is provided or only one of ``times`` and ``pulse`` is supplied.
+        ConfigurationError
+            If the model's required pulse or Hamiltonian configuration is unavailable.
         """
 
         if not isinstance(model, ControlModel):
@@ -340,6 +350,8 @@ class Dynamics:
             If QuTiP time integration fails. Configure solver settings through ``Dynamics(options=...)``.
         ValidationError
             If states, collapse operators or solver options are invalid.
+        ConfigurationError
+            If model state indices are needed but not configured, or the Hamiltonian dimension is unavailable.
         """
         dimension = self._dimension()
         collapse_operators = _as_collapse_operators(c_ops, dimension)
@@ -503,6 +515,9 @@ class Dynamics:
             If QuTiP time integration fails. Configure solver settings through ``Dynamics(options=...)``.
         ValidationError
             If the basis, state, collapse operators or solver options are invalid.
+        ConfigurationError
+            If the model's initial state index is needed but not configured, or the Hamiltonian dimension
+            is unavailable.
         """
         if basis not in ("adiabatic", "diabatic"):
             raise ValidationError(f"basis must be 'adiabatic' or 'diabatic', got {basis!r}.")

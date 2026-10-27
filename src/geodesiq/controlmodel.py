@@ -1601,10 +1601,11 @@ class ControlModel:
 
         Parameters
         ----------
-        fig, ax
-            Optional matplotlib figure/axis. If not provided, they are created. When ``ax`` is given, the plot is drawn
-            on it and its parent figure is returned; otherwise a subplot is added to ``fig``. Other types raise
-            ``ValidationError``.
+        fig : Figure | SubFigure | None
+            Existing figure or subfigure. If ``ax`` is absent, a subplot is added to it; if neither is supplied,
+            a new figure and axes are created.
+        ax : Axes | None
+            Existing axes to draw on. Its parent figure or subfigure is returned when supplied.
         legend : bool
             Whether to draw a legend.
         legend_kwargs : dict | None
@@ -1614,14 +1615,19 @@ class ControlModel:
         ylabel : str | None
             Label for the y-axis. Defaults to ``"Energy"`` when not provided.
         title : str | None
-            Plot title. Defaults to ``"ControlModel Eigenvalues"`` when not provided.
+            Plot title. Defaults to ``"Hamiltonian eigenenergies"`` when not provided.
         **plot_kwargs
             Extra kwargs forwarded to ``ax.plot`` for each energy branch.
 
         Returns
         -------
-        tuple
+        tuple[Figure | SubFigure, Axes]
             ``(fig, ax)`` with the generated plot.
+
+        Raises
+        ------
+        ValidationError
+            If the supplied axes or, when no axes are supplied, figure has an unsupported type.
         """
         config = self._check_eigensystem_parameters()
         control_name = config.control_name or "control"
@@ -1664,10 +1670,11 @@ class ControlModel:
 
         Parameters
         ----------
-        fig, ax
-            Optional matplotlib figure/axis. If not provided, they are created. When ``ax`` is given, the plot is drawn
-            on it and its parent figure is returned; otherwise a subplot is added to ``fig``. Other types raise
-            ``ValidationError``.
+        fig : Figure | SubFigure | None
+            Existing figure or subfigure. If ``ax`` is absent, a subplot is added to it; if neither is supplied,
+            a new figure and axes are created.
+        ax : Axes | None
+            Existing axes to draw on. Its parent figure or subfigure is returned when supplied.
         legend : bool
             Whether to draw a legend.
         legend_kwargs : dict | None
@@ -1683,8 +1690,13 @@ class ControlModel:
 
         Returns
         -------
-        tuple
+        tuple[Figure | SubFigure, Axes]
             ``(fig, ax)`` with the generated plot.
+
+        Raises
+        ------
+        ValidationError
+            If the supplied axes or, when no axes are supplied, figure has an unsupported type.
         """
         config = self._check_control_parameters()
         self._solve_eigenproblem(config)
