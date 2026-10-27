@@ -1359,6 +1359,39 @@ class TestPlotEigenvalues:
 
         plt.close(fig)
 
+    def test_plot_eigenvalues_with_subfigure_adds_axis(self, configured_ham):
+        plt = _get_pyplot()
+        fig = plt.figure()
+        subfig = fig.subfigures(1, 2)[1]
+
+        out_fig, out_ax = configured_ham.plot_eigenvalues(fig=subfig)
+
+        assert out_fig is subfig
+        assert out_ax.figure is subfig
+
+        plt.close(fig)
+
+    def test_plot_eigenvalues_rejects_a_figure_passed_as_axis(self, configured_ham):
+        # A figure passed positionally as ax returned None silently (P-04).
+        plt = _get_pyplot()
+        fig = plt.figure()
+        open_figures = plt.get_fignums()
+
+        with pytest.raises(ValidationError, match="ax must be a matplotlib Axes or None, got Figure"):
+            configured_ham.plot_eigenvalues(None, cast(Any, fig))
+
+        assert plt.get_fignums() == open_figures
+        plt.close(fig)
+
+    def test_plot_eigenvalues_rejects_an_invalid_figure(self, configured_ham):
+        plt = _get_pyplot()
+        open_figures = plt.get_fignums()
+
+        with pytest.raises(ValidationError, match="fig must be a matplotlib Figure, SubFigure or None, got str"):
+            configured_ham.plot_eigenvalues(fig=cast(Any, "figure"))
+
+        assert plt.get_fignums() == open_figures
+
 
 # ---------------------------------------------------------------------------
 # plot_metric_tensor
@@ -1420,6 +1453,27 @@ class TestPlotMetricTensor:
         assert out_fig is fig
 
         plt.close(fig)
+
+    def test_plot_metric_tensor_rejects_a_figure_passed_as_axis(self, configured_ham):
+        # A figure passed positionally as ax returned None silently (P-04).
+        plt = _get_pyplot()
+        fig = plt.figure()
+        open_figures = plt.get_fignums()
+
+        with pytest.raises(ValidationError, match="ax must be a matplotlib Axes or None, got Figure"):
+            configured_ham.plot_metric_tensor(None, cast(Any, fig))
+
+        assert plt.get_fignums() == open_figures
+        plt.close(fig)
+
+    def test_plot_metric_tensor_rejects_an_invalid_figure(self, configured_ham):
+        plt = _get_pyplot()
+        open_figures = plt.get_fignums()
+
+        with pytest.raises(ValidationError, match="fig must be a matplotlib Figure, SubFigure or None, got str"):
+            configured_ham.plot_metric_tensor(fig=cast(Any, "figure"))
+
+        assert plt.get_fignums() == open_figures
 
     def test_plot_metric_tensor_computes_metric_if_needed(self, configured_ham):
         plt = _get_pyplot()

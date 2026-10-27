@@ -55,6 +55,10 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Fixed
 
+- `ControlModel.plot_eigenvalues()` and `ControlModel.plot_metric_tensor()` raise `ValidationError` when `ax` is not
+  a matplotlib `Axes` or `fig` is not a `Figure`/`SubFigure` (e.g. a figure passed positionally as `ax`), instead of
+  silently returning `None`. Their return type is now `tuple[Figure | SubFigure, Axes]` without `| None`, so
+  `fig, ax = model.plot_eigenvalues()` needs no narrowing.
 - `ControlModel.solve_problem()` with the default solver rejects `solver_kwargs` that the chosen `solve_ivp` method
   does not accept (e.g. the typo `{"rtl": 1e-8}`, or `min_step` with `RK45`) with a `ValidationError`. Before, SciPy
   only warned and the solve silently kept the default tolerances.

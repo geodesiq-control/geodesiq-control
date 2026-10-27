@@ -682,7 +682,7 @@ class TestPlotEigenvaluesAfterReconfiguration:
         model.solve_problem(pulse_accuracy=30)
 
         model.set_control(pulse_initial=-1.0)
-        fig, ax = cast(Any, model.plot_eigenvalues())
+        fig, ax = model.plot_eigenvalues()
 
         expected_grid = np.linspace(-1.0, 3.0, 65)
         for line in ax.get_lines():
@@ -696,7 +696,7 @@ class TestPlotEigenvaluesAfterReconfiguration:
         model.solve_problem(pulse_accuracy=30)
 
         model.set_control(num_steps=33)
-        fig, ax = cast(Any, model.plot_eigenvalues())
+        fig, ax = model.plot_eigenvalues()
 
         assert all(len(line.get_xdata()) == 33 for line in ax.get_lines())
         plt.close(fig)
