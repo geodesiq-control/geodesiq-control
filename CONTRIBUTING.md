@@ -24,6 +24,9 @@ uv sync --group dev
 
 If you do not use `uv`, create a virtual environment and install equivalent dev dependencies from `pyproject.toml`.
 
+The benchmark history (`benchmarks/results/benchmark_history.parquet`) is stored in [Git LFS](https://git-lfs.com).
+Run `git lfs install` once, before cloning, to get the file itself; the package and its tests do not need it.
+
 ## Run quality checks
 
 ```bash
