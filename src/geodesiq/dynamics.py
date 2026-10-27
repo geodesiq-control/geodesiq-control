@@ -334,7 +334,8 @@ class Dynamics:
     def average_gate_fidelity(
         self,
         gate: Optional[qt.Qobj | List[qt.Qobj]] = None,
-        target_gate: Optional[qt.Qobj | np.ndarray] = None,
+        *,
+        target_gate: qt.Qobj | np.ndarray,
         final_only: bool = False,
     ) -> List[float]:
         """
@@ -344,8 +345,9 @@ class Dynamics:
         ----------
         gate : Optional[qt.Qobj]
             The resulting pulsed gate operation.
-        target_gate : Optional[qt.Qobj | np.ndarray]
-            The target gate operation.
+        target_gate : qt.Qobj | np.ndarray
+            The target gate operation, with the dimension of the Hamiltonian. Required (keyword only): there is no
+            default target, so that the fidelity is never computed against the identity by accident.
         final_only : bool
             Only used when ``gate`` is None: if True, compute the fidelity of the final propagator only (see
             ``time_evolution_operator``).
@@ -358,8 +360,7 @@ class Dynamics:
         """
 
         dimension = self._dimension()
-        if target_gate is not None:
-            target_gate = _as_operator(target_gate, dimension, "target_gate")
+        target_gate = _as_operator(target_gate, dimension, "target_gate")
 
         if gate is None:
             operators = self.time_evolution_operator(final_only=final_only)

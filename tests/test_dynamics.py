@@ -671,6 +671,20 @@ def test_average_gate_fidelity_invalid_gate_type(default_dynamics):
         default_dynamics.average_gate_fidelity(gate=cast(Any, [qt.identity(2), np.eye(2)]), target_gate=qt.identity(2))
 
 
+def test_average_gate_fidelity_requires_a_target_gate(default_dynamics):
+    # Without a target, QuTiP silently compared with the identity (D-09).
+    with pytest.raises(TypeError, match="target_gate"):
+        cast(Any, default_dynamics).average_gate_fidelity()
+    with pytest.raises(ValidationError, match="target_gate must be a Qobj or a numpy array"):
+        default_dynamics.average_gate_fidelity(target_gate=cast(Any, None))
+
+
+def test_average_gate_fidelity_target_gate_is_keyword_only(default_dynamics):
+    # A second positional argument was the target gate before; it must not be read as something else silently.
+    with pytest.raises(TypeError):
+        cast(Any, default_dynamics).average_gate_fidelity(qt.identity(2), qt.sigmax())
+
+
 # ---------------------------------------------------------------------------
 # Testing populations and plot_populations
 # ---------------------------------------------------------------------------

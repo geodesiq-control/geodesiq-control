@@ -21,6 +21,9 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Changed
 
+- `Dynamics.average_gate_fidelity()` requires `target_gate`, as a keyword argument. Without it, QuTiP silently
+  compared with the identity (e.g. 0.3398 for the Landau–Zener pulse, the same as `target_gate=qt.qeye(2)`), which the
+  docstring did not say. Omitting it now raises `TypeError`, and `target_gate=None` raises `ValidationError`.
 - `Dynamics` with a custom pulse (`times`/`pulse`) now interpolates it linearly between samples by default, instead of
   with a cubic spline, so that e.g. the piecewise-linear `discretized_pulse()` is simulated as the waveform it
   describes. With 4 samples the spline deviated from it by up to 2.1 (for a sweep of width 20) and changed the state
