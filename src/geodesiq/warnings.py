@@ -6,7 +6,7 @@ class GeodesiQWarning(Warning):
 
     _prefix = f"[{PACKAGE_NAME}]"
 
-    def __init__(self, message: str = ""):
+    def __init__(self, message: str = "") -> None:
         super().__init__(f"{self._prefix} {message}" if message else self._prefix)
 
 

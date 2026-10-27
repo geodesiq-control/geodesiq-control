@@ -30,7 +30,7 @@ If you do not use `uv`, create a virtual environment and install equivalent dev 
 uv run pytest
 uv run ruff check src tests
 uv run ruff format --check src
-uv run ty check src
+uv run ty check src tests
 uv run python -m build
 uv run python -m twine check dist/*
 ```

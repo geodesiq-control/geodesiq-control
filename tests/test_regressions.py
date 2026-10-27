@@ -293,6 +293,7 @@ def test_custom_solver_that_leaves_the_geodesic_is_rejected() -> None:
     def early_arrival(fun, t_span, y0, t_eval=None, **kwargs):
         # Reaches pulse_final at s = 0.5 and then stays there: right endpoint, wrong pulse.
         del fun, t_span, kwargs
+        assert t_eval is not None
         return t_eval, np.interp(t_eval, [0.0, 0.5, 1.0], [y0[0], 5.0, 5.0])[np.newaxis, :]
 
     with pytest.raises(SolverError, match="deviates from the geodesic"):
@@ -686,8 +687,8 @@ class TestPlotEigenvaluesAfterReconfiguration:
 
         expected_grid = np.linspace(-1.0, 3.0, 65)
         for line in ax.get_lines():
-            np.testing.assert_allclose(line.get_xdata(), expected_grid)
-        plt.close(fig)
+            np.testing.assert_allclose(np.asarray(line.get_xdata()), expected_grid)
+        plt.close(cast(Any, fig))
 
     def test_changing_num_steps_does_not_break_plot(self):
         import matplotlib.pyplot as plt
@@ -698,8 +699,8 @@ class TestPlotEigenvaluesAfterReconfiguration:
         model.set_control(num_steps=33)
         fig, ax = model.plot_eigenvalues()
 
-        assert all(len(line.get_xdata()) == 33 for line in ax.get_lines())
-        plt.close(fig)
+        assert all(np.size(line.get_xdata()) == 33 for line in ax.get_lines())
+        plt.close(cast(Any, fig))
 
 
 # ---------------------------------------------------------------------------
@@ -866,6 +867,7 @@ class TestGridNumericalDerivative:
         # 1 / step; the metric (~ |dH|^2 / gap^2 with gap >= 0.2) inherits it relative to |dH| = 1.
         step = 2.01 / 256
         bound = max(1e-9, 1e3 * np.finfo(float).eps * offset / step)
+        assert model._metric_tensor is not None and exact._metric_tensor is not None
         np.testing.assert_allclose(model._metric_tensor, exact._metric_tensor, rtol=bound)
 
     def test_kink_with_large_identity_offset_uses_jacobian_near_the_kink(self, monkeypatch):
@@ -956,6 +958,7 @@ def test_vectorized_diabatic_metric_matches_the_sum_over_transitions():
                 beta = fraction * 2.78 + (1.0 - fraction) * 9.79
                 expected[i] += elements[i, m, n] ** beta / abs(energies[i, n] - energies[i, m]) ** alpha
 
+    assert model._metric_tensor is not None
     np.testing.assert_allclose(model._metric_tensor, expected, rtol=1e-12)
 
 
@@ -1009,4 +1012,5 @@ class TestEigenproblemMemory:
         x = model.control_pulse
         _, vectors = np.linalg.eigh(h_d[None] + x[:, None, None] * h_c[None])
         expected = np.abs(vectors.conj().transpose(0, 2, 1) @ h_c @ vectors)
+        assert model._matrix_elements is not None
         np.testing.assert_allclose(model._matrix_elements, expected, atol=1e-12)

@@ -104,7 +104,8 @@ Top-level imports are intentionally kept small and explicit:
 - `ControlModel`: Hamiltonian, eigensystem, geodesic metric and optimal (dimensionless) control pulse.
 - `PulseControl`: the pulse at a physical duration; resampling, spectrum, filtering, plotting and export.
 - `Dynamics`: closed- or open-system time evolution driven by the optimal pulse or any custom pulse.
-- `decompose_hamiltonian`: SVD decomposition of a sampled time-dependent Hamiltonian into a QuTiP `QobjEvo`.
+- `decompose_hamiltonian`: SVD decomposition of a sampled time-dependent Hamiltonian into a QuTiP `QobjEvo`,
+  returned as a `HamiltonianDecomposition`.
 - `about`: version and environment information.
 - `GeodesiQError` and the typed exception hierarchy
 - `GeodesiQWarning` and related warnings

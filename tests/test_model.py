@@ -173,6 +173,19 @@ class TestAffineHamiltonian:
         with pytest.raises(ValidationError, match="same shape"):
             ControlModel(H_d=np.eye(2), H_c=np.eye(3))
 
+    def test_init_accepts_nested_lists_and_list_valued_callables(self):
+        # H_d/H_c are ArrayLike and H_func/partial_H_func return ArrayLike, so lists type-check as well (P-08).
+        affine = ControlModel(H_d=[[0.0, 1.0], [1.0, 0.0]], H_c=[[1.0, 0.0], [0.0, -1.0]])
+        callable_model = ControlModel(lambda x: [[x, 1.0], [1.0, -x]],
+                                      partial_H_func=lambda x: [[1.0, 0.0], [0.0, -1.0]])
+        for model in (affine, callable_model):
+            model.set_control(control_name="x", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0,
+                              beta=2.0, num_steps=33)
+
+        assert affine.control_sol.dtype == np.float64
+        assert affine.eigenenergies.dtype == np.float64
+        np.testing.assert_allclose(callable_model.control_sol, affine.control_sol, atol=1e-10)
+
     def test_affine_matrices_are_defensively_copied(self):
         H_d = LZ_H_D.copy()
         H_c = LZ_H_C.copy()
@@ -183,8 +196,10 @@ class TestAffineHamiltonian:
         assert returned_control is not None
         returned_control[0, 0] = 10.0
 
-        np.testing.assert_allclose(model.H_d, LZ_H_D)
-        np.testing.assert_allclose(model.H_c, LZ_H_C)
+        drift, control = model.H_d, model.H_c
+        assert drift is not None and control is not None
+        np.testing.assert_allclose(drift, LZ_H_D)
+        np.testing.assert_allclose(control, LZ_H_C)
 
     def test_evaluate_hamiltonian_uses_affine_form(self, affine_ham):
         control_value = 0.25
@@ -221,7 +236,9 @@ class TestAffineHamiltonian:
                                    beta=2.0, num_steps=2 ** 8 + 1, )
 
         np.testing.assert_allclose(configured_affine_ham.eigenenergies, callable_model.eigenenergies)
-        np.testing.assert_allclose(configured_affine_ham._matrix_elements, callable_model._matrix_elements)
+        affine_elements, callable_elements = configured_affine_ham._matrix_elements, callable_model._matrix_elements
+        assert affine_elements is not None and callable_elements is not None
+        np.testing.assert_allclose(affine_elements, callable_elements)
 
     def test_affine_problem_solves_without_control_name(self, affine_ham):
         affine_ham.set_control(pulse_initial=-2.0, pulse_final=2.0, initial_state=0, alpha=2.0, beta=2.0, num_steps=65)
@@ -267,11 +284,20 @@ class TestAffineHamiltonian:
         assert "affine (H_d + control * H_c)" in summary
         assert "exact constant H_c" in summary
 
-    def test_legacy_positional_verbose_argument_remains_supported(self):
-        model = ControlModel(lz_hamiltonian, lz_partial, True)
+    def test_private_verbose_argument_is_keyword_only(self, capsys):
+        # A private parameter must not take a positional slot in the public signature (P-05).
+        with pytest.raises(TypeError):
+            cast(Any, ControlModel)(lz_hamiltonian, lz_partial, True)
 
+        model = ControlModel(lz_hamiltonian, lz_partial, _flags_verbose=True)
         assert model.H_func is lz_hamiltonian
         assert model.partial_H_func is lz_partial
+
+        model.set_parameters(delta=0.5)
+        model.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0,
+                          beta=2.0, num_steps=33)
+        model.solve_problem(pulse_accuracy=30)
+        assert capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
@@ -509,7 +535,7 @@ class TestGetParameters:
         model.set_parameters(offset=2.0)
 
         with pytest.raises(TypeError):
-            model.parameters["offset"] = 3.0
+            cast(Any, model.parameters)["offset"] = 3.0
 
     def test_parameters_does_not_expose_internal_numpy_array(self):
         model = ControlModel(simple_hamiltonian)
@@ -1042,6 +1068,7 @@ class TestSolveProblem:
         calls = []
 
         def solver_with_array_option(fun, t_span, y0, t_eval=None, weights=None, **kwargs):
+            assert weights is not None
             calls.append(weights.copy())
             return solve_ivp(fun, t_span, y0, t_eval=t_eval, rtol=1e-10, atol=1e-12, **kwargs)
 
@@ -1271,7 +1298,7 @@ class TestNumericalPartialAccuracy:
         ham_num.solve_problem()
         ham_ana.solve_problem()
 
-        np.testing.assert_allclose(ham_num._control_sol, ham_ana._control_sol, atol=1e-2,
+        np.testing.assert_allclose(ham_num.control_sol, ham_ana.control_sol, atol=1e-2,
                                    err_msg="Numerical and analytical solutions should be close", )
 
 
@@ -1629,7 +1656,7 @@ class TestLandauZenerAnalytical:
         ham.set_control(control_name="lam", pulse_initial=pulse_0, pulse_final=pulse_f, initial_state=0, alpha=0,
                         beta=0, num_steps=2 ** 8 + 1, )
         ham.solve_problem()
-        s = ham._s
+        s = ham.s
 
         expected_control = pulse_0 * (1 - 2 * s)
 
@@ -1648,7 +1675,7 @@ class TestLandauZenerAnalytical:
         ham.set_control(control_name="lam", pulse_initial=pulse_0, pulse_final=pulse_f, initial_state=0, alpha=1,
                         beta=1, num_steps=2 ** 8 + 1, )
         ham.solve_problem()
-        s = ham._s
+        s = ham.s
 
         expected_control = delta * np.sinh((1 - 2 * s) * np.arcsinh(pulse_0 / delta))
 
@@ -1667,7 +1694,7 @@ class TestLandauZenerAnalytical:
         ham.set_control(control_name="lam", pulse_initial=pulse_0, pulse_final=pulse_f, initial_state=0, alpha=2,
                         beta=2, num_steps=2 ** 8 + 1, )
         ham.solve_problem()
-        s = ham._s
+        s = ham.s
 
         expected_control = -delta * np.tan((2 * s - 1) * np.arctan(pulse_0 / delta))
 
@@ -1686,7 +1713,7 @@ class TestLandauZenerAnalytical:
         ham.set_control(control_name="lam", pulse_initial=pulse_0, pulse_final=pulse_f, initial_state=0, alpha=3,
                         beta=3, num_steps=2 ** 8 + 1, )
         ham.solve_problem()
-        s = ham._s
+        s = ham.s
 
         expected_control = (1 - 2 * s) * delta * pulse_0 / np.sqrt(delta ** 2 - 4 * (s - 1) * s * pulse_0 ** 2)
 
@@ -1855,9 +1882,10 @@ class TestDiabaticMetricPath:
     def test_solve_dia_list_returns_early_when_cached(self):
         ham = ControlModel(lz_hamiltonian, partial_H_func=lz_partial)
         mark_done(ham, "dia_list_computed")
-        ham._dia_list = np.array([[1]])
+        # Deliberately invalid values: the cached stage must return before looking at them.
+        ham._dia_list = cast(Any, np.array([[1]]))
 
-        ham._solve_dia_list({})
+        ham._solve_dia_list(cast(Any, {}))
 
         np.testing.assert_array_equal(ham._dia_list, np.array([[1]]))
 
@@ -1943,14 +1971,16 @@ class TestMutability:
 
         model.solve_problem()
 
-        x = model._control_pulse
+        x = model.control_pulse
         assert model._dia_list is not None
         dia_list = model._dia_list.dense()
         assert np.all(dia_list[x <= -0.8, 0, 1] == 0)
         assert np.all(dia_list[x >= 0.0, 0, 1] == 1)
         # The spectrum is mirror-symmetric, but the two anticrossings use different exponents.
-        assert model._metric_tensor[np.argmin(np.abs(x - 1.0))] > 0
-        assert model._metric_tensor[np.argmin(np.abs(x - 1.0))] != model._metric_tensor[np.argmin(np.abs(x + 1.0))]
+        metric = model._metric_tensor
+        assert metric is not None
+        assert metric[np.argmin(np.abs(x - 1.0))] > 0
+        assert metric[np.argmin(np.abs(x - 1.0))] != metric[np.argmin(np.abs(x + 1.0))]
 
     def test_state_change_invalidates_diabatic_list(self):
         def hamiltonian(lam, t):

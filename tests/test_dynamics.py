@@ -179,6 +179,13 @@ class TestOptimalPulse:
 
         assert dynamics._boundary_controls == (real_model.pulse_initial, real_model.pulse_final)
 
+    def test_hamiltonian_evaluation_is_private(self, real_model):
+        # The public, unannotated evaluate_hamiltonian lambda was replaced by a private method (P-06, D-17).
+        dynamics = Dynamics(real_model, duration=2.0)
+
+        assert not hasattr(dynamics, "evaluate_hamiltonian")
+        np.testing.assert_allclose(dynamics._evaluate_hamiltonian(1.5), real_model.evaluate_hamiltonian(1.5))
+
     def test_matches_synthesized_pulse_control(self, real_model):
         duration = 2.5
         dynamics = Dynamics(real_model, duration=duration)
@@ -328,10 +335,13 @@ class TestCustomPulse:
         assert dynamics.pulse[0] == 1.0
 
     def test_accepts_lists_and_real_complex_values(self, real_model):
-        dynamics = Dynamics(real_model, times=cast(Any, [0.0, 0.5, 1.0]), pulse=np.array([1.0, 2.0, 3.0]) + 0j)
+        # times and pulse are annotated as ArrayLike, so lists also pass the type checker (P-08).
+        dynamics = Dynamics(real_model, times=[0.0, 0.5, 1.0], pulse=np.array([1.0, 2.0, 3.0]) + 0j)
+        from_lists = Dynamics(real_model, times=[0.0, 0.5, 1.0], pulse=[1.0, 2.0, 3.0])
 
         assert dynamics.pulse.dtype == float
         np.testing.assert_allclose(dynamics.pulse, [1.0, 2.0, 3.0])
+        np.testing.assert_allclose(from_lists.pulse, dynamics.pulse)
 
     def test_duration_with_custom_pulse_raises(self, real_model):
         times = np.linspace(0.0, 1.0, 5)
@@ -505,6 +515,11 @@ class TestExplicitStateValidation:
         from_array = default_dynamics.state_fidelity(c_ops=[dephasing.full()])
         assert from_tuple == pytest.approx(from_list, abs=1e-12)
         assert from_array == pytest.approx(from_list, abs=1e-12)
+
+        # A mixed tuple of Qobj and array matches the c_ops annotation (P-07); two halves of the rate add up.
+        half = np.sqrt(0.5e-3) * qt.sigmaz()
+        from_mixed = default_dynamics.state_fidelity(c_ops=(half, half.full()))
+        assert from_mixed == pytest.approx(from_list, abs=1e-8)
 
         with pytest.raises(ValidationError, match=r"c_ops\[0\] must have shape"):
             default_dynamics.state_fidelity(c_ops=[qt.qeye(3)])

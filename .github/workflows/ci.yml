@@ -47,8 +47,9 @@ jobs:
         with:
           enable-cache: true
 
+      # The test group lets ty resolve pytest in tests/.
       - name: Sync environment
-        run: uv sync --locked --no-default-groups --group lint
+        run: uv sync --locked --no-default-groups --group lint --group test
 
       - name: Lint
         run: uv run --no-sync ruff check src tests
@@ -57,7 +58,7 @@ jobs:
         run: uv run --no-sync ruff format --check src
 
       - name: Type check
-        run: uv run --no-sync ty check src
+        run: uv run --no-sync ty check src tests
 
   coverage:
     name: Tests and coverage

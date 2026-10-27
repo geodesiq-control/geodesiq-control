@@ -1,8 +1,9 @@
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Tuple
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import scipy as sp
+from numpy.typing import ArrayLike, NDArray
 from scipy.signal import ShortTimeFFT
 from scipy.signal.windows import hann
 
@@ -20,14 +21,14 @@ class PulseControl:
     shape and its Fourier spectrum.
     """
 
-    def __init__(self, pulse: np.ndarray, duration: float):
+    def __init__(self, pulse: ArrayLike, duration: float) -> None:
         """
         Initialize the PulseControl object with the control pulse and its duration. The samples are assumed to be
         uniformly spaced in time, from 0 to ``duration``.
 
         Parameters
         ----------
-        pulse : np.ndarray
+        pulse : ArrayLike
             Control pulse values, uniformly sampled in time.
         duration : float
             Duration of the control pulse (t_f).
@@ -57,12 +58,12 @@ class PulseControl:
         self._pulse_times = np.linspace(0.0, duration, values.size, dtype=float)
 
     @property
-    def pulse(self) -> np.ndarray:
+    def pulse(self) -> NDArray[np.float64]:
         """Return a copy of the pulse samples."""
         return self._pulse.copy()
 
     @property
-    def times(self) -> np.ndarray:
+    def times(self) -> NDArray[np.float64]:
         """Return a copy of the physical-time sample grid."""
         return self._pulse_times.copy()
 
@@ -75,7 +76,7 @@ class PulseControl:
     #               Methods of PulseControl class
     # ------------------------------------------------------------
 
-    def discretized_pulse(self, linear_steps: int = 4) -> Tuple[np.ndarray, np.ndarray]:
+    def discretized_pulse(self, linear_steps: int = 4) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """
         Obtains the piecewise linear function from control pulse.
 
@@ -101,7 +102,9 @@ class PulseControl:
 
         return new_time, approx_sol
 
-    def fourier_spectrum(self, window_len: int = 256, hop: int = 32) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def fourier_spectrum(
+        self, window_len: int = 256, hop: int = 32
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
         """
         Compute the Short-Time Fourier Transform (STFT) spectrum of the control pulse.
 
@@ -149,7 +152,9 @@ class PulseControl:
 
         return frequencies, times, magnitude
 
-    def filtered_pulse(self, cutoff_freq: float, filter_order: int = 3) -> Tuple[np.ndarray, np.ndarray]:
+    def filtered_pulse(
+        self, cutoff_freq: float, filter_order: int = 3
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """
         Apply a low-pass Butterworth filter to the control pulse.
 
@@ -219,7 +224,7 @@ class PulseControl:
         ax: "Axes | None" = None,
         show: bool = True,
         **plot_kwargs: Any,
-    ) -> "Tuple[Figure | SubFigure, Axes]":
+    ) -> "tuple[Figure | SubFigure, Axes]":
         """
         Plot the (real-time) control pulse.
 

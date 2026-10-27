@@ -34,6 +34,15 @@ def default_pulse(sample_pulse_data):
 # ------------------------------------------------------------
 
 
+def test_pulse_accepts_a_list():
+    """pulse is ArrayLike, so a list is accepted and stored as float64 (P-08)."""
+    pulse = PulseControl(pulse=[0.0, 1.0, 3.0], duration=2.0)
+
+    assert pulse.pulse.dtype == np.float64
+    np.testing.assert_allclose(pulse.pulse, [0.0, 1.0, 3.0])
+    np.testing.assert_allclose(pulse.times, [0.0, 1.0, 2.0])
+
+
 def test_discretized_pulse_bounds(default_pulse):
     """Ensure discretization keeps the original boundaries of the pulse time."""
     new_times, approx_sol = default_pulse.discretized_pulse(linear_steps=5)
@@ -127,7 +136,9 @@ def test_plot_pulse_on_provided_subfigure(default_pulse):
     import matplotlib.pyplot as plt
 
     fig = plt.figure()
-    subfig = fig.subfigures(1, 2)[0]
+    subfigs = fig.subfigures(1, 2)
+    assert isinstance(subfigs, np.ndarray)
+    subfig = subfigs[0]
     out_fig, ax = default_pulse.plot_pulse(fig=subfig, show=False)
 
     assert out_fig is subfig

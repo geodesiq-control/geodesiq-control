@@ -144,7 +144,7 @@ line-length = 120
 src = ["src"]
 
 [tool.ruff.lint]
-select = ["E", "F", "B", "I"]
+select = ["E", "F", "B", "I", "UP"]
 
 [tool.ruff.lint.per-file-ignores]
 "*.ipynb" = ["E703"]

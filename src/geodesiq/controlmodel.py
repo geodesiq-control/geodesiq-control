@@ -1,11 +1,12 @@
 import warnings
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from numpy.typing import ArrayLike, NDArray
 from scipy.differentiate import jacobian
 from scipy.integrate import romb, solve_ivp
 from scipy.interpolate import PchipInterpolator
@@ -118,31 +119,33 @@ class ControlModel:
 
     def __init__(
         self,
-        H_func: Callable[..., np.ndarray] | None = None,
-        partial_H_func: Callable[..., np.ndarray] | None = None,
-        _flags_verbose: bool = False,
+        H_func: Callable[..., ArrayLike] | None = None,
+        partial_H_func: Callable[..., ArrayLike] | None = None,
         *,
-        H_d: np.ndarray | None = None,
-        H_c: np.ndarray | None = None,
+        H_d: ArrayLike | None = None,
+        H_c: ArrayLike | None = None,
+        _flags_verbose: bool = False,
     ) -> None:
         """
         Initialize the ControlModel from either a Hamiltonian function or constant drift and control matrices.
 
         Parameters
         ----------
-        H_func : Callable[..., np.ndarray] | None
+        H_func : Callable[..., ArrayLike] | None
             A function that takes the control parameter and other parameters as input and returns the Hamiltonian
-            matrix as a numpy array. The function should be defined such that it can accept the control parameter as a
-            keyword argument, e.g., H_func(lambda=..., param1=..., param2=..., ...). Provide either ``H_func`` or the
-            pair ``H_d`` and ``H_c``.
-        partial_H_func : Callable[..., np.ndarray] | None
+            matrix as a numpy array (or any array-like, converted with ``np.asarray``). The function should be defined
+            such that it can accept the control parameter as a keyword argument, e.g.,
+            H_func(lambda=..., param1=..., param2=..., ...). Provide either ``H_func`` or the pair ``H_d`` and ``H_c``.
+        partial_H_func : Callable[..., ArrayLike] | None
             An optional function that takes the control parameter and other parameters as input and returns the partial
             derivative of the Hamiltonian with respect to the control parameter as a numpy array.
             If this function is not provided, the class will compute the numerical partial derivative.
-        H_d, H_c : np.ndarray | None
+        H_d, H_c : ArrayLike | None
             Constant drift and control Hamiltonians defining the affine model
             ``H(control) = H_d + control * H_c``. Both matrices must be finite, Hermitian, square, and have the same
             shape. In this mode the derivative is exactly ``H_c`` and ``set_parameters`` is unavailable.
+        _flags_verbose : bool
+            Private debugging switch that prints every change of the cached-stage flags. Not part of the public API.
         """
         affine_requested = H_d is not None or H_c is not None
 
@@ -160,8 +163,8 @@ class ControlModel:
             dtype = np.result_type(drift.dtype, control.dtype)
             self._H_d: np.ndarray | None = np.asarray(drift, dtype=dtype)
             self._H_c: np.ndarray | None = np.asarray(control, dtype=dtype)
-            self._H_func: Callable[..., np.ndarray] | None = None
-            self._partial_H_func: Callable[..., np.ndarray] | None = None
+            self._H_func: Callable[..., ArrayLike] | None = None
+            self._partial_H_func: Callable[..., ArrayLike] | None = None
             self._affine_hamiltonian = True
             self._hamiltonian_dimension: int | None = drift.shape[0]
         else:
@@ -336,12 +339,12 @@ class ControlModel:
     # the user modifies them. Every control setter delegates to set_control(), which validates the full configuration
     # and updates the flags in a single place. Assigning None keeps the previous value.
     @property
-    def H_func(self) -> Callable[..., np.ndarray] | None:
+    def H_func(self) -> Callable[..., ArrayLike] | None:
         """Hamiltonian function, or None for affine models defined by H_d and H_c."""
         return self._H_func
 
     @H_func.setter
-    def H_func(self, func: Callable[..., np.ndarray]) -> None:
+    def H_func(self, func: Callable[..., ArrayLike]) -> None:
         if self._affine_hamiltonian:
             raise ImmutableConfigurationError("H_func cannot be set when the Hamiltonian is defined by H_d and H_c.")
         if self._H_func is None:
@@ -355,12 +358,12 @@ class ControlModel:
             )
 
     @property
-    def partial_H_func(self) -> Callable[..., np.ndarray] | None:
+    def partial_H_func(self) -> Callable[..., ArrayLike] | None:
         """Analytical derivative of the Hamiltonian, or None when the numerical derivative is used."""
         return self._partial_H_func
 
     @partial_H_func.setter
-    def partial_H_func(self, func: Callable[..., np.ndarray]) -> None:
+    def partial_H_func(self, func: Callable[..., ArrayLike]) -> None:
         if self._affine_hamiltonian:
             raise ImmutableConfigurationError(
                 "partial_H_func cannot be set when the Hamiltonian is defined by H_d and H_c."
@@ -483,7 +486,7 @@ class ControlModel:
         self.set_control(num_steps=value)
 
     @property
-    def control_sol(self) -> np.ndarray:
+    def control_sol(self) -> NDArray[np.float64]:
         """Return the optimal control pulse on the normalized time grid ``s``, solving the problem if needed."""
         if not self._flags["ode_solved"]:
             self.solve_problem()  # Attempt to solve the ODE if not already solved (same accuracy as last time)
@@ -492,7 +495,7 @@ class ControlModel:
         return self._control_sol.copy()
 
     @property
-    def s(self) -> np.ndarray:
+    def s(self) -> NDArray[np.float64]:
         """Return the normalized time grid (s = t / t_f) of the control solution, solving the problem if needed."""
         if not self._flags["ode_solved"]:
             self.solve_problem()
@@ -501,7 +504,7 @@ class ControlModel:
         return self._s.copy()
 
     @property
-    def eigenenergies(self) -> np.ndarray:
+    def eigenenergies(self) -> NDArray[np.float64]:
         """Return the real (float64) eigenenergies, also for complex H, solving the eigenproblem if needed."""
         if not self._flags["eigenproblem_solved"]:
             self._check_eigensystem_parameters()
@@ -511,7 +514,7 @@ class ControlModel:
         return self._centered_energies.copy() + self._energy_offset[:, None]
 
     @property
-    def control_pulse(self) -> np.ndarray:
+    def control_pulse(self) -> NDArray[np.float64]:
         """Return the control-parameter grid, solving the eigenproblem if needed."""
         if not self._flags["eigenproblem_solved"]:
             self._check_eigensystem_parameters()

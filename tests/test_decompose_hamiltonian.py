@@ -38,6 +38,21 @@ def test_decompose_reconstructs_sampled_hamiltonians() -> None:
     assert decomposition.relative_total_error <= 1e-12
 
 
+def test_decomposition_type_is_exported_and_times_accept_lists() -> None:
+    # HamiltonianDecomposition is importable from the top level (P-09), and times is ArrayLike (P-08).
+    import geodesiq
+
+    times = [0.0, 0.5, 1.0, 1.5]
+    decomposition = geodesiq.decompose_hamiltonian(_model_hamiltonian, times=times)
+
+    assert isinstance(decomposition, geodesiq.HamiltonianDecomposition)
+    assert "HamiltonianDecomposition" in geodesiq.__all__
+    assert geodesiq.HamiltonianDecomposition.__doc__
+    assert decomposition.times.dtype == np.float64
+    np.testing.assert_allclose(decomposition.times, times)
+    assert decomposition.singular_values.dtype == np.float64
+
+
 def test_qobjevo_matches_reconstruction_at_sample_points() -> None:
     times = np.linspace(0.0, 2.0, 13)
     decomposition = decompose_hamiltonian(_model_hamiltonian, times=times, drift="mean", rank=2)

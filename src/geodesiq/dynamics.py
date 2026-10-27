@@ -1,8 +1,9 @@
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, List, Literal, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
 import qutip as qt
+from numpy.typing import ArrayLike, NDArray
 
 from ._utils import is_hermitian, limit_blas_threads, validate_state_index
 from .controlmodel import ControlModel
@@ -18,13 +19,13 @@ class Dynamics:
     def __init__(
         self,
         model: ControlModel,
-        duration: Optional[float] = None,
+        duration: float | None = None,
         *,
-        times: Optional[np.ndarray] = None,
-        pulse: Optional[np.ndarray] = None,
+        times: ArrayLike | None = None,
+        pulse: ArrayLike | None = None,
         hbar: float = 1.0,
-        order: Optional[int] = None,
-    ):
+        order: int | None = None,
+    ) -> None:
         """
         Initialize the Dynamics object, which depends on an instance of the ControlModel class. This class deals with
         observables due to the time evolution of the pulsed ControlModel.
@@ -40,15 +41,15 @@ class Dynamics:
         ----------
         model: ControlModel
             An instance of the ControlModel class containing the Hamiltonian and the system parameters.
-        duration : Optional[float]
+        duration : float | None
             Duration of the optimal control pulse (t_f). Must not be combined with ``times`` and ``pulse``.
-        times : Optional[np.ndarray]
+        times : ArrayLike | None
             Strictly increasing physical times at which ``pulse`` is sampled. Must be given together with ``pulse``.
-        pulse : Optional[np.ndarray]
+        pulse : ArrayLike | None
             Control pulse values sampled at ``times``. Must be given together with ``times``.
         hbar : float
             Reduced Planck's constant (default is 1).
-        order : Optional[int]
+        order : int | None
             Interpolation of the pulse between its samples, for the propagation and for every Hamiltonian evaluated
             between samples: ``0`` holds each sample until the next one (as an arbitrary waveform generator does), ``1``
             interpolates linearly, and ``3`` uses a cubic spline. The default None uses ``3`` for the optimal pulse
@@ -77,8 +78,8 @@ class Dynamics:
         custom_pulse = times is not None or pulse is not None
         self._order: int = (1 if custom_pulse else 3) if order is None else int(order)
 
-        self._pulse_times: np.ndarray
-        self._pulse: np.ndarray
+        self._pulse_times: NDArray[np.float64]
+        self._pulse: NDArray[np.float64]
         self._duration: float
         # Control values whose eigenstates define the default initial and target states.
         self._boundary_controls: tuple[float, float]
@@ -125,7 +126,7 @@ class Dynamics:
         # The pulse between samples, with the same interpolation as the propagated Hamiltonian.
         self._pulse_coefficient = qt.coefficient(self._pulse, tlist=self._pulse_times, order=self._order)
 
-        self.evaluate_hamiltonian = lambda control_value: model.evaluate_hamiltonian(float(control_value))
+        self._model = model
         self._initial_state: int | None = model.initial_state
         self._final_state: int | None = model.final_state
         if model.hamiltonian_dimension is None:
@@ -150,7 +151,7 @@ class Dynamics:
             self._qevo = decomposition.qobjevo(order=self._order)
 
     @staticmethod
-    def _validate_custom_pulse(times: np.ndarray, pulse: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def _validate_custom_pulse(times: ArrayLike, pulse: ArrayLike) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """Validate a user-provided pulse and its sampling times."""
         time_values = np.asarray(times)
         if time_values.ndim != 1:
@@ -185,12 +186,12 @@ class Dynamics:
         return time_values.copy(), pulse_values.copy()
 
     @property
-    def times(self) -> np.ndarray:
+    def times(self) -> NDArray[np.float64]:
         """Return a copy of the physical-time grid of the pulse."""
         return self._pulse_times.copy()
 
     @property
-    def pulse(self) -> np.ndarray:
+    def pulse(self) -> NDArray[np.float64]:
         """Return a copy of the control pulse samples driving the dynamics."""
         return self._pulse.copy()
 
@@ -203,8 +204,12 @@ class Dynamics:
         """Context limiting BLAS/LAPACK to one thread for small Hilbert spaces (see ``limit_blas_threads``)."""
         return limit_blas_threads(self._hamiltonian_dimension or 0)
 
+    def _evaluate_hamiltonian(self, control_value: float) -> np.ndarray:
+        """Evaluate the model's Hamiltonian at one control value (the model is not snapshotted, see D-03)."""
+        return self._model.evaluate_hamiltonian(float(control_value))
+
     def _eigenstate(self, control_value: float, state_index: int) -> qt.Qobj:
-        hamiltonian = qt.Qobj(self.evaluate_hamiltonian(control_value))
+        hamiltonian = qt.Qobj(self._evaluate_hamiltonian(control_value))
         with self._blas_threads():
             _, eigenstates = hamiltonian.eigenstates()
         return eigenstates[state_index]
@@ -216,9 +221,9 @@ class Dynamics:
         """
         control_val_t = float(np.real(self._pulse_coefficient(t)))
 
-        return qt.Qobj(self.evaluate_hamiltonian(control_val_t)) / self._hbar
+        return qt.Qobj(self._evaluate_hamiltonian(control_val_t)) / self._hbar
 
-    def time_evolution_operator(self, final_only: bool = False) -> List[qt.Qobj]:
+    def time_evolution_operator(self, final_only: bool = False) -> list[qt.Qobj]:
         """
         Compute the time evolution operator using the pulse ControlModel.
 
@@ -230,7 +235,7 @@ class Dynamics:
 
         Returns
         -------
-        propagators : List[qt.Qobj]
+        propagators : list[qt.Qobj]
             Propagators U(t_i, t_0) for every time sample, or ``[U(t_f, t_0)]`` when ``final_only`` is True.
         """
         pulse_times: list[float] = np.asarray(self._pulse_times, dtype=float).tolist()
@@ -253,9 +258,9 @@ class Dynamics:
 
     def state_fidelity(
         self,
-        initial_state: Optional[np.ndarray | int | qt.Qobj] = None,
-        final_state: Optional[np.ndarray | int | qt.Qobj] = None,
-        c_ops: Optional[List[qt.Qobj] | List[np.ndarray]] = None,
+        initial_state: np.ndarray | int | qt.Qobj | None = None,
+        final_state: np.ndarray | int | qt.Qobj | None = None,
+        c_ops: Sequence[qt.Qobj | qt.QobjEvo | np.ndarray] | None = None,
     ) -> float:
         """
         Compute the state transfer fidelity with Lindblad master equation. Depending on whether initial/final states are
@@ -264,16 +269,16 @@ class Dynamics:
 
         Parameters
         ----------
-        initial_state : Optional[np.ndarray, int or qt.Qobj]
+        initial_state : np.ndarray | int | qt.Qobj | None
             Initial state for pulsed time evolution. Both states must be omitted (the model's state indices), both be
             integer indices (eigenstates at the pulse endpoints), or both be explicit states: a ket, bra or density
             matrix of the model dimension, as a numpy array or Qobj. Kets must be normalized and density matrices
             Hermitian with unit trace (within 1e-6); otherwise a ``ValidationError`` is raised.
-        final_state : Optional[np.ndarray, int or qt.Qobj]
+        final_state : np.ndarray | int | qt.Qobj | None
             Target state, of the same kind as ``initial_state``.
-        c_ops : Optional[list]
+        c_ops : Sequence[qt.Qobj | qt.QobjEvo | np.ndarray] | None
             Collapse operators for the Lindblad master equation: a list or tuple of (d, d) Qobj, np.ndarray or
-            QobjEvo.
+            QobjEvo, which may be mixed.
 
         """
         dimension = self._dimension()
@@ -333,17 +338,17 @@ class Dynamics:
 
     def average_gate_fidelity(
         self,
-        gate: Optional[qt.Qobj | List[qt.Qobj]] = None,
+        gate: qt.Qobj | list[qt.Qobj] | None = None,
         *,
         target_gate: qt.Qobj | np.ndarray,
         final_only: bool = False,
-    ) -> List[float]:
+    ) -> list[float]:
         """
         Compute average gate fidelity given the pulsed time evolution operator in the explicit real-time duration given.
 
         Parameters
         ----------
-        gate : Optional[qt.Qobj]
+        gate : qt.Qobj | list[qt.Qobj] | None
             The resulting pulsed gate operation.
         target_gate : qt.Qobj | np.ndarray
             The target gate operation, with the dimension of the Hamiltonian. Required (keyword only): there is no
@@ -354,7 +359,7 @@ class Dynamics:
 
         Returns
         -------
-        gate_fid : List[float]
+        gate_fid : list[float]
             A list of average gate fidelities for each time step in the pulse duration (a single value when
             ``final_only`` is True).
         """
@@ -375,7 +380,7 @@ class Dynamics:
 
         return gate_fid
 
-    def _resolve_initial_state(self, initial_state: Optional[np.ndarray | int | qt.Qobj]) -> qt.Qobj:
+    def _resolve_initial_state(self, initial_state: np.ndarray | int | qt.Qobj | None) -> qt.Qobj:
         """Initial state of the evolution, following the conventions of ``state_fidelity``."""
         control_initial = self._boundary_controls[0]
 
@@ -402,16 +407,16 @@ class Dynamics:
 
     def populations(
         self,
-        initial_state: Optional[np.ndarray | int | qt.Qobj] = None,
+        initial_state: np.ndarray | int | qt.Qobj | None = None,
         basis: Literal["adiabatic", "diabatic"] = "adiabatic",
-        c_ops: Optional[List[qt.Qobj] | List[np.ndarray]] = None,
-    ) -> np.ndarray:
+        c_ops: Sequence[qt.Qobj | qt.QobjEvo | np.ndarray] | None = None,
+    ) -> NDArray[np.float64]:
         """
         Compute the population of every state at each time sample of the pulsed time evolution.
 
         Parameters
         ----------
-        initial_state : Optional[np.ndarray, int or qt.Qobj]
+        initial_state : np.ndarray | int | qt.Qobj | None
             Initial state of the evolution, with the same conventions as in ``state_fidelity``: None uses the initial
             state index of the ControlModel, an integer selects an eigenstate of the Hamiltonian at the initial control
             value, and a numpy array or Qobj is used as given (state vector or density matrix).
@@ -419,12 +424,12 @@ class Dynamics:
             Basis in which populations are measured. ``"adiabatic"`` uses the instantaneous eigenstates of the
             Hamiltonian at each time, sorted by increasing energy. ``"diabatic"`` uses the fixed basis in which the
             Hamiltonian matrix is written. Adiabatic populations of exactly degenerate levels are not unique.
-        c_ops : Optional[list]
-            Collapse operators (passed as a list of Qobj or np.ndarray) for the Lindblad master equation.
+        c_ops : Sequence[qt.Qobj | qt.QobjEvo | np.ndarray] | None
+            Collapse operators for the Lindblad master equation (see ``state_fidelity``).
 
         Returns
         -------
-        populations : np.ndarray
+        populations : NDArray[np.float64]
             Array of shape ``(len(times), dimension)``, where ``populations[i, n]`` is the population of state ``n`` at
             ``times[i]``.
         """
@@ -450,7 +455,7 @@ class Dynamics:
             for i, (state, control_value) in enumerate(zip(states, self._pulse, strict=True)):
                 data = state.full()
                 if basis == "adiabatic":
-                    _, eigenvectors = np.linalg.eigh(np.asarray(self.evaluate_hamiltonian(control_value)))
+                    _, eigenvectors = np.linalg.eigh(np.asarray(self._evaluate_hamiltonian(control_value)))
                     data = eigenvectors.conj().T @ data
                     if not state.isket:
                         data = data @ eigenvectors
@@ -466,10 +471,10 @@ class Dynamics:
         self,
         fig: "Figure | SubFigure | None" = None,
         ax: "Axes | None" = None,
-        initial_state: Optional[np.ndarray | int | qt.Qobj] = None,
+        initial_state: np.ndarray | int | qt.Qobj | None = None,
         basis: Literal["adiabatic", "diabatic"] = "adiabatic",
-        c_ops: Optional[List[qt.Qobj] | List[np.ndarray]] = None,
-        states: Optional[Sequence[int]] = None,
+        c_ops: Sequence[qt.Qobj | qt.QobjEvo | np.ndarray] | None = None,
+        states: Sequence[int] | None = None,
         legend: bool = True,
         legend_kwargs: dict[str, Any] | None = None,
         xlabel: str | None = None,
@@ -484,13 +489,13 @@ class Dynamics:
         ----------
         fig, ax
             Optional matplotlib figure/axis. If not provided, they are created.
-        initial_state : Optional[np.ndarray, int or qt.Qobj]
+        initial_state : np.ndarray | int | qt.Qobj | None
             Initial state of the evolution (see ``populations``).
         basis : {"adiabatic", "diabatic"}
             Basis in which populations are measured (see ``populations``).
-        c_ops : Optional[list]
-            Collapse operators for the Lindblad master equation (see ``populations``).
-        states : Optional[Sequence[int]]
+        c_ops : Sequence[qt.Qobj | qt.QobjEvo | np.ndarray] | None
+            Collapse operators for the Lindblad master equation (see ``state_fidelity``).
+        states : Sequence[int] | None
             Indices of the states to plot. All states are plotted when not provided.
         legend : bool
             Whether to draw a legend.
@@ -598,13 +603,13 @@ def _as_state(value: Any, dimension: int, name: str) -> qt.Qobj:
     )
 
 
-def _as_collapse_operators(c_ops: Any, dimension: int) -> Optional[List[qt.Qobj | qt.QobjEvo]]:
+def _as_collapse_operators(c_ops: Any, dimension: int) -> list[qt.Qobj | qt.QobjEvo] | None:
     """Validate collapse operators (a list or tuple of (d, d) Qobj, numpy arrays or QobjEvo)."""
     if c_ops is None:
         return None
     if not isinstance(c_ops, (list, tuple)):
         raise ValidationError("Collapse operators must be provided as a list or tuple of Qobj or numpy arrays.")
-    operators: List[qt.Qobj | qt.QobjEvo] = []
+    operators: list[qt.Qobj | qt.QobjEvo] = []
     for index, op in enumerate(c_ops):
         if isinstance(op, qt.QobjEvo):
             if tuple(op.shape) != (dimension, dimension):

@@ -3,7 +3,7 @@ from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from fractions import Fraction
-from functools import lru_cache
+from functools import cache
 from math import factorial
 from typing import Any
 
@@ -32,7 +32,7 @@ class Flags:
     >>> flags["hessian"]   # False  (grandparent is down)
     """
 
-    def __init__(self, _verbose: bool = False):
+    def __init__(self, _verbose: bool = False) -> None:
         self._values: dict[str, bool] = {}
         self._parents: dict[str, list[str]] = {}
         self._children: dict[str, list[str]] = {}
@@ -509,7 +509,7 @@ def limit_blas_threads(dimension: int) -> Generator[None, None, None]:
 # -----------------------------------
 # Finite differences
 # -----------------------------------
-@lru_cache(maxsize=None)
+@cache
 def finite_difference_weights(offsets: tuple[int, ...]) -> np.ndarray:
     """
     Weights of the first-derivative finite-difference stencil on integer ``offsets`` (in units of the grid step).

@@ -18,8 +18,22 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   arguments as `ControlModel.plot_eigenvalues()` and an optional `states` selection.
 - `Dynamics(..., order=...)` selects how the pulse is interpolated between its samples: `0` holds each sample (as an
   arbitrary waveform generator does), `1` is linear and `3` is a cubic spline.
+- `HamiltonianDecomposition`, the return type of `decompose_hamiltonian()`, is exported from `geodesiq` and has a
+  docstring describing its attributes.
 
 ### Changed
+
+- `Dynamics` no longer has the public, undocumented `evaluate_hamiltonian` attribute. Use the model's
+  `ControlModel.evaluate_hamiltonian()` instead.
+- The private `_flags_verbose` argument of `ControlModel` is keyword-only and no longer takes the third positional
+  slot of the public signature.
+- Type annotations follow what the functions accept and return. Array inputs that are converted with `np.asarray`
+  (`ControlModel(H_d=..., H_c=...)` and the matrices returned by `H_func`/`partial_H_func`, `PulseControl(pulse=...)`,
+  `Dynamics(times=..., pulse=...)` and `decompose_hamiltonian(times=...)`) are `numpy.typing.ArrayLike`, so lists
+  pass strict type checkers. Real outputs are typed `NDArray[np.float64]` (`control_sol`, `s`, `eigenenergies`,
+  `control_pulse`, `Dynamics.populations()`, the arrays returned by `PulseControl`). `c_ops` is
+  `Sequence[qt.Qobj | qt.QobjEvo | np.ndarray]`, so tuples and mixed lists type-check. `typing.List`, `Tuple` and
+  `Optional` were replaced by the built-in generics and `X | None`.
 
 - `Dynamics.average_gate_fidelity()` requires `target_gate`, as a keyword argument. Without it, QuTiP silently
   compared with the identity (e.g. 0.3398 for the Landau–Zener pulse, the same as `target_gate=qt.qeye(2)`), which the

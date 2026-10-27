@@ -1,8 +1,10 @@
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Literal
+from typing import Literal
 
 import numpy as np
 import qutip as qt
+from numpy.typing import ArrayLike, NDArray
 
 from ._utils import HERMITIAN_RTOL, is_hermitian
 from .exceptions import ValidationError
@@ -41,11 +43,35 @@ def _real_vector_to_hermitian(vector: np.ndarray, d: int) -> np.ndarray:
 
 @dataclass
 class HamiltonianDecomposition:
-    times: np.ndarray
+    """
+    Low-rank decomposition ``H(t) ~= H_d + sum_i u_i(t) H_i`` of a sampled Hamiltonian, as returned by
+    ``decompose_hamiltonian``.
+
+    Attributes
+    ----------
+    times : NDArray[np.float64]
+        Strictly increasing sample times, shape ``(N,)``.
+    H_d : qt.Qobj
+        Static drift Hamiltonian.
+    H_controls : list[qt.Qobj]
+        The ``rank`` Hermitian control Hamiltonians ``H_i``, orthonormal in the Frobenius inner product.
+    coefficients : NDArray[np.float64]
+        Real control coefficients ``u_i(t)`` at the sample times, shape ``(rank, N)``.
+    singular_values : NDArray[np.float64]
+        All singular values of the sampled residuals ``H(t) - H_d``, in decreasing order, including the discarded ones.
+    rank : int
+        Number of control terms kept.
+    relative_residual_error : float
+        Frobenius norm of the discarded part relative to that of the residuals ``H(t) - H_d``.
+    relative_total_error : float
+        Frobenius norm of the discarded part relative to that of the sampled ``H(t)``.
+    """
+
+    times: NDArray[np.float64]
     H_d: qt.Qobj
     H_controls: list[qt.Qobj]
-    coefficients: np.ndarray
-    singular_values: np.ndarray
+    coefficients: NDArray[np.float64]
+    singular_values: NDArray[np.float64]
     rank: int
     relative_residual_error: float
     relative_total_error: float
@@ -68,7 +94,7 @@ class HamiltonianDecomposition:
 
 def decompose_hamiltonian(
     H_func: Callable[[float], qt.Qobj | np.ndarray],
-    times: np.ndarray,
+    times: ArrayLike,
     drift: Literal["mean", "first", "zero"] | qt.Qobj | np.ndarray = "mean",
     rank: int | None = None,
     rtol: float = 1e-10,
@@ -109,6 +135,7 @@ def decompose_hamiltonian(
     Returns
     -------
     HamiltonianDecomposition
+        The drift, control Hamiltonians and coefficients, with the truncation errors.
     """
     times = np.asarray(times, dtype=float)
 
