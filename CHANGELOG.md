@@ -23,6 +23,8 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   arbitrary waveform generator does), `1` is linear and `3` is a cubic spline.
 - `HamiltonianDecomposition`, the return type of `decompose_hamiltonian()`, is exported from `geodesiq` and has a
   docstring describing its attributes.
+- `PulseControl.fourier_spectrum(..., detrend=True)` subtracts the mean of each window before the transform, which
+  removes the DC part that otherwise dominates the spectrum of a sweep. The default (`False`) is unchanged.
 
 ### Changed
 

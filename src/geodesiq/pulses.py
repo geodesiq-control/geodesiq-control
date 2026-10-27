@@ -110,7 +110,7 @@ class PulseControl:
         return new_time, approx_sol
 
     def fourier_spectrum(
-        self, window_len: int = 256, hop: int = 32
+        self, window_len: int = 256, hop: int = 32, detrend: bool = False
     ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
         """
         Compute the Short-Time Fourier Transform (STFT) spectrum of the control pulse.
@@ -121,6 +121,11 @@ class PulseControl:
             The length of the window segment in number of samples. Default is 256.
         hop : int, optional
             The number of samples to advance between successive windows. Default is 32.
+        detrend : bool, optional
+            Subtract the mean of each window segment before the Fourier transform, which removes the DC part of the
+            spectrum (``scipy.signal.ShortTimeFFT.stft_detrend`` with ``detr="constant"``). A geodesic pulse sweeps
+            between two control values, so without it the zero-frequency row dominates the spectrum. Default is
+            False.
 
         Returns
         -------
@@ -142,6 +147,8 @@ class PulseControl:
         hop = int(hop)
         if hop > window_len:
             raise ValidationError("hop must not exceed window_len.")
+        if not isinstance(detrend, (bool, np.bool_)):
+            raise ValidationError("detrend must be a boolean.")
 
         dt = float(self._pulse_times[1] - self._pulse_times[0])
         if not np.isfinite(dt) or dt <= 0:
@@ -151,7 +158,7 @@ class PulseControl:
         win = hann(window_len, sym=False)
         sft = ShortTimeFFT(win, hop=hop, fs=fs, scale_to="magnitude")
 
-        stft_matrix = sft.stft(self._pulse)
+        stft_matrix = sft.stft_detrend(self._pulse, "constant") if detrend else sft.stft(self._pulse)
 
         magnitude = np.abs(stft_matrix)
         frequencies = sft.f

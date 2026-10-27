@@ -71,6 +71,29 @@ def test_fourier_spectrum_small_size(sample_pulse_data):
         pc.fourier_spectrum(window_len=len(pc._pulse_times) * 2)
 
 
+def test_fourier_spectrum_detrend_removes_the_dc_part():
+    """detrend=True subtracts each window's mean: an offset vanishes, a sine is kept (F-23)."""
+    duration, samples, window_len = 10.0, 1001, 100
+    t = np.linspace(0, duration, samples)
+    pc = PulseControl(pulse=5.0 + np.sin(2 * np.pi * 2.0 * t), duration=duration)
+
+    frequencies, times, raw = pc.fourier_spectrum(window_len=window_len, hop=10)
+    _, _, detrended = pc.fourier_spectrum(window_len=window_len, hop=10, detrend=True)
+
+    # Windows that lie fully inside the pulse (the boundary ones also contain zero padding)
+    half = window_len / 2 * duration / (samples - 1)
+    inside = (times >= half) & (times <= duration - half)
+    peak = np.argmin(np.abs(frequencies - 2.0))
+    np.testing.assert_allclose(raw[0, inside], 5.0, rtol=1e-2)
+    assert np.max(detrended[0, inside]) < 1e-2
+    np.testing.assert_allclose(detrended[peak, inside], raw[peak, inside], rtol=2e-2)
+
+
+def test_fourier_spectrum_rejects_a_non_boolean_detrend(default_pulse):
+    with pytest.raises(ValidationError, match="detrend must be a boolean"):
+        default_pulse.fourier_spectrum(window_len=50, detrend="constant")
+
+
 # ------------------------------------------------------------
 # Testing plot_pulse method
 # ------------------------------------------------------------
