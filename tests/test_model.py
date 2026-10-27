@@ -6,6 +6,7 @@ from scipy.integrate import solve_ivp
 
 from geodesiq import (
     ControlModel,
+    Dynamics,
     ImmutableConfigurationError,
     InvalidControlParameterError,
     MissingControlParameterError,
@@ -1601,6 +1602,50 @@ class TestLandauZenerAnalytical:
 
         np.testing.assert_allclose(ham.control_sol, expected_control, atol=1e-2,
                                    err_msg="Optimal control for LZ n_+ = 3 is wrong")
+
+
+class TestLandauZenerSweepDirection:
+    """The LZ spectrum is symmetric under z -> -z, so sweeping z(0) > z(1) mirrors the sweep z(0) < z(1)."""
+
+    @staticmethod
+    def _solved_model(mode: str, pulse_initial: float, pulse_final: float, alpha: float, beta: float) -> ControlModel:
+        delta = 0.5
+        if mode == "affine":
+            model = ControlModel(H_d=lz_hamiltonian(0.0, delta), H_c=LZ_H_C)
+        else:
+            model = ControlModel(lz_hamiltonian, partial_H_func=lz_partial if mode == "partial" else None)
+            model.set_parameters(delta=delta)
+        model.set_control(control_name="lam", pulse_initial=pulse_initial, pulse_final=pulse_final, initial_state=0,
+                          alpha=alpha, beta=beta, num_steps=2 ** 8 + 1, )
+        model.solve_problem(pulse_accuracy=200)
+        return model
+
+    @pytest.mark.parametrize("mode", ["partial", "numerical", "affine"])
+    @pytest.mark.parametrize(("alpha", "beta"), [(0.0, 0.0), (2.0, 2.0), (4.0, 2.0)])
+    def test_decreasing_sweep_mirrors_increasing_sweep(self, mode: str, alpha: float, beta: float):
+        increasing = self._solved_model(mode, -5.0, 5.0, alpha, beta)
+        decreasing = self._solved_model(mode, 5.0, -5.0, alpha, beta)
+
+        z_up = increasing.control_sol
+        z_down = decreasing.control_sol
+        assert (z_up[0], z_up[-1]) == (-5.0, 5.0)
+        assert (z_down[0], z_down[-1]) == (5.0, -5.0)
+        assert np.all(np.diff(z_up) >= 0)
+        assert np.all(np.diff(z_down) <= 0)
+        # z_down(s) = -z_up(s), and by time-reversal symmetry also z_up(1 - s).
+        np.testing.assert_allclose(z_down, -z_up, atol=1e-10)
+        np.testing.assert_allclose(z_down, z_up[::-1], atol=1e-10)
+
+    @pytest.mark.parametrize(("alpha", "beta"), [(2.0, 2.0), (4.0, 2.0)])
+    @pytest.mark.parametrize("duration", [2.0, 8.0, 20.0])
+    def test_decreasing_sweep_reaches_the_same_fidelity(self, alpha: float, beta: float, duration: float):
+        increasing = self._solved_model("partial", -5.0, 5.0, alpha, beta)
+        decreasing = self._solved_model("partial", 5.0, -5.0, alpha, beta)
+
+        fidelity_up = Dynamics(duration=duration, model=increasing).state_fidelity()
+        fidelity_down = Dynamics(duration=duration, model=decreasing).state_fidelity()
+
+        assert np.isclose(fidelity_down, fidelity_up, rtol=0.0, atol=1e-8)
 
 
 class TestCoverageRestorations:
