@@ -108,26 +108,16 @@ pattern = '__version__ = "(?P<version>[^"]+)"'
 [tool.hatch.build.targets.wheel]
 packages = ["src/geodesiq"]
 
+# An allow-list: everything else (dev/, docs/, examples/, benchmarks/, ...) stays out of the sdist. The tests are
+# shipped so that downstream packagers can run them; test_bump_version.py skips itself without dev/.
 [tool.hatch.build.targets.sdist]
 include = [
     "/src",
+    "/tests",
     "/README.md",
     "/LICENSE",
     "/CHANGELOG.md",
     "/CITATION.cff",
-]
-
-exclude = [
-    "/.github",
-    "/.idea",
-    "/.vscode",
-    "/benchmarks",
-    "/dev",
-    "/docs",
-    "/examples",
-    "/images",
-    "/tests",
-    "/dist",
 ]
 
 [tool.uv]

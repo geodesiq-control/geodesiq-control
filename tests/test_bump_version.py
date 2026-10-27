@@ -1,15 +1,20 @@
 import importlib.util
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import pytest
 from packaging.version import Version
 
 SCRIPT = Path(__file__).parents[1] / "dev" / "bump_version.py"
-SPEC = importlib.util.spec_from_file_location("bump_version", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
-bump_version = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(bump_version)
+# dev/ is not shipped in the sdist, which includes the tests (P-15).
+pytestmark = pytest.mark.skipif(not SCRIPT.exists(), reason="dev/bump_version.py is only in a repository checkout.")
+bump_version: Any = None
+if SCRIPT.exists():
+    SPEC = importlib.util.spec_from_file_location("bump_version", SCRIPT)
+    assert SPEC is not None and SPEC.loader is not None
+    bump_version = importlib.util.module_from_spec(SPEC)
+    SPEC.loader.exec_module(bump_version)
 
 
 def project_files(tmp_path: Path, unreleased: str = "### Fixed\n\n- Corrected a defect.\n") -> tuple[Path, Path]:

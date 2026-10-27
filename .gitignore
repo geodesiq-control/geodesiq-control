@@ -223,6 +223,9 @@ draft/*
 # Lock file of the benchmark runner (created while it writes the history)
 benchmarks/results/benchmark_history.parquet.lock
 
+# Scratch outputs of export_pulse() in the dev notebooks
+dev/pulse_data.*
+
 .claude/*
 CLAUDE.md
 dev/other_qoctrl/StudyManyBody.ipynb

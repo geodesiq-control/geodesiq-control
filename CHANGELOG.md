@@ -23,6 +23,8 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Changed
 
+- The source distribution includes the test suite, so downstream packagers can run it (`pytest` from the unpacked
+  sdist). The test of the `dev/` release script skips itself there.
 - `Dynamics` no longer has the public, undocumented `evaluate_hamiltonian` attribute. Use the model's
   `ControlModel.evaluate_hamiltonian()` instead.
 - The private `_flags_verbose` argument of `ControlModel` is keyword-only and no longer takes the third positional
