@@ -715,7 +715,8 @@ class ControlModel:
             default solver (which integrates the inverse equation ds/dx) is preferable.
         solver_kwargs : dict[str, Any] | None
             Additional keyword arguments forwarded to ``solver``. Stored as a deep copy and reused by later calls until
-            replaced; values may be arrays.
+            replaced; values may be arrays. For the default ``solve_ivp``, the keys ``dense_output``, ``events`` and
+            ``t_eval`` are reserved, and a key that the chosen ``method`` does not accept raises ``ValidationError``.
         metric_integrator : Callable[..., Any] | None
             Callable used to compute ``a_tilde`` from ``sqrt(metric_tensor)``. Defaults to
             ``scipy.integrate.romb``.
@@ -1377,7 +1378,15 @@ class ControlModel:
                     return np.atleast_1d(direction * inverse_interpolation(clipped)).astype(float)
 
                 try:
-                    sol = solve_ivp(inverse_model, [x_start, x_end], [0.0], dense_output=True, **kwargs)
+                    with warnings.catch_warnings():
+                        # solve_ivp only warns about options the chosen method does not accept, so a typo such as
+                        # {"rtl": 1e-8} would silently fall back to the default tolerances.
+                        warnings.filterwarnings(
+                            "error", message="The following arguments have no effect", category=UserWarning
+                        )
+                        sol = solve_ivp(inverse_model, [x_start, x_end], [0.0], dense_output=True, **kwargs)
+                except UserWarning as exc:
+                    raise ValidationError(f"Invalid solve_ivp keyword arguments: {exc}") from exc
                 except TypeError as exc:
                     raise ValidationError("Invalid solve_ivp keyword arguments.") from exc
                 if not sol.success:

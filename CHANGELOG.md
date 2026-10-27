@@ -55,6 +55,9 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Fixed
 
+- `ControlModel.solve_problem()` with the default solver rejects `solver_kwargs` that the chosen `solve_ivp` method
+  does not accept (e.g. the typo `{"rtl": 1e-8}`, or `min_step` with `RK45`) with a `ValidationError`. Before, SciPy
+  only warned and the solve silently kept the default tolerances.
 - `ControlModel.solve_problem()` no longer fails with "Required step size is less than spacing between numbers" when
   the metric tensor spans many orders of magnitude (e.g. large `alpha` and `beta`). The default solver now integrates
   the inverse equation `ds/dx = sqrt(G)/a` and inverts it, exactly through the PCHIP antiderivative when no

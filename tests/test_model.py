@@ -1079,6 +1079,35 @@ class TestSolveProblem:
         with pytest.raises(ValidationError, match="solver_kwargs must be a dictionary"):
             configured_ham.solve_problem(solver_kwargs=cast(Any, "bad"))
 
+    @pytest.mark.parametrize("solver_kwargs", [{"rtol": 1e-10}, {"method": "LSODA", "rtol": 1e-10, "atol": 1e-12}])
+    def test_default_solver_kwargs_path_matches_the_exact_antiderivative(self, configured_ham, solver_kwargs):
+        # With solver_kwargs, the default solver integrates ds/dx with solve_ivp instead of through the exact PCHIP
+        # antiderivative; both must give the same pulse (P-01).
+        configured_ham.solve_problem(pulse_accuracy=200)
+        exact = configured_ham.control_sol.copy()
+
+        configured_ham.solve_problem(solver_kwargs=solver_kwargs)
+
+        assert configured_ham._solver is solve_ivp
+        assert configured_ham.control_sol[0] == -5.0 and configured_ham.control_sol[-1] == 5.0
+        np.testing.assert_allclose(configured_ham.control_sol, exact, rtol=0, atol=1e-6)
+
+    @pytest.mark.parametrize("reserved", ["dense_output", "events", "t_eval"])
+    def test_default_solver_rejects_internally_managed_kwargs(self, configured_ham, reserved):
+        with pytest.raises(ValidationError, match=f"must not override internally managed option\\(s\\): {reserved}"):
+            configured_ham.solve_problem(solver_kwargs={reserved: None})
+
+    @pytest.mark.parametrize("solver_kwargs", [{"bogus": 1}, {"rtl": 1e-8}, {"method": "RK45", "min_step": 1e-3}])
+    def test_default_solver_rejects_kwargs_without_effect(self, configured_ham, solver_kwargs):
+        # solve_ivp only warns about options the chosen method ignores, so a typo kept the default tolerances.
+        name = [key for key in solver_kwargs if key != "method"][0]
+        with pytest.raises(ValidationError, match=f"Invalid solve_ivp keyword arguments: .*`{name}`"):
+            configured_ham.solve_problem(solver_kwargs=solver_kwargs)
+
+    def test_default_solver_reports_conflicting_kwargs(self, configured_ham):
+        with pytest.raises(ValidationError, match="Invalid solve_ivp keyword arguments"):
+            configured_ham.solve_problem(solver_kwargs={"y0": [0.0]})
+
     def test_solve_problem_rejects_non_dict_metric_integrator_kwargs(self, configured_ham):
         with pytest.raises(ValidationError, match="metric_integrator_kwargs must be a dictionary"):
             configured_ham.solve_problem(metric_integrator_kwargs=cast(Any, "bad"))
