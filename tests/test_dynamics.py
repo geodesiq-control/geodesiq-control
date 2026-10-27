@@ -3,11 +3,12 @@ from typing import Any, cast
 import numpy as np
 import pytest
 import qutip as qt
+from qutip.solver.integrator import IntegratorException
 
 import geodesiq.dynamics as dynamics_module
 from geodesiq import ControlModel
 from geodesiq.dynamics import Dynamics
-from geodesiq.exceptions import ConfigurationError, MissingArgsError, ValidationError
+from geodesiq.exceptions import ConfigurationError, MissingArgsError, SolverError, ValidationError
 
 # ------------------------------------------------------------
 # Real ControlModel() fixtures
@@ -71,6 +72,119 @@ def affine_dynamics(affine_model):
 # ------------------------------------------------------------
 # Testing initialization and internal method _get_ham()
 # ------------------------------------------------------------
+
+
+class TestSolverOptions:
+    @pytest.mark.parametrize("options", [[], "tight", 1, {1: 1e-8}])
+    def test_invalid_options_container(self, affine_model, options):
+        with pytest.raises(ValidationError, match="dictionary with string keys"):
+            Dynamics(affine_model, duration=2, options=options)
+
+    @pytest.mark.parametrize("fixture_name", ["real_model", "affine_model"])
+    @pytest.mark.parametrize("operation", ["full", "final", "gate", "state", "open_state", "populations",
+                                          "open_populations"])
+    def test_options_reach_every_solver_and_storage_is_preserved(self, request, monkeypatch, fixture_name, operation):
+        options = {"atol": 1e-10, "rtol": 1e-8, "nsteps": 5000, "max_step": 0.05, "method": "dop853",
+                   "store_states": False, "store_final_state": False, "progress_kwargs": {"chunk_size": 7}}
+        dynamics = Dynamics(request.getfixturevalue(fixture_name), duration=2, options=options)
+        calls = []
+        solver_name = "propagator" if operation == "full" else "sesolve" if operation == "final" else "mesolve"
+        if operation == "gate":
+            solver_name = "sesolve"
+        original = getattr(qt, solver_name)
+
+        def tracked_solver(*args, **kwargs):
+            calls.append(kwargs["options"].copy())
+            kwargs["options"]["progress_kwargs"]["chunk_size"] = 8
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(qt, solver_name, tracked_solver)
+        # Caller mutation, including a nested dictionary, must not change the stored configuration.
+        options["atol"] = 0.1
+        options["progress_kwargs"]["chunk_size"] = 99
+        for _ in range(2):
+            if operation in ("full", "final"):
+                assert len(dynamics.time_evolution_operator(final_only=operation == "final")) > 0
+            elif operation == "gate":
+                assert len(dynamics.average_gate_fidelity(target_gate=qt.sigmax(), final_only=True)) == 1
+            elif "state" in operation:
+                dynamics.state_fidelity(c_ops=[0.1 * qt.sigmaz()] if operation == "open_state" else None)
+            else:
+                c_ops = [0.1 * qt.sigmaz()] if operation == "open_populations" else None
+                assert dynamics.populations(c_ops=c_ops).shape[1] == 2
+        assert len(calls) == 2
+        for received in calls:
+            assert received["atol"] == 1e-10
+            assert received["rtol"] == 1e-8
+            assert received["nsteps"] == 5000
+            assert received["max_step"] == 0.05
+            assert received["method"] == "dop853"
+            assert received["store_states"] is (operation in ("full", "populations", "open_populations"))
+            if operation in ("final", "gate", "state", "open_state"):
+                assert received["store_final_state"] is True
+        assert dynamics._options["progress_kwargs"]["chunk_size"] == 7
+
+    @pytest.mark.parametrize("operation", ["full", "final", "gate", "state", "populations"])
+    def test_integration_failure_is_chained(self, affine_model, monkeypatch, operation):
+        failure = IntegratorException("Excess work done")
+
+        def failed_solver(*args, **kwargs):
+            raise failure
+
+        for name in ("propagator", "sesolve", "mesolve"):
+            monkeypatch.setattr(qt, name, failed_solver)
+        dynamics = Dynamics(affine_model, duration=2)
+        with pytest.raises(SolverError, match="nsteps") as error:
+            if operation in ("full", "final"):
+                dynamics.time_evolution_operator(final_only=operation == "final")
+            elif operation == "gate":
+                dynamics.average_gate_fidelity(target_gate=qt.sigmax())
+            elif operation == "state":
+                dynamics.state_fidelity()
+            else:
+                dynamics.populations()
+        assert error.value.__cause__ is failure
+
+    @pytest.mark.parametrize("options", [{"rtlo": 1e-8}, {"method": "unknown_method"}])
+    def test_unsupported_options_raise_package_error(self, affine_model, options):
+        dynamics = Dynamics(affine_model, duration=2, options=options)
+        with pytest.raises(ValidationError, match="QuTiP solver rejected"):
+            dynamics.time_evolution_operator()
+
+    def test_long_evolution_converges_to_exact_unitary(self):
+        model = ControlModel(H_d=qt.sigmax().full(), H_c=np.zeros((2, 2)))
+        times = np.linspace(0, 500, 101)
+        pulse = np.zeros_like(times)
+        default = Dynamics(model, times=times, pulse=pulse).time_evolution_operator(final_only=True)[0]
+        tight = Dynamics(model, times=times, pulse=pulse,
+                         options={"atol": 1e-12, "rtol": 1e-12, "nsteps": 10000, "normalize_output": False})
+        final = tight.time_evolution_operator(final_only=True)[0]
+        exact = (-500j * qt.sigmax()).expm().full()
+        loose_error = np.linalg.norm(default.full() - exact)
+        tight_error = np.linalg.norm(final.full() - exact)
+        assert tight_error < loose_error / 100
+        assert tight_error < 1e-6
+        np.testing.assert_allclose(final.dag().full() @ final.full(), np.eye(2), atol=1e-7)
+        populations = tight.populations(initial_state=qt.basis(2, 0), basis="diabatic")
+        np.testing.assert_allclose(populations.sum(axis=1), 1, atol=1e-7)
+
+    @pytest.mark.filterwarnings("ignore:.*Excess work done.*")
+    def test_nsteps_can_recover_a_real_integration_failure(self):
+        model = ControlModel(H_d=100 * qt.sigmax().full(), H_c=np.zeros((2, 2)))
+        kwargs = {"times": [0, 1], "pulse": [0, 0]}
+        with pytest.raises(SolverError) as error:
+            Dynamics(model, **kwargs, options={"nsteps": 1}).time_evolution_operator(final_only=True)
+        assert isinstance(error.value.__cause__, IntegratorException)
+        final = Dynamics(model, **kwargs, options={"nsteps": 10000, "atol": 1e-11, "rtol": 1e-11})
+        np.testing.assert_allclose(final.time_evolution_operator(final_only=True)[0].full(),
+                                   (-100j * qt.sigmax()).expm().full(), atol=1e-7)
+
+    def test_max_step_resolves_a_narrow_hold_pulse(self):
+        model = ControlModel(H_d=np.zeros((2, 2)), H_c=qt.sigmax().full())
+        dynamics = Dynamics(model, times=[0, 0.49, 0.5, 0.51, 1], pulse=[0, 0, 50, 0, 0], order=0,
+                            options={"max_step": 0.002, "atol": 1e-11, "rtol": 1e-11, "nsteps": 10000})
+        final = dynamics.time_evolution_operator(final_only=True)[0]
+        np.testing.assert_allclose(final.full(), (-0.5j * qt.sigmax()).expm().full(), atol=1e-7)
 
 
 def test_initialization(real_model):

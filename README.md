@@ -116,6 +116,12 @@ Top-level imports are intentionally kept small and explicit:
 - `GeodesiQWarning` and related warnings
 - `__version__`
 
+`model.tau` returns the normalized time grid, `tau = t / t_f`, corresponding to `model.control_sol`.
+
+Use `Dynamics(..., options={"atol": 1e-10, "rtol": 1e-8, "nsteps": 10000})` to configure QuTiP propagation;
+`options=None` keeps its numerical defaults. The [user guide](https://geodesiq.readthedocs.io/en/latest/api/#dynamics-solver-accuracy)
+explains convergence checks, internal step limits and solver errors.
+
 The user guide and the full API reference are available at [geodesiq.readthedocs.io](https://geodesiq.readthedocs.io).
 
 # Citing `geodesiq`

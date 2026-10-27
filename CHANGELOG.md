@@ -8,6 +8,9 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Added
 
+- `Dynamics(..., options=...)` configures QuTiP solver settings for all propagation methods, including tolerances,
+  internal step limits and integration method. Numerical defaults are unchanged; integration failures now raise
+  `SolverError` with the original exception chained, and rejected solver configurations raise `ValidationError`.
 - `PulseControl.plot_pulse()` accepts optional `fig` and `ax` arguments to draw on an existing figure, subfigure or
   axis, like `ControlModel.plot_eigenvalues()` and `ControlModel.plot_metric_tensor()`. A provided figure is never
   closed; pass `show=False` to keep drawing on it.
@@ -23,6 +26,8 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Changed
 
+- Rename the normalized-time grid from `ControlModel.s` to `ControlModel.tau` (`tau = t / t_f`) to match the
+  manuscript notation. Update callers to use `model.tau`; numerical results and defensive-copy behavior are unchanged.
 - The source distribution includes the test suite, so downstream packagers can run it (`pytest` from the unpacked
   sdist). The test of the `dev/` release script skips itself there.
 - `Dynamics` no longer has the public, undocumented `evaluate_hamiltonian` attribute. Use the model's
@@ -32,7 +37,7 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 - Type annotations follow what the functions accept and return. Array inputs that are converted with `np.asarray`
   (`ControlModel(H_d=..., H_c=...)` and the matrices returned by `H_func`/`partial_H_func`, `PulseControl(pulse=...)`,
   `Dynamics(times=..., pulse=...)` and `decompose_hamiltonian(times=...)`) are `numpy.typing.ArrayLike`, so lists
-  pass strict type checkers. Real outputs are typed `NDArray[np.float64]` (`control_sol`, `s`, `eigenenergies`,
+  pass strict type checkers. Real outputs are typed `NDArray[np.float64]` (`control_sol`, `tau`, `eigenenergies`,
   `control_pulse`, `Dynamics.populations()`, the arrays returned by `PulseControl`). `c_ops` is
   `Sequence[qt.Qobj | qt.QobjEvo | np.ndarray]`, so tuples and mixed lists type-check. `typing.List`, `Tuple` and
   `Optional` were replaced by the built-in generics and `X | None`.
@@ -82,7 +87,7 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   only warned and the solve silently kept the default tolerances.
 - `ControlModel.solve_problem()` no longer fails with "Required step size is less than spacing between numbers" when
   the metric tensor spans many orders of magnitude (e.g. large `alpha` and `beta`). The default solver now integrates
-  the inverse equation `ds/dx = sqrt(G)/a` and inverts it, exactly through the PCHIP antiderivative when no
+  the inverse equation `dtau/dx = sqrt(G)/a` and inverts it, exactly through the PCHIP antiderivative when no
   `solver_kwargs` are given, or with `solve_ivp` (default `rtol=1e-10`, `atol=1e-12`) otherwise. Custom solvers still
   integrate the forward equation (see below).
 - The numerical derivative of a callable Hamiltonian no longer fails with "Numerical differentiation failed to
@@ -94,9 +99,9 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   instead of raising `SolverError`.
 - A custom `solver` in `ControlModel.solve_problem()` (any callable other than `scipy.integrate.solve_ivp` itself,
   including wrappers and `functools.partial(solve_ivp, ...)`) no longer gives a pulse that misses `pulse_final`, e.g.
-  ending at x = 414 instead of 5 on a coarse grid. The forward equation `dx/ds` is now normalized with the exact
+  ending at x = 414 instead of 5 on a coarse grid. The forward equation `dx/dtau` is now normalized with the exact
   integral of the PCHIP interpolant it uses (the same interpolant as the default solver), the speed vanishes beyond
-  `pulse_final`, and both endpoints are set exactly. The result must follow the exact normalized time `s(x)` to within
+  `pulse_final`, and both endpoints are set exactly. The result must follow the exact normalized time `tau(x)` to within
   1e-2 at every sample, otherwise `SolverError` is raised.
 - `ControlModel.set_parameters()` now stores deep copies of the values. Before, an array changed in place and passed
   again compared equal to the stored (same) object, so `solve_problem()` returned the old eigensystem and pulse; and
@@ -119,9 +124,9 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   metric), and the tolerances are floored at the rounding error the offset leaves in the samples. For
   `H = 1e10 * I + x * sz + 0.1 * sx` this also reduces the metric error from 28% to 0.1%.
 - A metric tensor that is exactly zero at isolated grid points (e.g. a coupling that vanishes at `x = 0` on a grid
-  containing 0) is now solved by the default solver, which integrates the finite `ds/dx = sqrt(G)/a`; the pulse passes
+  containing 0) is now solved by the default solver, which integrates the finite `dtau/dx = sqrt(G)/a`; the pulse passes
   such a point infinitely fast. Before, the warning about the zero was followed by "ODE speed factor is non-finite or
-  non-positive". A custom `solver`, which integrates the forward equation `dx/ds`, raises `MetricComputationError`
+  non-positive". A custom `solver`, which integrates the forward equation `dx/dtau`, raises `MetricComputationError`
   naming the zero points instead.
 - `solve_problem()` accepts array values in `solver_kwargs` and `metric_integrator_kwargs` (e.g. `x` for
   `scipy.integrate.trapezoid`) on repeated calls. Comparing them with the stored kwargs raised "The truth value of an
@@ -152,7 +157,7 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 - `Dynamics.times`, `Dynamics.pulse` and `Dynamics.duration` read-only properties.
 - `final_only` option in `Dynamics.time_evolution_operator()` and `Dynamics.average_gate_fidelity()` to keep only the
   final propagator instead of one dense matrix per time sample.
-- `ControlModel.s` read-only property with the normalized time grid of the control solution.
+- A read-only property with the normalized time grid of the control solution (now `ControlModel.tau`).
 - `CITATION.cff` with the citation metadata of the package.
 
 ### Changed

@@ -157,7 +157,7 @@ def _isolated_zero_metric_model() -> ControlModel:
 
 @pytest.mark.parametrize("solver_kwargs", [None, {"rtol": 1e-10}])
 def test_isolated_zero_of_the_metric_is_passed_by_the_default_solver(solver_kwargs):
-    # The default solver integrates ds/dx = sqrt(G) / a_tilde, which is finite at G = 0. Before, the speed
+    # The default solver integrates dtau/dx = sqrt(G) / a_tilde, which is finite at G = 0. Before, the speed
     # a_tilde / sqrt(G) was built first and raised "ODE speed factor is non-finite or non-positive".
     model = _isolated_zero_metric_model()
 
@@ -168,8 +168,8 @@ def test_isolated_zero_of_the_metric_is_passed_by_the_default_solver(solver_kwar
     assert pulse[0] == -1.0 and pulse[-1] == 1.0
     assert np.all(np.diff(pulse) >= 0)
     # The problem is symmetric in x, so the zero at x = 0 is passed at half the normalized time. The pulse jumps
-    # through it, so s(x = 0) is only resolved to one sample of the pulse.
-    assert abs(np.interp(0.0, pulse, model.s) - 0.5) <= 1.0 / (401 - 1)
+    # through it, so tau(x = 0) is only resolved to one sample of the pulse.
+    assert abs(np.interp(0.0, pulse, model.tau) - 0.5) <= 1.0 / (401 - 1)
 
 
 def test_isolated_zero_of_the_metric_is_rejected_clearly_by_a_custom_solver():
@@ -291,7 +291,7 @@ def test_custom_solver_that_leaves_the_geodesic_is_rejected() -> None:
     model = affine_lz_model(65, 2.0, 2.0)
 
     def early_arrival(fun, t_span, y0, t_eval=None, **kwargs):
-        # Reaches pulse_final at s = 0.5 and then stays there: right endpoint, wrong pulse.
+        # Reaches pulse_final at tau = 0.5 and then stays there: right endpoint, wrong pulse.
         del fun, t_span, kwargs
         assert t_eval is not None
         return t_eval, np.interp(t_eval, [0.0, 0.5, 1.0], [y0[0], 5.0, 5.0])[np.newaxis, :]
@@ -589,7 +589,7 @@ class TestPulseAccuracyIsReused:
         model.set_control(alpha=3.0)
 
         assert model.control_sol.shape == (50,)
-        assert model.s.shape == (50,)
+        assert model.tau.shape == (50,)
 
     def test_synthesize_pulse_resolves_with_previous_accuracy(self):
         model = configured_model()
@@ -614,15 +614,15 @@ class TestPulseAccuracyIsReused:
 
         assert model.control_sol.shape == (ControlModel._DEFAULT_PULSE_ACCURACY,)
 
-    def test_s_property_is_a_copy_of_the_normalized_grid(self):
+    def test_tau_property_is_a_copy_of_the_normalized_grid(self):
         model = configured_model()
         model.solve_problem(pulse_accuracy=30)
 
-        s = model.s
-        s[0] = 5.0
+        tau = model.tau
+        tau[0] = 5.0
 
-        assert model.s[0] == 0.0
-        assert model.s[-1] == pytest.approx(1.0)
+        assert model.tau[0] == 0.0
+        assert model.tau[-1] == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------

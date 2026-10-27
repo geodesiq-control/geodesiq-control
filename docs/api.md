@@ -33,6 +33,10 @@ dynamics = Dynamics(model, duration=10.0)
 Arrays returned by public properties are defensive copies. The `parameters` property is read-only. A synthesized pulse
 is available only after `synthesize_pulse(duration=...)`; the package never guesses a physical duration.
 
+`model.tau` is the normalized time grid, `tau = t / t_f`, for `model.control_sol`, matching the manuscript's
+notation. Both properties solve the problem lazily when needed and return defensive copies. `PulseControl.times`
+and `Dynamics.times` contain physical times.
+
 ## Dynamics with optimal or custom pulses
 
 `Dynamics(model, ...)` accepts exactly one pulse source:
@@ -62,6 +66,32 @@ few samples can deviate strongly between them and overshoot the sampled range). 
 times, ramps = pulse.discretized_pulse(linear_steps=5)
 awg = Dynamics(model, times=times, pulse=ramps, order=0)  # sample-and-hold
 ```
+
+## Dynamics solver accuracy
+
+Pass `options` to the constructor to configure QuTiP propagation for state fidelity, populations and evolution
+operators, including the operators computed by `average_gate_fidelity()`:
+
+```python
+accurate = Dynamics(model, duration=10.0,
+                    options={"atol": 1e-10, "rtol": 1e-8, "nsteps": 10000, "max_step": 0.01, "method": "adams"})
+final_operator = accurate.time_evolution_operator(final_only=True)[0]
+```
+
+`options=None` keeps QuTiP's numerical defaults; tighter settings are opt-in. The dictionary is deep-copied at
+construction and for each solver call. The methods override `store_states` and, when required, `store_final_state`
+to preserve their documented outputs. QuTiP checks option names and method-specific support when evolution is
+requested; rejected configurations raise `ValidationError`. Integration failures raise `SolverError`, chained from
+QuTiP's original exception; increasing `nsteps` can resolve an internal step-count limit.
+
+Check convergence by tightening `atol` and `rtol` and reducing `max_step`. Choose `max_step` below half the width of
+the narrowest pulse feature; output sample times alone do not bound internal integration steps. Supported settings
+depend on the method; see the [QuTiP solver options](https://qutip.readthedocs.io/en/stable/guide/dynamics/dynamics-options.html).
+
+QuTiP normalizes evolved states by default, which can hide norm drift. Set `normalize_output=False` to inspect
+probability conservation. Propagated operators are not normalized; check their unitarity separately. These controls
+address time-integration error: refine pulse sampling, interpolation, the eigensystem/metric grid and SVD truncation
+separately when assessing overall accuracy.
 
 ## State populations
 

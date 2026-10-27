@@ -112,10 +112,10 @@ class ControlModel:
     # The matrix elements |<m|dH/dx|n>| are computed in chunks of grid points whose complex (chunk, dim, dim)
     # temporaries take about this many bytes, so the products do not need further full-size stacks.
     _MATRIX_ELEMENT_CHUNK_BYTES = 2**22
-    # A custom ODE solver's pulse x(s) may deviate from the exact geodesic by at most _SOLVER_S_TOL in normalized
-    # time s, i.e. |s(x(s_i)) - s_i| <= _SOLVER_S_TOL at every sample (solve_ivp at its default rtol=1e-3 stays below
-    # about 5e-3).
-    _SOLVER_S_TOL = 1e-2
+    # A custom ODE solver's pulse x(tau) may deviate from the exact geodesic by at most _SOLVER_TAU_TOL in normalized
+    # time tau, i.e. |tau(x(tau_i)) - tau_i| <= _SOLVER_TAU_TOL at every sample
+    # (solve_ivp at its default rtol=1e-3 stays below about 5e-3).
+    _SOLVER_TAU_TOL = 1e-2
 
     def __init__(
         self,
@@ -215,7 +215,7 @@ class ControlModel:
         self._a_tilde: float | None = None
 
         # Initialize pulse parameters
-        self._s: np.ndarray | None = None
+        self._tau: np.ndarray | None = None
         self._control_pulse: np.ndarray | None = None
         self._control_sol: np.ndarray | None = None
 
@@ -510,7 +510,7 @@ class ControlModel:
 
     @property
     def control_sol(self) -> NDArray[np.float64]:
-        """Return the optimal control pulse on the normalized time grid ``s``, solving the problem if needed."""
+        """Return the optimal control pulse on the normalized time grid ``tau``, solving the problem if needed."""
         if not self._flags["ode_solved"]:
             self.solve_problem()  # Attempt to solve the ODE if not already solved (same accuracy as last time)
         if self._control_sol is None:
@@ -518,13 +518,13 @@ class ControlModel:
         return self._control_sol.copy()
 
     @property
-    def s(self) -> NDArray[np.float64]:
-        """Return the normalized time grid (s = t / t_f) of the control solution, solving the problem if needed."""
+    def tau(self) -> NDArray[np.float64]:
+        """Return the normalized time grid (tau = t / t_f) of the control solution, solving the problem if needed."""
         if not self._flags["ode_solved"]:
             self.solve_problem()
-        if self._s is None:
+        if self._tau is None:
             raise SolverError("The normalized time grid is unavailable after solving.")
-        return self._s.copy()
+        return self._tau.copy()
 
     @property
     def eigenenergies(self) -> NDArray[np.float64]:
@@ -774,10 +774,10 @@ class ControlModel:
             Callable used to integrate the ODE. Defaults to ``scipy.integrate.solve_ivp``.
             Expected signature is solver(fun, t_span, y0, t_eval=..., **kwargs), and the return
             value must expose ``t`` and ``y`` (or be a ``(t, y)`` tuple). A custom solver integrates the forward
-            equation dx/ds, normalized so that its exact solution ends at ``pulse_final``. Its result must follow the
-            exact normalized time s(x) to within 1e-2 at every sample, otherwise a ``SolverError`` is raised; both
+            equation dx/dtau, normalized so that its exact solution ends at ``pulse_final``. Its result must follow the
+            exact normalized time tau(x) to within 1e-2 at every sample, otherwise a ``SolverError`` is raised; both
             endpoints are then set exactly. The forward equation is badly conditioned for large exponents, where the
-            default solver (which integrates the inverse equation ds/dx) is preferable.
+            default solver (which integrates the inverse equation dtau/dx) is preferable.
         solver_kwargs : dict[str, Any] | None
             Additional keyword arguments forwarded to ``solver``. Stored as a deep copy and reused by later calls until
             replaced; values may be arrays. For the default ``solve_ivp``, the keys ``dense_output``, ``events`` and
@@ -793,7 +793,7 @@ class ControlModel:
         -----
         ``solver``, ``solver_kwargs``, ``metric_integrator``, ``metric_integrator_kwargs`` and ``pulse_accuracy`` are
         stored on the model. An argument left as None keeps the stored value, so a choice passed once is reused by
-        every later ``solve_problem()`` call and by the automatic re-solves of ``control_sol``, ``s`` and
+        every later ``solve_problem()`` call and by the automatic re-solves of ``control_sol``, ``tau`` and
         ``synthesize_pulse()`` (and therefore of ``Dynamics(duration=..., model=...)``). To return to the defaults,
         pass them explicitly: ``solve_problem(solver=scipy.integrate.solve_ivp, solver_kwargs={},
         metric_integrator=scipy.integrate.romb, metric_integrator_kwargs={})``. Changing any of them invalidates only
@@ -1401,14 +1401,14 @@ class ControlModel:
         if self._control_pulse is None or self._metric_tensor is None or self._a_tilde is None:
             raise SolverError("ODE cannot be solved before the control pulse and metric tensor are available.")
 
-        # ds/dx = sqrt(G) / a_tilde stays finite where the metric vanishes (the pulse passes such a point infinitely
-        # fast), unlike the speed dx/ds = a_tilde / sqrt(G).
+        # dtau/dx = sqrt(G) / a_tilde stays finite where the metric vanishes (the pulse passes such a point infinitely
+        # fast), unlike the speed dx/dtau = a_tilde / sqrt(G).
         inverse_speed = np.sqrt(self._metric_tensor) / self._a_tilde
         if not np.all(np.isfinite(inverse_speed)) or np.any(inverse_speed < 0):
-            raise MetricComputationError("ODE rate ds/dx = sqrt(G) / a_tilde is non-finite or negative.")
+            raise MetricComputationError("ODE rate dtau/dx = sqrt(G) / a_tilde is non-finite or negative.")
 
         order = np.argsort(self._control_pulse)
-        # Both solver paths use the PCHIP interpolant of ds/dx, which keeps the non-negative samples non-negative.
+        # Both solver paths use the PCHIP interpolant of dtau/dx, which keeps the non-negative samples non-negative.
         inverse_interpolation = PchipInterpolator(
             self._control_pulse[order],
             inverse_speed[order],
@@ -1422,20 +1422,20 @@ class ControlModel:
         x_start = float(self._control_pulse[0])
         x_end = float(self._control_pulse[-1])
 
-        s = np.linspace(0.0, 1.0, pulse_accuracy)
+        tau = np.linspace(0.0, 1.0, pulse_accuracy)
         kwargs = dict(self._solver_kwargs)
         if self._solver is solve_ivp:
             reserved = {"dense_output", "events", "t_eval"}.intersection(kwargs)
             if reserved:
                 names = ", ".join(sorted(reserved))
                 raise ValidationError(f"solver_kwargs must not override internally managed option(s): {names}.")
-            # The ODE dx/ds = a_tilde / sqrt(G(x)) is autonomous, so solve its inverse ds/dx = sqrt(G(x)) / a_tilde and
-            # invert s(x) afterward. The speed can span many orders of magnitude (e.g. large alpha/beta), which makes
+            # The ODE dx/dtau = a_tilde / sqrt(G(x)) is autonomous; solve its inverse dtau/dx = sqrt(G(x)) / a_tilde and
+            # invert tau(x) afterward. The speed can span many orders of magnitude (e.g. large alpha/beta), which makes
             # the forward problem require steps below floating-point spacing, while the inverse is well conditioned.
             x_grid = np.linspace(x_start, x_end, max(self._control_pulse.size, 8 * pulse_accuracy))
 
             if kwargs:
-                # Errors in s are amplified by dx/ds when inverting, hence the tight default tolerances.
+                # Errors in tau are amplified by dx/dtau when inverting, hence the tight default tolerances.
                 kwargs = {"method": "RK45", "atol": 1e-12, "rtol": 1e-10, **kwargs}
 
                 def inverse_model(x: float, _: np.ndarray) -> np.ndarray:
@@ -1458,31 +1458,31 @@ class ControlModel:
                     raise SolverError(str(sol.message))
                 if sol.sol is None:
                     raise SolverError("ODE solution did not reach the requested final control value.")
-                s_grid = np.asarray(sol.sol(x_grid), dtype=float)[0]
+                tau_grid = np.asarray(sol.sol(x_grid), dtype=float)[0]
             else:
                 # Without solver options, integrate the interpolant exactly through its piecewise-polynomial
                 # antiderivative, which is deterministic and free of step-size control.
-                s_grid = direction * (antiderivative(x_grid) - antiderivative(x_start))
+                tau_grid = direction * (antiderivative(x_grid) - antiderivative(x_start))
 
-            endpoint_time = float(s_grid[-1])
+            endpoint_time = float(tau_grid[-1])
             if not np.isfinite(endpoint_time) or endpoint_time <= 0:
                 raise SolverError("ODE endpoint time must be finite and strictly positive.")
-            s_grid = np.maximum.accumulate(s_grid / endpoint_time)
+            tau_grid = np.maximum.accumulate(tau_grid / endpoint_time)
             # Keep only strictly increasing nodes; flat stretches occur where the metric is numerically negligible.
-            keep = np.concatenate(([True], np.diff(s_grid) > 0))
+            keep = np.concatenate(([True], np.diff(tau_grid) > 0))
             if np.count_nonzero(keep) < 2:
                 raise SolverError("ODE solution did not reach the requested final control value.")
-            t = s
-            y = PchipInterpolator(s_grid[keep], x_grid[keep])(np.clip(s, s_grid[keep][0], s_grid[keep][-1]))
+            t = tau
+            y = PchipInterpolator(tau_grid[keep], x_grid[keep])(np.clip(tau, tau_grid[keep][0], tau_grid[keep][-1]))
         else:
-            # The forward equation divides by ds/dx, so it is undefined where the metric vanishes.
+            # The forward equation divides by dtau/dx, so it is undefined where the metric vanishes.
             zeros = inverse_speed == 0
             if np.any(zeros):
                 sample = ", ".join(f"{value:.6g}" for value in self._control_pulse[zeros][:3])
                 raise MetricComputationError(
                     f"The metric tensor is zero at control value(s) {sample}, where the forward equation "
-                    "dx/ds = a_tilde / sqrt(G) of a custom solver is infinite. Use the default solver "
-                    "(scipy.integrate.solve_ivp), which integrates ds/dx instead."
+                    "dx/dtau = a_tilde / sqrt(G) of a custom solver is infinite. Use the default solver "
+                    "(scipy.integrate.solve_ivp), which integrates dtau/dx instead."
                 )
             # Normalize the forward ODE with the exact integral of the interpolant it uses, so that x(1) = x_end.
             # (a_tilde comes from the raw samples and differs from it, which made the pulse overshoot or fall short.)
@@ -1497,7 +1497,7 @@ class ControlModel:
                 return np.where(direction * (x_end - y) > 0, direction * speed, 0.0)
 
             try:
-                sol = self._solver(model, [0.0, 1.0], [x_start], t_eval=s, **kwargs)
+                sol = self._solver(model, [0.0, 1.0], [x_start], t_eval=tau, **kwargs)
             except TypeError as exc:
                 raise ValidationError(
                     "Invalid solver call: ensure solver accepts (fun, t_span, y0, t_eval=..., **kwargs)."
@@ -1532,19 +1532,19 @@ class ControlModel:
         if np.any(np.diff(t) <= 0) or not np.isclose(t[0], 0.0) or not np.isclose(t[-1], 1.0):
             raise SolverError("Solver time grid must be strictly increasing and span [0, 1].")
         if self._solver is not solve_ivp:
-            # Validate the whole trajectory against the exact normalized time s(x) of the interpolant: an endpoint
+            # Validate the whole trajectory against the exact normalized time tau(x) of the interpolant: an endpoint
             # check alone would accept a pulse that reaches x_end early and then stays there.
-            s_exact = direction * (antiderivative(np.clip(control, lower, upper)) - antiderivative(x_start)) / length
-            deviation = float(np.max(np.abs(s_exact - t)))
-            if not np.isfinite(deviation) or deviation > self._SOLVER_S_TOL:
+            tau_exact = direction * (antiderivative(np.clip(control, lower, upper)) - antiderivative(x_start)) / length
+            deviation = float(np.max(np.abs(tau_exact - t)))
+            if not np.isfinite(deviation) or deviation > self._SOLVER_TAU_TOL:
                 raise SolverError(
                     f"Custom solver result deviates from the geodesic by {deviation:.3g} in normalized time "
-                    f"(tolerance {self._SOLVER_S_TOL:g}). Tighten its tolerances (e.g. rtol) or use the default "
+                    f"(tolerance {self._SOLVER_TAU_TOL:g}). Tighten its tolerances (e.g. rtol) or use the default "
                     "solver."
                 )
         control[0] = x_start
         control[-1] = x_end
-        self._s = t.copy()
+        self._tau = t.copy()
         self._control_sol = control.copy()
         self._previous_pulse_accuracy = pulse_accuracy
         self._flags["ode_solved"] = True

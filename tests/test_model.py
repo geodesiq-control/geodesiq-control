@@ -970,7 +970,7 @@ class TestSolveProblem:
 
     def test_solve_problem_recomputes_ode_when_pulse_accuracy_changes(self, configured_ham):
         configured_ham.solve_problem(pulse_accuracy=25)
-        first_s = configured_ham._s.copy()
+        first_tau = configured_ham._tau.copy()
         first_sol = configured_ham._control_sol.copy()
         assert configured_ham._previous_pulse_accuracy == 25
 
@@ -978,9 +978,9 @@ class TestSolveProblem:
 
         assert configured_ham._flags["ode_solved"] is True
         assert configured_ham._previous_pulse_accuracy == 60
-        assert first_s.shape == (25,)
+        assert first_tau.shape == (25,)
         assert first_sol.shape == (25,)
-        assert configured_ham._s.shape == (60,)
+        assert configured_ham._tau.shape == (60,)
         assert configured_ham._control_sol.shape == (60,)
 
     def test_solve_problem_with_numerical_partial(self):
@@ -1108,7 +1108,7 @@ class TestSolveProblem:
 
     @pytest.mark.parametrize("solver_kwargs", [{"rtol": 1e-10}, {"method": "LSODA", "rtol": 1e-10, "atol": 1e-12}])
     def test_default_solver_kwargs_path_matches_the_exact_antiderivative(self, configured_ham, solver_kwargs):
-        # With solver_kwargs, the default solver integrates ds/dx with solve_ivp instead of through the exact PCHIP
+        # With solver_kwargs, the default solver integrates dtau/dx with solve_ivp instead of through the exact PCHIP
         # antiderivative; both must give the same pulse (P-01).
         configured_ham.solve_problem(pulse_accuracy=200)
         exact = configured_ham.control_sol.copy()
@@ -1656,9 +1656,9 @@ class TestLandauZenerAnalytical:
         ham.set_control(control_name="lam", pulse_initial=pulse_0, pulse_final=pulse_f, initial_state=0, alpha=0,
                         beta=0, num_steps=2 ** 8 + 1, )
         ham.solve_problem()
-        s = ham.s
+        tau = ham.tau
 
-        expected_control = pulse_0 * (1 - 2 * s)
+        expected_control = pulse_0 * (1 - 2 * tau)
 
         np.testing.assert_allclose(ham.control_sol, expected_control, atol=1e-2,
                                    err_msg="Optimal control for LZ n_+ = 0 is wrong")
@@ -1675,9 +1675,9 @@ class TestLandauZenerAnalytical:
         ham.set_control(control_name="lam", pulse_initial=pulse_0, pulse_final=pulse_f, initial_state=0, alpha=1,
                         beta=1, num_steps=2 ** 8 + 1, )
         ham.solve_problem()
-        s = ham.s
+        tau = ham.tau
 
-        expected_control = delta * np.sinh((1 - 2 * s) * np.arcsinh(pulse_0 / delta))
+        expected_control = delta * np.sinh((1 - 2 * tau) * np.arcsinh(pulse_0 / delta))
 
         np.testing.assert_allclose(ham.control_sol, expected_control, atol=1e-2,
                                    err_msg="Optimal control for LZ n_+ = 1 is wrong")
@@ -1694,9 +1694,9 @@ class TestLandauZenerAnalytical:
         ham.set_control(control_name="lam", pulse_initial=pulse_0, pulse_final=pulse_f, initial_state=0, alpha=2,
                         beta=2, num_steps=2 ** 8 + 1, )
         ham.solve_problem()
-        s = ham.s
+        tau = ham.tau
 
-        expected_control = -delta * np.tan((2 * s - 1) * np.arctan(pulse_0 / delta))
+        expected_control = -delta * np.tan((2 * tau - 1) * np.arctan(pulse_0 / delta))
 
         np.testing.assert_allclose(ham.control_sol, expected_control, atol=1e-2,
                                    err_msg="Optimal control for LZ n_+ = 2 is wrong")
@@ -1713,9 +1713,9 @@ class TestLandauZenerAnalytical:
         ham.set_control(control_name="lam", pulse_initial=pulse_0, pulse_final=pulse_f, initial_state=0, alpha=3,
                         beta=3, num_steps=2 ** 8 + 1, )
         ham.solve_problem()
-        s = ham.s
+        tau = ham.tau
 
-        expected_control = (1 - 2 * s) * delta * pulse_0 / np.sqrt(delta ** 2 - 4 * (s - 1) * s * pulse_0 ** 2)
+        expected_control = (1 - 2 * tau) * delta * pulse_0 / np.sqrt(delta ** 2 - 4 * (tau - 1) * tau * pulse_0 ** 2)
 
         np.testing.assert_allclose(ham.control_sol, expected_control, atol=1e-2,
                                    err_msg="Optimal control for LZ n_+ = 3 is wrong")
@@ -1749,7 +1749,7 @@ class TestLandauZenerSweepDirection:
         assert (z_down[0], z_down[-1]) == (5.0, -5.0)
         assert np.all(np.diff(z_up) >= 0)
         assert np.all(np.diff(z_down) <= 0)
-        # z_down(s) = -z_up(s), and by time-reversal symmetry also z_up(1 - s).
+        # z_down(tau) = -z_up(tau), and by time-reversal symmetry also z_up(1 - tau).
         np.testing.assert_allclose(z_down, -z_up, atol=1e-10)
         np.testing.assert_allclose(z_down, z_up[::-1], atol=1e-10)
 
