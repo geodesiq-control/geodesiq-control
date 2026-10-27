@@ -76,6 +76,9 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Fixed
 
+- A custom ODE solver that returns other time points than the requested uniform `t_eval` is resampled onto it (PCHIP),
+  so `tau` is always uniform. Before, its own grid was stored as `tau`, while `Dynamics(duration=...)`,
+  `synthesize_pulse()` and `PulseControl` rebuilt a uniform time grid from the sample count, which distorted the pulse.
 - `Dynamics` captures the model's Hamiltonian at construction (copies of `H_d`/`H_c`, or of the fixed parameters and
   `control_name` of a callable model), as it already did for the pulse and the state indices. Before, the
   propagation was frozen but the endpoint eigenstates and the adiabatic basis of `populations()` used the live model,

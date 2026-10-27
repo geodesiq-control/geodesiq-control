@@ -580,7 +580,11 @@ class ControlModel:
 
     @property
     def tau(self) -> NDArray[np.float64]:
-        """Return the normalized time grid (tau = t / t_f) of the control solution, solving the problem if needed."""
+        """
+        Return the normalized time grid (tau = t / t_f) of the control solution, solving the problem if needed.
+
+        It is always ``linspace(0, 1, pulse_accuracy)``; a custom solver's own time points are resampled onto it.
+        """
         if not self._flags["ode_solved"]:
             self.solve_problem()
         if self._tau is None:
@@ -844,9 +848,11 @@ class ControlModel:
             Expected signature is solver(fun, t_span, y0, t_eval=..., **kwargs), and the return
             value must expose ``t`` and ``y`` (or be a ``(t, y)`` tuple). A custom solver integrates the forward
             equation dx/dtau, normalized so that its exact solution ends at ``pulse_final``. Its result must follow the
-            exact normalized time tau(x) to within 1e-2 at every sample, otherwise a ``SolverError`` is raised; both
-            endpoints are then set exactly. The forward equation is badly conditioned for large exponents, where the
-            default solver (which integrates the inverse equation dtau/dx) is preferable.
+            exact normalized time tau(x) to within 1e-2 at every sample, otherwise a ``SolverError`` is raised. If it
+            returns other time points than the requested uniform ``t_eval``, the pulse is resampled onto that grid
+            (PCHIP), so ``tau`` is always uniform. Both endpoints are then set exactly. The forward equation is badly
+            conditioned for large exponents, where the default solver (which integrates the inverse equation dtau/dx)
+            is preferable.
         solver_kwargs : dict[str, Any] | None
             Additional keyword arguments forwarded to ``solver``. Stored as a deep copy and reused by later calls until
             replaced; values may be arrays. For the default ``solve_ivp``, the keys ``dense_output``, ``events`` and
@@ -1691,6 +1697,11 @@ class ControlModel:
                     f"(tolerance {self._SOLVER_TAU_TOL:g}). Tighten its tolerances (e.g. rtol) or use the default "
                     "solver."
                 )
+            # The pulse is used on a uniform time grid (Dynamics, synthesize_pulse, PulseControl), so a solver that
+            # returns its own time points instead of the requested t_eval is resampled onto it (D-04).
+            if not np.allclose(t, tau, rtol=0.0, atol=1e-12):
+                control = PchipInterpolator(t, control)(tau)
+                t = tau
         control[0] = x_start
         control[-1] = x_end
         self._tau = t.copy()

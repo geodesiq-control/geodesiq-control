@@ -217,6 +217,36 @@ def test_isolated_zero_of_the_metric_is_rejected_clearly_by_a_custom_solver():
         model.solve_problem(solver=functools.partial(solve_ivp, rtol=1e-8))
 
 
+def test_custom_solver_with_its_own_time_grid_is_resampled_onto_a_uniform_tau():
+    # The solver ignores the requested t_eval and returns tau = linspace(0, 1, n)**2. That grid was stored as it was,
+    # while Dynamics and synthesize_pulse rebuilt a uniform one from the sample count, which distorted the pulse (D-04).
+    from geodesiq import Dynamics
+
+    raw = {}
+
+    def squared_grid_solver(fun, t_span, y0, t_eval, **kwargs):
+        sol = solve_ivp(fun, t_span, y0, t_eval=np.linspace(0.0, 1.0, len(t_eval)) ** 2, rtol=1e-10, atol=1e-12)
+        raw["t"], raw["x"] = sol.t, sol.y[0]
+        return sol
+
+    def lz_model() -> ControlModel:
+        model = ControlModel(H_d=np.array([[0.0, 1.0], [1.0, 0.0]]), H_c=np.diag([1.0, -1.0]))
+        model.set_control(pulse_initial=-10.0, pulse_final=10.0, initial_state=0, alpha=2.0, beta=2.0)
+        return model
+
+    model = lz_model()
+    model.solve_problem(pulse_accuracy=200, solver=squared_grid_solver)
+    reference = lz_model()
+    reference.solve_problem(pulse_accuracy=200)
+
+    np.testing.assert_array_equal(model.tau, np.linspace(0.0, 1.0, 200))
+    np.testing.assert_allclose(model.control_sol, reference.control_sol, rtol=0, atol=0.1)
+    # The optimal pulse at a duration is the solver's own samples at their physical times.
+    fidelity = Dynamics(model, duration=20.0).state_fidelity()
+    exact = Dynamics(model, times=20.0 * raw["t"], pulse=raw["x"], order=3).state_fidelity()
+    assert fidelity == pytest.approx(exact, abs=1e-6)
+
+
 def test_degenerate_gap_raises_clear_metric_error():
     model = ControlModel(degenerate_hamiltonian, degenerate_partial)
     model.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0, beta=2.0,
