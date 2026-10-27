@@ -722,6 +722,16 @@ class ControlModel:
         metric_integrator_kwargs : dict[str, Any] | None
             Additional keyword arguments forwarded to ``metric_integrator``. Stored as a deep copy and reused by later
             calls until replaced; values may be arrays (e.g. ``x`` for ``scipy.integrate.trapezoid``).
+
+        Notes
+        -----
+        ``solver``, ``solver_kwargs``, ``metric_integrator``, ``metric_integrator_kwargs`` and ``pulse_accuracy`` are
+        stored on the model. An argument left as None keeps the stored value, so a choice passed once is reused by
+        every later ``solve_problem()`` call and by the automatic re-solves of ``control_sol``, ``s`` and
+        ``synthesize_pulse()`` (and therefore of ``Dynamics(duration=..., model=...)``). To return to the defaults,
+        pass them explicitly: ``solve_problem(solver=scipy.integrate.solve_ivp, solver_kwargs={},
+        metric_integrator=scipy.integrate.romb, metric_integrator_kwargs={})``. Changing any of them invalidates only
+        the dependent cached results (the metric for the integrator, the pulse for the solver).
         """
         if pulse_accuracy is None:
             pulse_accuracy = (

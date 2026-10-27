@@ -6,7 +6,7 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
-from scipy.integrate import solve_ivp
+from scipy.integrate import romb, solve_ivp
 
 from geodesiq import ControlModel
 from geodesiq._utils import is_hermitian
@@ -215,6 +215,34 @@ def test_synthesis_preserves_custom_solver_configuration():
     model.synthesize_pulse(duration=1.0)
 
     assert calls["count"] == 1
+
+
+def test_solver_choice_persists_and_defaults_can_be_restored():
+    # Documented behaviour of solve_problem (C-19): a solver or integrator passed once is reused by later calls and by
+    # automatic re-solves, until the defaults are passed explicitly.
+    model = configured_model()
+    calls = {"solver": 0, "integrator": 0}
+
+    def custom_solver(fun, t_span, y0, t_eval=None, **kwargs):
+        calls["solver"] += 1
+        return solve_ivp(fun, t_span, y0, t_eval=t_eval, **kwargs)
+
+    def custom_integrator(values, dx):
+        calls["integrator"] += 1
+        return romb(values, dx=dx)
+
+    model.solve_problem(pulse_accuracy=30, solver=custom_solver, solver_kwargs={"rtol": 1e-10, "atol": 1e-12},
+                        metric_integrator=custom_integrator, )
+    model.alpha = 3.0  # invalidates the metric and the pulse
+    _ = model.control_sol
+    assert calls == {"solver": 2, "integrator": 2}
+
+    model.solve_problem(solver=solve_ivp, solver_kwargs={}, metric_integrator=romb, metric_integrator_kwargs={})
+    model.alpha = 2.0
+    _ = model.control_sol
+    assert calls == {"solver": 2, "integrator": 2}
+    assert model._solver is solve_ivp and model._solver_kwargs == {}
+    assert model._metric_integrator is romb and model._metric_integrator_kwargs == {}
 
 
 def affine_lz_model(num_steps: int, alpha: float, beta: float, pulse_initial: float = -5.0,
