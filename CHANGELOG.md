@@ -76,6 +76,9 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Fixed
 
+- Document that, with the default `solve_ivp`, `solver_kwargs` act on the inverse equation `dtau/dx`: its independent
+  variable is the control, so `max_step`, `first_step` and `min_step` are in control units and `atol`/`rtol` apply to
+  `tau(x)`. Behaviour is unchanged.
 - The occupied state is followed through true (symmetry-protected) level crossings by eigenvector overlap. Before, the
   state was tracked by its energy index, so at a crossing with a level that the control does not couple to it, the
   "initial state" became that level, and the metric vanished (or `solve_problem()` failed) where it should not. Now

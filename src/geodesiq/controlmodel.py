@@ -812,6 +812,11 @@ class ControlModel:
             Additional keyword arguments forwarded to ``solver``. Stored as a deep copy and reused by later calls until
             replaced; values may be arrays. For the default ``solve_ivp``, the keys ``dense_output``, ``events`` and
             ``t_eval`` are reserved, and a key that the chosen ``method`` does not accept raises ``ValidationError``.
+            With the default solver, a non-empty dictionary replaces the exact antiderivative by Runge-Kutta
+            integration of the inverse equation dtau/dx (defaults ``method="RK45"``, ``atol=1e-12``, ``rtol=1e-10``).
+            Its independent variable is the control x, not tau: step options such as ``max_step``, ``first_step`` and
+            ``min_step`` are in units of the control, and ``atol``/``rtol`` apply to tau(x). For example, with
+            x from -500 to 500, ``max_step=1e-2`` takes at least 1e5 steps.
         metric_integrator : Callable[..., Any] | None
             Callable used to compute ``a_tilde`` from ``sqrt(metric_tensor)``. Defaults to
             ``scipy.integrate.romb``.

@@ -1121,6 +1121,28 @@ class TestSolveProblem:
         assert configured_ham.control_sol[0] == -5.0 and configured_ham.control_sol[-1] == 5.0
         np.testing.assert_allclose(configured_ham.control_sol, exact, rtol=0, atol=1e-6)
 
+    def test_default_solver_step_options_are_in_control_units(self, configured_ham, monkeypatch):
+        # The default solver integrates dtau/dx over the control x in [-5, 5], so max_step limits steps in x, not in
+        # tau in [0, 1] (C-10).
+        import geodesiq.controlmodel as controlmodel
+
+        calls = []
+
+        def recording_solve_ivp(fun, t_span, y0, **kwargs):
+            sol = solve_ivp(fun, t_span, y0, **kwargs)
+            calls.append((list(t_span), sol.t))
+            return sol
+
+        monkeypatch.setattr(controlmodel, "solve_ivp", recording_solve_ivp)
+        configured_ham._solver = recording_solve_ivp
+
+        configured_ham.solve_problem(solver_kwargs={"max_step": 0.5})
+
+        (t_span, steps), = calls
+        assert t_span == [-5.0, 5.0]
+        assert steps.size - 1 >= 20  # at least 10 / 0.5 steps in x
+        assert np.max(np.diff(steps)) <= 0.5
+
     @pytest.mark.parametrize("reserved", ["dense_output", "events", "t_eval"])
     def test_default_solver_rejects_internally_managed_kwargs(self, configured_ham, reserved):
         with pytest.raises(ValidationError, match=f"must not override internally managed option\\(s\\): {reserved}"):
