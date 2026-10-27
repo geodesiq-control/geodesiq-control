@@ -7,6 +7,7 @@ from typing import Any, cast
 import numpy as np
 import pytest
 from scipy.integrate import romb, solve_ivp
+from scipy.interpolate import PchipInterpolator
 
 from geodesiq import ControlModel
 from geodesiq._utils import is_hermitian
@@ -170,6 +171,40 @@ def test_isolated_zero_of_the_metric_is_passed_by_the_default_solver(solver_kwar
     # The problem is symmetric in x, so the zero at x = 0 is passed at half the normalized time. The pulse jumps
     # through it, so tau(x = 0) is only resolved to one sample of the pulse.
     assert abs(np.interp(0.0, pulse, model.tau) - 0.5) <= 1.0 / (401 - 1)
+
+
+@pytest.mark.parametrize("solver_kwargs", [None, {"rtol": 1e-10}])
+def test_trailing_zero_metric_interpolates_to_the_final_control_value(monkeypatch, solver_kwargs):
+    # The coupling vanishes for x >= 1, so the metric is zero on (1, 2] and tau(x) is flat there. The x(tau)
+    # interpolant used to keep the first node of that stretch, ending at x(1) ~ 1 instead of 2, and only the
+    # endpoint overwrite hid it (C-14).
+    sz = np.diag([1.0, -1.0])
+    sx = np.array([[0.0, 1.0], [1.0, 0.0]])
+    model = ControlModel(lambda x: x * sz + 0.3 * max(0.0, 1.0 - x) ** 3 * sx,
+                         partial_H_func=lambda x: sz - 0.9 * max(0.0, 1.0 - x) ** 2 * sx)
+    model.set_control(control_name="x", pulse_initial=-1.0, pulse_final=2.0, initial_state=0, alpha=2.0, beta=1.0,
+                      num_steps=513, )
+
+    # Record the nodes of each interpolant; the last one built in _solve_ode is x(tau).
+    calls = []
+
+    def recording_pchip(x, y, *args, **kwargs):
+        calls.append((np.asarray(x), np.asarray(y)))
+        return PchipInterpolator(x, y, *args, **kwargs)
+
+    monkeypatch.setattr("geodesiq.controlmodel.PchipInterpolator", recording_pchip)
+
+    with pytest.warns(NumericalStabilityWarning, match="Metric tensor is zero or numerically singular"):
+        model.solve_problem(pulse_accuracy=201, solver_kwargs=solver_kwargs)
+
+    tau_nodes, x_nodes = calls[-1]
+    assert tau_nodes[-1] == 1.0 and x_nodes[-1] == 2.0
+    assert np.all(np.diff(tau_nodes) > 0)
+    pulse = model.control_sol
+    assert pulse[0] == -1.0 and pulse[-1] == 2.0
+    assert np.all(np.diff(pulse) >= 0)
+    # The geodesic passes the zero-metric stretch in zero time, so the pulse still jumps from about 1 to 2 there.
+    assert pulse[-2] < 1.0
 
 
 def test_isolated_zero_of_the_metric_is_rejected_clearly_by_a_custom_solver():

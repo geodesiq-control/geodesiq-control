@@ -1475,6 +1475,10 @@ class ControlModel:
             tau_grid = np.maximum.accumulate(tau_grid / endpoint_time)
             # Keep only strictly increasing nodes; flat stretches occur where the metric is numerically negligible.
             keep = np.concatenate(([True], np.diff(tau_grid) > 0))
+            # In a trailing flat stretch keep its last node (x_end) instead of its first, so that x(1) = x_end. The
+            # pulse still jumps there: a vanishing metric means the geodesic passes that stretch in zero time.
+            keep[tau_grid == tau_grid[-1]] = False
+            keep[-1] = True
             if np.count_nonzero(keep) < 2:
                 raise SolverError("ODE solution did not reach the requested final control value.")
             t = tau
