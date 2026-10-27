@@ -160,7 +160,7 @@ class Dynamics:
             self._pulse = np.asarray(model.control_sol, dtype=float)
             self._boundary_controls = (float(control_grid[0]), float(control_grid[-1]))
             self._duration = duration
-            self._pulse_times = duration * np.linspace(0.0, 1.0, len(self._pulse))
+            self._pulse_times = duration * np.linspace(0.0, 1.0, len(self._pulse), dtype=np.float64)
 
         # The pulse between samples, with the same interpolation as the propagated Hamiltonian.
         self._pulse_coefficient = qt.coefficient(self._pulse, tlist=self._pulse_times, order=self._order)

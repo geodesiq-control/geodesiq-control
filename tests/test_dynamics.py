@@ -171,11 +171,12 @@ class TestSolverOptions:
     @pytest.mark.filterwarnings("ignore:.*Excess work done.*")
     def test_nsteps_can_recover_a_real_integration_failure(self):
         model = ControlModel(H_d=100 * qt.sigmax().full(), H_c=np.zeros((2, 2)))
-        kwargs = {"times": [0, 1], "pulse": [0, 0]}
+        times = [0, 1]
+        pulse = [0, 0]
         with pytest.raises(SolverError) as error:
-            Dynamics(model, **kwargs, options={"nsteps": 1}).time_evolution_operator(final_only=True)
+            Dynamics(model, times=times, pulse=pulse, options={"nsteps": 1}).time_evolution_operator(final_only=True)
         assert isinstance(error.value.__cause__, IntegratorException)
-        final = Dynamics(model, **kwargs, options={"nsteps": 10000, "atol": 1e-11, "rtol": 1e-11})
+        final = Dynamics(model, times=times, pulse=pulse, options={"nsteps": 10000, "atol": 1e-11, "rtol": 1e-11})
         np.testing.assert_allclose(final.time_evolution_operator(final_only=True)[0].full(),
                                    (-100j * qt.sigmax()).expm().full(), atol=1e-7)
 
