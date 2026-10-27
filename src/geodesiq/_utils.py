@@ -250,6 +250,135 @@ def traceless(matrices: np.ndarray) -> np.ndarray:
     return array - offset[..., None, None] * np.eye(dimension)
 
 
+def degenerate_clusters(energies: np.ndarray, rtol: float) -> list[tuple[int, int, int]]:
+    """
+    Groups of degenerate eigenstates, as ``(grid index, first state, last state)`` with ``last > first``.
+
+    Two neighbouring levels are degenerate if their gap is at most ``rtol`` times the spectral bandwidth at that point.
+    ``energies`` are sorted in increasing order along the last axis, with shape (n_points, dim).
+    """
+    tolerance = rtol * np.ptp(energies, axis=1)
+    degenerate = np.diff(energies, axis=1) <= tolerance[:, None]
+    clusters = []
+    for point in np.flatnonzero(np.any(degenerate, axis=1)):
+        edges = np.diff(np.concatenate(([0], degenerate[point].astype(np.int8), [0])))
+        starts, stops = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+        clusters.extend((int(point), int(start), int(stop)) for start, stop in zip(starts, stops, strict=True))
+    return clusters
+
+
+def rotate_degenerate_subspaces(eigenvectors: np.ndarray, partial_H: np.ndarray, clusters: list) -> None:
+    """
+    Choose the eigenvectors of each degenerate subspace so that they diagonalize dH/dx within it (in place).
+
+    ``eigh`` returns an arbitrary basis of a degenerate subspace. At a level crossing, the basis that diagonalizes
+    dH/dx is the limit of the eigenvectors on either side, so the states continue smoothly through the crossing, and
+    the matrix element of dH/dx between two crossing states that are not coupled vanishes.
+
+    Parameters
+    ----------
+    eigenvectors : np.ndarray
+        Eigenvectors as columns, with shape (n_points, dim, dim).
+    partial_H : np.ndarray
+        dH/dx, one matrix (affine model) or one per grid point.
+    clusters : list
+        Degenerate subspaces from ``degenerate_clusters``.
+    """
+    for point, first, last in clusters:
+        vectors = eigenvectors[point, :, first : last + 1]
+        derivative = partial_H if partial_H.ndim == 2 else partial_H[point]
+        _, rotation = np.linalg.eigh(vectors.conj().T @ derivative @ vectors)
+        eigenvectors[point, :, first : last + 1] = vectors @ rotation
+
+
+def _permutation_cycles(permutation: np.ndarray) -> list[np.ndarray]:
+    """Cycles of length > 1 of a permutation of ``range(len(permutation))``."""
+    visited = np.zeros(permutation.size, dtype=bool)
+    cycles = []
+    for start in range(permutation.size):
+        cycle = []
+        index = start
+        while not visited[index]:
+            visited[index] = True
+            cycle.append(index)
+            index = int(permutation[index])
+        if len(cycle) > 1:
+            cycles.append(np.array(cycle))
+    return cycles
+
+
+def _uncoupled(matrix_elements: np.ndarray, states: np.ndarray, rtol: float) -> bool:
+    """Whether dH/dx does not couple any two of ``states``, relative to its largest matrix element at that point."""
+    block = matrix_elements[np.ix_(states, states)]
+    off_diagonal = block[~np.eye(states.size, dtype=bool)]
+    return bool(np.all(off_diagonal <= rtol * np.max(matrix_elements)))
+
+
+def crossing_map(eigenvectors: np.ndarray, matrix_elements: np.ndarray, rtol: float, chunk: int) -> np.ndarray:
+    """
+    Follow the eigenstates through true (symmetry-protected) level crossings between neighbouring grid points.
+
+    States are indexed in increasing energy at every grid point. At a true crossing, two states that dH/dx does not
+    couple exchange their energy order, so the index of each one changes. Between two grid points, the eigenvectors
+    are matched by their overlap ``|<m(i-1)|n(i)>|^2``. A change of index is accepted only if dH/dx does not couple the
+    states involved (all matrix elements between them at most ``rtol`` times the largest one, at both points);
+    otherwise it is an anticrossing that the grid does not resolve, and the states keep their energy order.
+
+    Parameters
+    ----------
+    eigenvectors : np.ndarray
+        Eigenvectors as columns, sorted by increasing energy, with shape (n_points, dim, dim).
+    matrix_elements : np.ndarray
+        ``|<m|dH/dx|n>|`` at every grid point, with shape (n_points, dim, dim).
+    rtol : float
+        Relative tolerance below which two states count as uncoupled.
+    chunk : int
+        Number of grid points whose overlaps are computed together.
+
+    Returns
+    -------
+    np.ndarray
+        Integer array with shape (n_points, dim). Entry ``[i, m]`` is the index at grid point ``i`` of the state with
+        index ``m`` at grid point ``i - 1``. Row 0, and every row without a crossing, is ``range(dim)``.
+    """
+    from scipy.optimize import linear_sum_assignment
+
+    n_points, dimension = eigenvectors.shape[:2]
+    state_map = np.tile(np.arange(dimension), (n_points, 1))
+    # A state whose overlap with itself at the previous point exceeds 1/2 has the largest overlap with itself, so its
+    # index cannot have changed. The full overlap matrix is only needed where this fails for some state.
+    candidates = []
+    for start in range(1, n_points, chunk):
+        block = slice(start, min(start + chunk, n_points))
+        previous = eigenvectors[block.start - 1 : block.stop - 1]
+        same = np.abs(np.einsum("pij,pij->pj", previous.conj(), eigenvectors[block])) ** 2
+        candidates.extend(start + np.flatnonzero(np.any(same <= 0.5, axis=1)))
+
+    for point in candidates:
+        overlap = np.abs(eigenvectors[point - 1].conj().T @ eigenvectors[point]) ** 2
+        _, permutation = linear_sum_assignment(overlap, maximize=True)
+        for cycle in _permutation_cycles(permutation):
+            if _uncoupled(matrix_elements[point - 1], cycle, rtol) and _uncoupled(
+                matrix_elements[point], permutation[cycle], rtol
+            ):
+                state_map[point, cycle] = permutation[cycle]
+    return state_map
+
+
+def follow_state(state_map: np.ndarray, state: int) -> np.ndarray:
+    """
+    Energy index of the state that starts with index ``state``, at every grid point of a ``crossing_map``.
+
+    Without true crossings, it is ``state`` everywhere.
+    """
+    occupied = np.empty(state_map.shape[0], dtype=int)
+    for point in range(state_map.shape[0]):
+        if point > 0:
+            state = int(state_map[point, state])
+        occupied[point] = state
+    return occupied
+
+
 def _gap_minima(gap: np.ndarray) -> np.ndarray:
     """Mask of the local minima of a sampled energy gap, including minima at the ends of the grid."""
     is_min = np.ones(gap.shape, dtype=bool)
@@ -331,11 +460,14 @@ class DiabaticList:
         return matrix
 
 
-def build_dia_list(energies: np.ndarray, initial_state: int, final_state: int) -> DiabaticList:
+def build_dia_list(
+    energies: np.ndarray, initial_state: int, final_state: int, state_map: np.ndarray | None = None
+) -> DiabaticList:
     """
     Build the adiabatic/diabatic transition mask along the control grid.
 
-    The occupied instantaneous eigenstate starts in ``initial_state`` and is followed along the grid. At every
+    The occupied instantaneous eigenstate starts in ``initial_state`` and is followed along the grid, also through true
+    level crossings given by ``state_map``, where it changes its energy index without a diabatic passage. At every
     anticrossing (local minimum of the gap) between the occupied state ``k`` and its neighbour ``k + d``, with
     ``d = sign(final_state - initial_state)``, the passage is diabatic and the occupied state becomes ``k + d``. All
     other anticrossings, including those back away from ``final_state`` and all anticrossings after reaching it, are
@@ -351,6 +483,9 @@ def build_dia_list(energies: np.ndarray, initial_state: int, final_state: int) -
         Eigenenergies sorted in increasing order, with shape (n_points, dim), sampled in the sweep direction.
     initial_state, final_state : int
         Indices of the instantaneous eigenstates at the start and at the end of the sweep.
+    state_map : np.ndarray | None
+        True level crossings, as returned by ``crossing_map``. The gap minima of a true crossing are not anticrossings.
+        ``None`` means that there are no true crossings.
 
     Returns
     -------
@@ -371,9 +506,21 @@ def build_dia_list(energies: np.ndarray, initial_state: int, final_state: int) -
         if not isinstance(state, (int, np.integer)) or isinstance(state, bool) or not 0 <= state < dim:
             raise ValidationError(f"{label} must be an integer in [0, {dim - 1}].")
 
+    if state_map is None:
+        state_map = np.tile(np.arange(dim), (n_points, 1))
+    elif state_map.shape != energies.shape:
+        raise ValidationError("state_map must have the same shape as energies.")
+
     gaps = np.diff(energies, axis=1)  # gaps[:, j] = E_{j+1} - E_j
     gap_minima = np.stack([_gap_minima(gaps[:, j]) for j in range(dim - 1)], axis=1) if dim > 1 else None
     step = 1 if final_state > initial_state else -1
+
+    # The gap between two truly crossing states has its minimum at one of the two grid points around the crossing.
+    if gap_minima is not None:
+        for point in np.flatnonzero(np.any(state_map != np.arange(dim), axis=1)):
+            moved = state_map[point] != np.arange(dim)
+            crossing_gaps = moved[:-1] & moved[1:]
+            gap_minima[point - 1 : point + 1, crossing_gaps] = False
 
     def overlaps(gap_index: int, index: int) -> bool:
         # The anticrossing of this gap overlaps with a passage at ``index``: its last minimum is behind ``index``,
@@ -389,6 +536,8 @@ def build_dia_list(energies: np.ndarray, initial_state: int, final_state: int) -
     passages: list[tuple[int, int, int]] = []  # (grid index, state before, state after)
     state = initial_state
     for i in range(n_points):
+        if i > 0:
+            state = int(state_map[i, state])
         passed = False
         while state != final_state:
             assert gap_minima is not None

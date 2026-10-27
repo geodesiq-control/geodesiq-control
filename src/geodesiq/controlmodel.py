@@ -15,8 +15,12 @@ from ._utils import (
     DiabaticList,
     Flags,
     build_dia_list,
+    crossing_map,
+    degenerate_clusters,
+    follow_state,
     is_hermitian,
     limit_blas_threads,
+    rotate_degenerate_subspaces,
     stack_samples,
     traceless,
     uniform_grid_derivative,
@@ -51,6 +55,7 @@ class _EigensystemParameters:
 class _ControlParameters(_EigensystemParameters):
     initial_state: int
     final_state: int
+    final_state_explicit: bool
     alpha: float
     beta: float
     dia_alpha: float | None
@@ -93,6 +98,9 @@ class ControlModel:
     # All tolerances are relative, so the results do not depend on the units of the Hamiltonian.
     # An energy gap below _GAP_RTOL * (spectral bandwidth) is treated as a degeneracy.
     _GAP_RTOL = 1e-12
+    # Two states are not coupled (and may cross truly) if their matrix element of dH/dx is at most _CROSSING_RTOL times
+    # the largest one at that grid point.
+    _CROSSING_RTOL = 1e-8
     # Metric values below _METRIC_RTOL * max(metric) are treated as (numerical) zeros.
     _METRIC_RTOL = 1e-20
     # Default number of samples of the normalized pulse when solve_problem() is first called without one.
@@ -208,6 +216,11 @@ class ControlModel:
         self._centered_energies: np.ndarray | None = None
         self._energy_offset: np.ndarray | None = None
         self._matrix_elements: np.ndarray | None = None
+        # Energy index changes of the states at true level crossings (see _utils.crossing_map).
+        self._state_map: np.ndarray | None = None
+        # Energy index of the occupied state along the grid, and the index it ends in.
+        self._occupied_states: np.ndarray | None = None
+        self._resolved_final_state: int | None = None
 
         # Initialize metric tensor and normalization factor to None (to be computed in self.solve_problem())
         self._dia_list: DiabaticList | None = None
@@ -447,7 +460,7 @@ class ControlModel:
 
     @property
     def initial_state(self) -> int | None:
-        """Index (in increasing energy) of the initial eigenstate."""
+        """Index (in increasing energy, at ``pulse_initial``) of the initial eigenstate."""
         return self._initial_state
 
     @initial_state.setter
@@ -456,7 +469,16 @@ class ControlModel:
 
     @property
     def final_state(self) -> int | None:
-        """Index (in increasing energy) of the target eigenstate."""
+        """
+        Index (in increasing energy, at ``pulse_final``) of the target eigenstate.
+
+        As long as it has not been set explicitly, it is the index in which the state followed adiabatically from
+        ``initial_state`` ends. Before ``solve_problem()``, and without true level crossings, this is
+        ``initial_state``.
+        """
+        resolved = self._resolved_final_state
+        if not self._final_state_explicit and self._flags["dia_list_computed"] and resolved is not None:
+            return resolved
         return self._final_state
 
     @final_state.setter
@@ -627,13 +649,16 @@ class ControlModel:
         pulse_final : float | None
             The final value of the control pulse. This is the value of the control parameter at the end of the pulse.
         initial_state : int | None
-            The index of the initial state in the energy spectrum. This is used to compute the metric tensor and the
-             ODE for the control pulse.
+            The index of the initial state in the energy spectrum at ``pulse_initial``. This is used to compute the
+            metric tensor and the ODE for the control pulse. The occupied state is followed along the sweep by
+            eigenvector overlap, so at a true (symmetry-protected) level crossing it keeps its identity and changes its
+            energy index.
         final_state : int | None
-            The index of the final state in the energy spectrum. This is used to compute the metric tensor and the ODE
-            for the control pulse. As long as it has never been provided, it follows ``initial_state`` (also when
-            ``initial_state`` changes later); once provided, it keeps its value. If it differs from the initial state,
-            the occupied state is followed along the sweep: each anticrossing with the neighbouring state towards
+            The index of the final state in the energy spectrum at ``pulse_final``. This is used to compute the metric
+            tensor and the ODE for the control pulse. As long as it has never been provided, the transfer is adiabatic
+            and ``final_state`` is the index in which the state followed from ``initial_state`` ends (also when
+            ``initial_state`` changes later); once provided, it keeps its value. If it differs from that index, the
+            occupied state is followed along the sweep: each anticrossing with the neighbouring state towards
             ``final_state`` is passed diabatically, until ``final_state`` is reached. All other anticrossings are passed
             adiabatically, and only transitions from the occupied state contribute to the metric tensor.
         alpha : float | None
@@ -716,7 +741,12 @@ class ControlModel:
             or candidate_num_steps != self._num_steps
         )
 
-        states_changed = candidate_initial_state != self._initial_state or candidate_final_state != self._final_state
+        # Making final_state explicit turns an adiabatic transfer into a diabatic one if it differs from the index in
+        # which the followed state ends (self.final_state), which a true level crossing can change.
+        became_explicit = candidate_final_state_explicit and not self._final_state_explicit
+        states_changed = candidate_initial_state != self._initial_state or candidate_final_state != (
+            self.final_state if became_explicit else self._final_state
+        )
 
         metric_changed = (
             states_changed
@@ -866,22 +896,41 @@ class ControlModel:
 
     def _solve_dia_list(self, config: _ControlParameters) -> None:
         """
-        Compute the diabatic-passage list for a validated control configuration.
+        Compute the occupied state along the grid and the diabatic-passage list for a validated control configuration.
 
-        An adiabatic transfer (equal initial and final states) needs no list: ``_dia_list`` stays ``None``, and the
-        stage is marked done so that the metric, which depends on it, can be marked as computed.
+        The state is first followed from ``initial_state`` through the true level crossings alone. The transfer is
+        adiabatic if ``final_state`` was not given or is the index in which that state ends; then no list is needed:
+        ``_dia_list`` stays ``None``, and the stage is marked done so that the metric, which depends on it, can be
+        marked as computed.
         """
         if self._flags["dia_list_computed"]:
             return
 
-        if config.initial_state == config.final_state:
+        if self._centered_energies is None or self._state_map is None:
+            raise SolverError("Eigenenergies are unavailable before computing the occupied state.")
+
+        adiabatic_path = follow_state(self._state_map, config.initial_state)
+        if not config.final_state_explicit or config.final_state == adiabatic_path[-1]:
             self._dia_list = None
+            self._occupied_states = adiabatic_path
         else:
-            if self._centered_energies is None:
-                raise SolverError("Eigenenergies are unavailable before computing diabatic passages.")
+            if config.dia_alpha is None or config.dia_beta is None:
+                exponents = (("dia_alpha", config.dia_alpha), ("dia_beta", config.dia_beta))
+                missing_params = [name for name, value in exponents if value is None]
+                raise MissingControlParameterError(
+                    f"Missing control parameters: {', '.join(missing_params)}. They are required for a diabatic "
+                    f"transfer (final_state={config.final_state}, while the state followed adiabatically from "
+                    f"initial_state={config.initial_state} ends in state {adiabatic_path[-1]}). Please set them using "
+                    f"set_control({', '.join(f'{name}=<...>' for name in missing_params)})."
+                )
             self._dia_list = build_dia_list(
-                self._centered_energies, initial_state=config.initial_state, final_state=config.final_state
+                self._centered_energies,
+                initial_state=config.initial_state,
+                final_state=config.final_state,
+                state_map=self._state_map,
             )
+            self._occupied_states = self._dia_list.occupied
+        self._resolved_final_state = int(self._occupied_states[-1])
         self._flags["dia_list_computed"] = True
 
     def _solve_eigenproblem(self, config: _EigensystemParameters | None = None) -> None:
@@ -955,7 +1004,14 @@ class ControlModel:
                 lambda value: self._call_partial_hamiltonian(**self._evaluation_kwargs(value)), self._control_pulse
             )
 
+        # States are followed through true level crossings by eigenvector overlap. At a crossing on a grid point the
+        # crossing states are degenerate, and their eigenvectors are first rotated into the limits from either side.
+        with limit_blas_threads(dimension):
+            rotate_degenerate_subspaces(eigenvectors, partial_H, degenerate_clusters(energies, self._GAP_RTOL))
         self._matrix_elements = self._derivative_matrix_elements(eigenvectors, partial_H)
+        chunk = max(1, self._MATRIX_ELEMENT_CHUNK_BYTES // (16 * dimension * dimension))
+        with limit_blas_threads(dimension):
+            self._state_map = crossing_map(eigenvectors, self._matrix_elements, self._CROSSING_RTOL, chunk)
         self._flags["eigenproblem_solved"] = True
 
     def _derivative_matrix_elements(self, eigenvectors: np.ndarray, partial_H: np.ndarray) -> np.ndarray:
@@ -993,7 +1049,12 @@ class ControlModel:
         The exponents are scalars or arrays with one value per point. Several transitions can be evaluated at once by
         passing one entry per (point, transition) pair, with ``points`` holding the grid index of each entry and the two
         states of ``transition`` given as arrays.
+
+        A vanishing gap raises ``MetricComputationError``, except at a true level crossing on a grid point: there the
+        two states are degenerate at that point only, dH/dx does not couple them, and the contribution (zero on either
+        side of the crossing for ``beta > 0``) is set to zero.
         """
+        crossings = np.array([], dtype=int)
         positive_alpha = np.asarray(alpha) > 0
         if np.any(positive_alpha):
             if self._centered_energies is None:
@@ -1007,16 +1068,21 @@ class ControlModel:
 
             singular = (denominator <= tolerance) & positive_alpha
 
-            if np.any(singular):
+            indices = np.flatnonzero(singular)
+            grid_indices = indices if points is None else points[indices]
+            states = [np.broadcast_to(state, denominator.shape)[indices] for state in transition]
+            entry_beta = np.broadcast_to(beta, denominator.shape)[indices]
+            is_crossing = self._is_true_crossing(grid_indices, states[0], states[1], numerator[indices], entry_beta)
+            crossings = indices[is_crossing]
+
+            if not np.all(is_crossing):
                 control_pulse = self._control_pulse
 
                 if control_pulse is None:
                     raise MetricComputationError("Control grid is unavailable for degeneracy detection.")
 
-                indices = np.flatnonzero(singular)
-                grid_indices = indices if points is None else points[indices]
-                states = [np.broadcast_to(state, denominator.shape) for state in transition]
-                first = indices[0]
+                indices, grid_indices = indices[~is_crossing], grid_indices[~is_crossing]
+                first = int(np.flatnonzero(~is_crossing)[0])
 
                 details = ", ".join(
                     f"x={control_pulse[g]:.6g}, gap={denominator[i]:.3e}, tol={tolerance[i]:.3e}"
@@ -1033,9 +1099,33 @@ class ControlModel:
             invalid="ignore",
             over="ignore",
         ):
-            ratio = numerator**beta / denominator**alpha
+            ratio = np.asarray(numerator**beta / denominator**alpha, dtype=float)
+        ratio[crossings] = 0.0
 
-        return np.asarray(ratio, dtype=float)
+        return ratio
+
+    def _is_true_crossing(
+        self, points: np.ndarray, source: np.ndarray, target: np.ndarray, numerator: np.ndarray, beta: np.ndarray
+    ) -> np.ndarray:
+        """
+        Whether each degenerate pair of states ``(source, target)`` at grid index ``points`` is a true level crossing.
+
+        The pair is degenerate at that grid point only, not at its neighbours, and dH/dx does not couple it
+        (``numerator`` at most ``_CROSSING_RTOL`` times the largest matrix element at that point). Its metric
+        contribution vanishes on both sides of the crossing only for ``beta > 0``.
+        """
+        assert self._centered_energies is not None and self._matrix_elements is not None
+        energies = self._centered_energies
+        n_points = energies.shape[0]
+        scale = np.max(self._matrix_elements[points], axis=(1, 2))
+        result = (numerator <= self._CROSSING_RTOL * scale) & (beta > 0)
+        for offset in (-1, 1):
+            neighbour = np.clip(points + offset, 0, n_points - 1)
+            inside = neighbour != points
+            gap = np.abs(energies[neighbour, target] - energies[neighbour, source])
+            open_gap = gap > self._GAP_RTOL * np.ptp(energies[neighbour], axis=1)
+            result &= open_gap | ~inside
+        return result
 
     def _compute_metric_tensor(self, config: _ControlParameters) -> None:
         """
@@ -1045,9 +1135,9 @@ class ControlModel:
         if self._flags["metric_computed"]:
             return
 
-        # Also for an adiabatic transfer, where it only marks the (empty) stage as done.
+        # Also for an adiabatic transfer, where it follows the occupied state and leaves the list empty.
         self._solve_dia_list(config)
-        if config.initial_state == config.final_state:
+        if self._dia_list is None:
             self._compute_G_adiabatic(config)
         else:
             self._compute_G_diabatic(config)
@@ -1125,23 +1215,29 @@ class ControlModel:
         self._metric_tensor = np.bincount(points, weights=ratio, minlength=num)
 
     def _compute_G_adiabatic(self, config: _ControlParameters) -> None:
-        """Compute the adiabatic contribution to the metric tensor."""
-        if self._centered_energies is None or self._matrix_elements is None:
+        """
+        Compute the adiabatic contribution to the metric tensor.
+
+        Only transitions from the occupied state contribute. It is followed through true level crossings, so its
+        energy index may change along the grid.
+        """
+        if self._centered_energies is None or self._matrix_elements is None or self._occupied_states is None:
             raise SolverError("Adiabatic metric prerequisites are unavailable.")
 
         num, dim = self._centered_energies.shape
+        occupied = self._occupied_states
         metric = np.zeros(num, dtype=float)
-        for state in range(dim):
-            if state == config.initial_state:
-                continue
-            denominator = np.abs(self._centered_energies[:, state] - self._centered_energies[:, config.initial_state])
-            numerator = self._matrix_elements[:, config.initial_state, state]
+        points = np.arange(num)
+        for offset in range(1, dim):
+            # The states other than the occupied one, one per point and offset, in no particular order.
+            state = (occupied + offset) % dim
+            denominator = np.abs(self._centered_energies[points, state] - self._centered_energies[points, occupied])
             metric += self._metric_ratio(
-                numerator,
+                self._matrix_elements[points, occupied, state],
                 denominator,
                 alpha=config.alpha,
                 beta=config.beta,
-                transition=(config.initial_state, state),
+                transition=(occupied, state),
             )
         self._metric_tensor = metric
 
@@ -1773,7 +1869,8 @@ class ControlModel:
         pulse_initial = self.pulse_initial
         pulse_final = self.pulse_final
         initial_state = self.initial_state
-        final_state = self.final_state
+        # The stored value, not the one resolved by a previous solve.
+        final_state = self._final_state
         alpha = self.alpha
         beta = self.beta
         dia_alpha = self.dia_alpha
@@ -1818,14 +1915,8 @@ class ControlModel:
         assert beta is not None
         assert num_steps is not None
 
-        if initial_state != final_state and (dia_alpha is None or dia_beta is None):
-            missing_params = [
-                name for name, value in (("dia_alpha", dia_alpha), ("dia_beta", dia_beta)) if value is None
-            ]
-            raise MissingControlParameterError(
-                f"Missing control parameters: {', '.join(missing_params)}. Please set them using set_control"
-                f"({', '.join(f'{name}=<...>' for name in missing_params)})."
-            )
+        # dia_alpha and dia_beta are checked once the spectrum shows whether the transfer is diabatic: final_state may
+        # differ from initial_state also in an adiabatic transfer through a true level crossing.
 
         self._check_metric_integrator_samples(
             num_steps, self._metric_integrator if metric_integrator is None else metric_integrator
@@ -1845,6 +1936,7 @@ class ControlModel:
             num_steps=num_steps,
             initial_state=initial_state,
             final_state=final_state,
+            final_state_explicit=self._final_state_explicit,
             alpha=alpha,
             beta=beta,
             dia_alpha=dia_alpha,

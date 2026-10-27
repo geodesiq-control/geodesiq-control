@@ -14,6 +14,7 @@ from geodesiq._utils import is_hermitian
 from geodesiq.exceptions import (
     InvalidControlParameterError,
     MetricComputationError,
+    MissingControlParameterError,
     SolverError,
     ValidationError,
 )
@@ -64,13 +65,15 @@ def make_model(shift: float) -> ControlModel:
 
 
 def degenerate_hamiltonian(lam: float, ) -> np.ndarray:
-    return np.array([[lam, 0.0], [0.0, -lam], ], dtype=float, )
+    # Two copies of a Landau-Zener system: every level, including the occupied one, is degenerate at every point. (A
+    # crossing at a single point, such as lam * sz at lam = 0, is a true crossing and is followed instead, C-07.)
+    return np.kron(np.eye(2), np.array([[lam, 0.1], [0.1, -lam], ], dtype=float, ))
 
 
 def degenerate_partial(lam: float, ) -> np.ndarray:
     del lam
 
-    return np.array([[1.0, 0.0], [0.0, -1.0], ], dtype=float, )
+    return np.kron(np.eye(2), np.array([[1.0, 0.0], [0.0, -1.0], ], dtype=float, ))
 
 
 def dqd_hamiltonian(eps: float, U: float, tc: float, Ez: float, dEz: float, dEx: float):
@@ -215,11 +218,8 @@ def test_isolated_zero_of_the_metric_is_rejected_clearly_by_a_custom_solver():
 
 
 def test_degenerate_gap_raises_clear_metric_error():
-    def hamiltonian(z: float) -> np.ndarray:
-        return np.array([[z, 0.0], [0.0, -z]])
-
-    model = ControlModel(hamiltonian, lambda z: np.array([[1.0, 0.0], [0.0, -1.0]]))
-    model.set_control(control_name="z", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0, beta=2.0,
+    model = ControlModel(degenerate_hamiltonian, degenerate_partial)
+    model.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0, beta=2.0,
                       num_steps=33, )
     with pytest.raises(MetricComputationError, match="Degenerate or near-degenerate"):
         model.solve_problem()
@@ -465,6 +465,156 @@ class TestDegeneracies:
         model_small_shifted = make_model(10)
 
         np.testing.assert_allclose(model_0.eigenenergies + 10, model_small_shifted.eigenenergies)
+
+
+# ---------------------------------------------------------------------------
+# True (symmetry-protected) level crossings (C-07)
+# ---------------------------------------------------------------------------
+LZ_BLOCK_D = np.array([[0.0, 0.1], [0.1, 0.0]])
+LZ_BLOCK_C = np.diag([1.0, -1.0])
+
+
+def lz_with_uncoupled_level(level: float, slope: float) -> ControlModel:
+    """Landau-Zener block plus a third level ``level + slope * x`` that the control does not couple to it."""
+    h_d = np.zeros((3, 3))
+    h_d[:2, :2] = LZ_BLOCK_D
+    h_d[2, 2] = level
+    return ControlModel(H_d=h_d, H_c=np.diag([1.0, -1.0, slope]))
+
+
+def metric_of(model: ControlModel) -> np.ndarray:
+    assert model._metric_tensor is not None
+    return model._metric_tensor
+
+
+def lz_block_model(pulse_initial: float, pulse_final: float) -> ControlModel:
+    model = ControlModel(H_d=LZ_BLOCK_D, H_c=LZ_BLOCK_C)
+    model.set_control(pulse_initial=pulse_initial, pulse_final=pulse_final, initial_state=0, alpha=2.0, beta=2.0)
+    model.solve_problem()
+    return model
+
+
+class TestTrueCrossings:
+    @pytest.mark.filterwarnings("error::geodesiq.warnings.NumericalStabilityWarning")
+    def test_occupied_state_is_followed_through_crossings_with_an_uncoupled_level(self):
+        # Review reproduction: the uncoupled level -0.5 is the lowest one for |x| < 0.49. Energy-ordered labels made
+        # state 0 that level there, so the metric vanished over the whole interval.
+        model = lz_with_uncoupled_level(-0.5, 0.0)
+        model.set_control(pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0, beta=2.0)
+        model.solve_problem()
+
+        x = model.control_pulse
+        crossing = np.sqrt(0.25 - 0.01)
+        assert model._occupied_states is not None
+        np.testing.assert_array_equal(model._occupied_states, np.where(np.abs(x) < crossing, 1, 0))
+        assert model.final_state == 0
+        reference = lz_block_model(-1.0, 1.0)
+        np.testing.assert_allclose(metric_of(model), metric_of(reference), rtol=1e-12)
+        np.testing.assert_allclose(model.control_sol, reference.control_sol, rtol=1e-12, atol=1e-12)
+
+    def test_implicit_final_state_is_the_index_the_followed_state_ends_in(self):
+        from geodesiq import Dynamics
+
+        model = lz_with_uncoupled_level(-0.5, 0.0)
+        model.set_control(pulse_initial=-1.0, pulse_final=0.0, initial_state=0, alpha=2.0, beta=2.0)
+        assert model.final_state == 0
+
+        model.solve_problem()
+
+        assert model.final_state == 1
+        assert model._dia_list is None
+        # The default target of the dynamics is the followed state, not the uncoupled ground state at x = 0.
+        assert Dynamics(duration=200.0, model=model).state_fidelity() > 0.99
+        # Changing the initial state releases the resolved value until the next solve.
+        model.initial_state = 2
+        assert model.final_state == 2
+
+    def test_explicit_final_state_at_the_end_of_the_followed_state_is_adiabatic(self):
+        model = lz_with_uncoupled_level(-0.5, 0.0)
+        model.set_control(pulse_initial=-1.0, pulse_final=0.0, initial_state=0, final_state=1, alpha=2.0, beta=2.0)
+
+        model.solve_problem()  # no dia_alpha/dia_beta needed
+
+        assert model._dia_list is None
+        np.testing.assert_allclose(model.control_sol, lz_block_model(-1.0, 0.0).control_sol, rtol=1e-12, atol=1e-12)
+
+    def test_explicit_final_state_elsewhere_needs_the_diabatic_exponents(self):
+        model = lz_with_uncoupled_level(-0.5, 0.0)
+        model.set_control(pulse_initial=-1.0, pulse_final=0.0, initial_state=0, alpha=2.0, beta=2.0)
+        model.solve_problem()
+        flags = dict(model._flags._values)
+
+        # Making the resolved value explicit keeps the cached results; a different value does not.
+        model.final_state = 1
+        assert dict(model._flags._values) == flags
+        model.final_state = 2
+        assert not model._flags["dia_list_computed"]
+        with pytest.raises(MissingControlParameterError, match="ends in state 1"):
+            model.solve_problem()
+
+    @pytest.mark.filterwarnings("error::geodesiq.warnings.NumericalStabilityWarning")
+    def test_crossing_on_a_grid_point_is_followed(self):
+        # The lower LZ level -sqrt(x^2 + 0.01) crosses the uncoupled level -0.1 - x at x = 0, a grid point, where the
+        # two states are degenerate.
+        model = lz_with_uncoupled_level(-0.1, -1.0)
+        model.set_control(pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0, beta=2.0)
+        model.solve_problem()
+
+        x = model.control_pulse
+        assert np.min(np.diff(model.eigenenergies[x == 0.0])) < 1e-15
+        assert model._occupied_states is not None
+        np.testing.assert_array_equal(model._occupied_states, np.where(x < 0.0, 0, 1))
+        assert model.final_state == 1
+        reference = lz_block_model(-1.0, 1.0)
+        np.testing.assert_allclose(metric_of(model), metric_of(reference), rtol=1e-12)
+
+    @pytest.mark.parametrize("partial", [True, False])
+    def test_crossing_is_followed_for_callable_models(self, partial: bool):
+        def hamiltonian(x: float) -> np.ndarray:
+            return np.diag([0.0, 0.0, -0.5]) + x * np.diag([1.0, -1.0, 0.0]) + np.pad(LZ_BLOCK_D, (0, 1))
+
+        model = ControlModel(hamiltonian, (lambda x: np.diag([1.0, -1.0, 0.0])) if partial else None)
+        model.set_control(control_name="x", pulse_initial=-1.0, pulse_final=0.0, initial_state=0, alpha=2.0,
+                          beta=2.0, num_steps=257)
+        model.solve_problem()
+
+        assert model.final_state == 1
+        reference = ControlModel(H_d=LZ_BLOCK_D, H_c=LZ_BLOCK_C)
+        reference.set_control(pulse_initial=-1.0, pulse_final=0.0, initial_state=0, alpha=2.0, beta=2.0, num_steps=257)
+        reference.solve_problem()
+        np.testing.assert_allclose(metric_of(model), metric_of(reference), rtol=1e-6)
+
+    @pytest.mark.filterwarnings("ignore::geodesiq.warnings.NumericalStabilityWarning")
+    def test_unresolved_anticrossing_keeps_the_energy_order(self):
+        # The eigenvectors swap between two grid points as at a crossing, but dH/dx couples the two states.
+        model = ControlModel(H_d=np.array([[0.0, 1e-6], [1e-6, 0.0]]), H_c=LZ_BLOCK_C)
+        model.set_control(pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0, beta=2.0, num_steps=33)
+        model.solve_problem()
+
+        assert model._occupied_states is not None
+        assert np.all(model._occupied_states == 0)
+        assert model.final_state == 0
+
+    def test_diabatic_transfer_through_a_crossing(self):
+        # Level a = x anticrosses c = 0.5 at x = 0.5 (coupling 0.05) and crosses the uncoupled level b = -0.5 at
+        # x = -0.5. From a (state 0), the crossing is followed and only the anticrossing is passed diabatically.
+        model = ControlModel(H_d=np.array([[0.0, 0.0, 0.05], [0.0, -0.5, 0.0], [0.05, 0.0, 0.5]]),
+                             H_c=np.diag([1.0, 0.0, 0.0]))
+        model.set_control(pulse_initial=-1.0, pulse_final=1.0, initial_state=0, final_state=2, alpha=2.0, beta=2.0,
+                          dia_alpha=-1.0, dia_beta=0.0)
+        model.solve_problem()
+
+        x = model.control_pulse
+        dia_list = model._dia_list
+        assert dia_list is not None
+        # The level repulsion from c moves the crossing slightly below x = -0.5.
+        changes = np.flatnonzero(np.diff(dia_list.occupied)) + 1
+        assert dia_list.occupied[0] == 0 and dia_list.occupied[changes].tolist() == [1, 2]
+        assert abs(x[changes[0]] + 0.5) < 0.01 and abs(x[changes[1]] - 0.5) < 0.01
+        # The transition to the crossing level is adiabatic; only the anticrossing is diabatic.
+        near_crossing = np.abs(x + 0.5) < 0.1
+        assert np.all(dia_list.dense()[near_crossing, 0, 1] == 1)
+        assert np.all(dia_list.dense()[np.abs(x - 0.5) < 0.05, 1, 2] == 0)
 
 
 # ---------------------------------------------------------------------------

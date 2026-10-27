@@ -784,8 +784,10 @@ class TestCheckControlParameters:
         ham.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, final_state=1,
                         alpha=2.0, beta=2.0, num_steps=33, )
 
+        # Whether the transfer is diabatic is known once the spectrum shows where the followed state ends (C-07).
+        ham._check_control_parameters()
         with pytest.raises(MissingControlParameterError, match="dia_alpha"):
-            ham._check_control_parameters()
+            ham.solve_problem()
 
 
 # ---------------------------------------------------------------------------

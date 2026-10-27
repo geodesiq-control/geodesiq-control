@@ -76,6 +76,18 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Fixed
 
+- The occupied state is followed through true (symmetry-protected) level crossings by eigenvector overlap. Before, the
+  state was tracked by its energy index, so at a crossing with a level that the control does not couple to it, the
+  "initial state" became that level, and the metric vanished (or `solve_problem()` failed) where it should not. Now
+  the state keeps its identity and changes its energy index at the crossing, also when the crossing falls on a grid
+  point, where the degenerate eigenvectors are chosen to diagonalize `dH/dx`. A swap of eigenvectors between two grid
+  points between states that `dH/dx` couples is an anticrossing the grid does not resolve, and keeps the energy order
+  as before. Results without true crossings are unchanged. `initial_state` and `final_state` still refer to the energy
+  order at `pulse_initial` and `pulse_final`; as long as `final_state` has not been set, it is the index in which the
+  followed state ends after `solve_problem()` (used as the default target of `Dynamics`). The transfer is diabatic only
+  if an explicit `final_state` differs from that index, so `dia_alpha` and `dia_beta` are now checked during
+  `solve_problem()`, once the spectrum is known, instead of before it. A degenerate occupied state over more than one
+  grid point still raises `MetricComputationError`.
 - Clarify that the sampled-metric normalization cancels algebraically from both normalized solver equations;
   custom solvers use the PCHIP interpolant's own integral to avoid a quadrature-induced endpoint mismatch.
 - Align plotting docstrings with the supported `Figure`/`SubFigure` inputs, tuple returns and validation errors;

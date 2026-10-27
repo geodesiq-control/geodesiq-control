@@ -113,6 +113,12 @@ derivatives must match the Hamiltonian shape. Singular metrics, exact degeneraci
 non-finite solver output, incomplete solver time grids, and invalid endpoint completion raise package-specific
 exceptions before downstream interpolation or propagation.
 
+State indices refer to the ascending energy spectrum: `initial_state` at `pulse_initial` and `final_state` at
+`pulse_final`. Along the grid, the occupied state is followed by eigenvector overlap. At a true (symmetry-protected)
+level crossing, where `dH/dx` does not couple the two states, it keeps its identity and changes its energy index, also
+when the crossing falls on a grid point. An anticrossing that the grid does not resolve keeps the energy order. As long
+as `final_state` has not been set, it is the index in which the followed state ends.
+
 The numerical derivative accepts complex-valued Hamiltonians and preserves their complex dtype. Supplying an analytical
 derivative remains preferable for performance and controlled accuracy.
 

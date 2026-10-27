@@ -11,8 +11,12 @@ from geodesiq._utils import (
     SMALL_MATRIX_DIMENSION,
     _threadpool_controller,
     build_dia_list,
+    crossing_map,
+    degenerate_clusters,
     finite_difference_weights,
+    follow_state,
     limit_blas_threads,
+    rotate_degenerate_subspaces,
     stack_samples,
     traceless,
     uniform_grid_derivative,
@@ -169,6 +173,73 @@ class TestBuildDiaList:
 
         assert dia_list.adiabatic_fraction.shape == (n_points, dim)
         assert peak < 10 * n_points * dim * 8
+
+    def test_true_crossing_is_followed_and_not_passed_diabatically(self):
+        # State a = x crosses the flat level b = 0 at x = 0 (state_map) and then anticrosses c = 1 + (x - 1)^2 / 10.
+        x = self.x
+        a, b, c = x, np.zeros_like(x), 1.0 + (x - 1.0) ** 2 / 10
+        energies = np.sort(np.stack([a, b, c], axis=1), axis=1)
+        state_map = np.tile(np.arange(3), (x.size, 1))
+        crossing = np.flatnonzero(x > 0)[0]
+        state_map[crossing, :2] = [1, 0]
+
+        dia_list = build_dia_list(energies, initial_state=0, final_state=2, state_map=state_map)
+
+        assert dia_list.occupied[crossing - 1] == 0 and dia_list.occupied[crossing] == 1
+        # Without the state map, the gap minimum of the crossing would be a diabatic passage.
+        assert np.all(dia_list.dense()[np.abs(x) < 0.2, 0, 1] == 1)
+        assert dia_list.occupied[-1] == 2
+
+    def test_state_map_must_match_the_energies(self):
+        energies = three_level_energies(self.x, gap_01=np.full_like(self.x, 5.0))
+        with pytest.raises(ValidationError, match="state_map"):
+            build_dia_list(energies, initial_state=1, final_state=2, state_map=np.zeros((3, 3), dtype=int))
+
+
+# ---------------------------------------------------------------------------
+# Level crossings: degenerate_clusters(), rotate_degenerate_subspaces(), crossing_map(), follow_state()
+# ---------------------------------------------------------------------------
+def two_level_vectors(x: np.ndarray, coupling: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Eigenvalues, eigenvectors and |<m|sz|n>| of x sz + coupling sx."""
+    sz = np.diag([1.0, -1.0])
+    energies, vectors = np.linalg.eigh(x[:, None, None] * sz + coupling * np.array([[0.0, 1.0], [1.0, 0.0]]))
+    return energies, vectors, np.abs(vectors.transpose(0, 2, 1) @ sz @ vectors)
+
+
+class TestLevelCrossings:
+    def test_degenerate_clusters_are_found_relative_to_the_bandwidth(self):
+        energies = np.array([[0.0, 0.0, 1.0], [0.0, 0.5, 1.0], [1e-14, 2e-14, 3e-14]]) * 1e6
+
+        assert degenerate_clusters(energies, rtol=1e-12) == [(0, 0, 1)]
+        assert degenerate_clusters(np.zeros((1, 3)), rtol=1e-12) == [(0, 0, 2)]
+
+    def test_rotation_diagonalizes_dh_in_a_degenerate_subspace(self):
+        vectors = np.eye(2)[None] @ (np.array([[1.0, 1.0], [1.0, -1.0]]) / np.sqrt(2))
+        partial_H = np.diag([1.0, -1.0])
+
+        rotate_degenerate_subspaces(vectors, partial_H, [(0, 0, 1)])
+
+        elements = vectors[0].T @ partial_H @ vectors[0]
+        assert abs(elements[0, 1]) < 1e-15
+
+    def test_uncoupled_crossing_is_followed(self):
+        x = np.linspace(-1.0, 1.0, 64)  # 0 is not on the grid
+        _, vectors, elements = two_level_vectors(x, 0.0)
+
+        state_map = crossing_map(vectors, elements, rtol=1e-8, chunk=7)
+
+        changed = np.flatnonzero(np.any(state_map != np.arange(2), axis=1))
+        np.testing.assert_array_equal(changed, [32])
+        np.testing.assert_array_equal(state_map[32], [1, 0])
+        np.testing.assert_array_equal(follow_state(state_map, 0), np.where(x < 0, 0, 1))
+
+    def test_coupled_swap_keeps_the_energy_order(self):
+        x = np.linspace(-1.0, 1.0, 64)
+        _, vectors, elements = two_level_vectors(x, 1e-6)
+
+        state_map = crossing_map(vectors, elements, rtol=1e-8, chunk=7)
+
+        np.testing.assert_array_equal(state_map, np.tile(np.arange(2), (64, 1)))
 
 
 # -----------------------------------
