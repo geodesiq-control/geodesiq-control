@@ -870,6 +870,21 @@ class TestHamiltonians:
         with pytest.raises(ValidationError, match="return a matrix with the same shape as H_func"):
             model._call_partial_hamiltonian(0.0)
 
+    def test_partial_call_validates_list_valued_hamiltonian(self):
+        # The raw H_func result was used for its .shape, so a nested list raised AttributeError (C-21).
+        model = ControlModel(H_func=lambda x: [[x, 1.0], [1.0, -x]], partial_H_func=lambda x: np.diag([1.0, -1.0]))
+        model.set_control("x")
+
+        np.testing.assert_allclose(model._call_partial_hamiltonian(x=0.5), np.diag([1.0, -1.0]))
+        assert model.hamiltonian_dimension == 2
+
+    def test_partial_call_reports_invalid_hamiltonian(self):
+        model = ControlModel(H_func=lambda x: [[x, 1.0], [0.0, -x]], partial_H_func=lambda x: np.diag([1.0, -1.0]))
+        model.set_control("x")
+
+        with pytest.raises(ValidationError, match="H_func must return a Hermitian matrix"):
+            model._call_partial_hamiltonian(x=0.5)
+
 
 # ---------------------------------------------------------------------------
 # __str__ / __repr__
@@ -880,6 +895,15 @@ class TestStringRepresentations:
     def test_str_contains_control_name(self, configured_ham):
         s = str(configured_ham)
         assert "lam" in s
+
+    def test_str_contains_diabatic_configuration(self, configured_ham):
+        # final_state, dia_alpha and dia_beta were missing from __str__ (C-21).
+        configured_ham.set_control(final_state=1, dia_alpha=1.5, dia_beta=0.5)
+        s = str(configured_ham)
+
+        assert "final_state=1" in s
+        assert "dia_alpha=1.5" in s
+        assert "dia_beta=0.5" in s
 
     def test_repr_contains_summary_banner(self, configured_ham):
         r = repr(configured_ham)

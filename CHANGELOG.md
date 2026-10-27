@@ -79,6 +79,9 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   `scipy.integrate.trapezoid`) on repeated calls. Comparing them with the stored kwargs raised "The truth value of an
   array ... is ambiguous". They are now compared element-wise and stored as deep copies, so an array changed in place
   and passed again also invalidates the cached results.
+- With a callable `partial_H_func`, the first derivative evaluation validates the `H_func` result it uses for the
+  dimension, so an `H_func` that returns e.g. a nested list no longer raises `AttributeError`. `str(model)` now also
+  shows `final_state`, `dia_alpha` and `dia_beta`.
 
 ## [0.3.0] - 2026-10-01
 

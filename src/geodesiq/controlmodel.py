@@ -245,11 +245,8 @@ class ControlModel:
             raise ValidationError("partial_H_func must return a Hermitian matrix.")
 
         if self._hamiltonian_dimension is None:
-            H_func = self.H_func
-            if H_func is None:
-                raise MissingControlParameterError("H_func is not configured.")
-            hamiltonian_temp = H_func(*args, **{**self._parameters, **kwargs})
-            dim_temp = hamiltonian_temp.shape[0]
+            # Validated call: H_func may return e.g. a nested list, and this also records the dimension.
+            dim_temp = self._call_hamiltonian(*args, **kwargs).shape[0]
         else:
             dim_temp = self._hamiltonian_dimension
 
@@ -1771,8 +1768,9 @@ class ControlModel:
     def __str__(self) -> str:
         return (
             f"ControlModel(control_name={self.control_name}, pulse_initial={self.pulse_initial}, "
-            f"pulse_final={self.pulse_final}, initial_state={self.initial_state}, alpha={self.alpha}, "
-            f"beta={self.beta}, num_steps={self.num_steps})"
+            f"pulse_final={self.pulse_final}, initial_state={self.initial_state}, final_state={self.final_state}, "
+            f"alpha={self.alpha}, beta={self.beta}, dia_alpha={self.dia_alpha}, dia_beta={self.dia_beta}, "
+            f"num_steps={self.num_steps})"
         )
 
     def __repr__(self) -> str:
