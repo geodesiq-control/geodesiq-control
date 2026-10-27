@@ -10,6 +10,7 @@ from geodesiq._utils import (
     build_dia_list,
     finite_difference_weights,
     limit_blas_threads,
+    stack_samples,
     traceless,
     uniform_grid_derivative,
 )
@@ -212,6 +213,38 @@ class TestFiniteDifferences:
     def test_invalid_number_of_points_raises(self, n_points: int):
         with pytest.raises(ValidationError, match="n_points must be between 2"):
             uniform_grid_derivative(np.zeros((5, 2, 2)), 0.1, n_points)
+
+    def test_result_does_not_depend_on_the_chunk_size(self, monkeypatch):
+        x = np.linspace(-1.0, 2.0, 65)
+        samples = np.exp(1j * np.multiply.outer(x, np.arange(9.0).reshape(3, 3)))
+        reference = uniform_grid_derivative(samples, float(x[1] - x[0]), 9)
+
+        # One row per piece (C-17): the weighted sums are formed in pieces of the interior block.
+        monkeypatch.setattr("geodesiq._utils._DERIVATIVE_CHUNK_BYTES", 1)
+        chunked = uniform_grid_derivative(samples, float(x[1] - x[0]), 9)
+
+        np.testing.assert_array_equal(chunked, reference)
+
+
+class TestStackSamples:
+    def test_matches_np_stack(self):
+        points = np.linspace(0.0, 1.0, 5)
+        stacked = stack_samples(lambda x: np.array([[x, 1.0], [1.0, -x]]), points)
+
+        np.testing.assert_array_equal(stacked, np.stack([np.array([[x, 1.0], [1.0, -x]]) for x in points]))
+
+    def test_integer_samples_become_float(self):
+        assert stack_samples(lambda x: np.eye(2, dtype=int), np.arange(3.0)).dtype == np.float64
+
+    def test_dtype_is_widened_by_a_later_complex_sample(self):
+        stacked = stack_samples(lambda x: np.array([[x]]) if x < 1 else np.array([[1j * x]]), np.arange(3.0))
+
+        assert np.iscomplexobj(stacked)
+        np.testing.assert_array_equal(stacked[:, 0, 0], [0.0, 1j, 2j])
+
+    def test_inconsistent_shapes_raise(self):
+        with pytest.raises(ValidationError, match="same shape"):
+            stack_samples(lambda x: np.eye(2 if x < 1 else 3), np.arange(3.0))
 
 
 class TestTraceless:

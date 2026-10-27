@@ -16,6 +16,7 @@ from ._utils import (
     build_dia_list,
     is_hermitian,
     limit_blas_threads,
+    stack_samples,
     traceless,
     uniform_grid_derivative,
     validate_state_index,
@@ -82,6 +83,9 @@ class ControlModel:
     _FD_RTOL = 1e-8
     _FD_MIN_POINTS = 5
     _FD_ROUNDOFF_FACTOR = 100.0
+    # The matrix elements |<m|dH/dx|n>| are computed in chunks of grid points whose complex (chunk, dim, dim)
+    # temporaries take about this many bytes, so the products do not need further full-size stacks.
+    _MATRIX_ELEMENT_CHUNK_BYTES = 2**22
     # A custom ODE solver's pulse x(s) may deviate from the exact geodesic by at most _SOLVER_S_TOL in normalized
     # time s, i.e. |s(x(s_i)) - s_i| <= _SOLVER_S_TOL at every sample (solve_ivp at its default rtol=1e-3 stays below
     # about 5e-3).
@@ -807,17 +811,20 @@ class ControlModel:
             num=config.num_steps,
             dtype=float,
         )
+        # The (n_points, dim, dim) stacks dominate the memory for large dim. Each one is released as soon as it is no
+        # longer needed, and the Hamiltonian stack is centered in place.
         if self._affine_hamiltonian:
             assert self._H_d is not None
             assert self._H_c is not None
-            full_hamiltonian = self._H_d[None, :, :] + self._control_pulse[:, None, None] * self._H_c[None, :, :]
+            hamiltonian = np.empty(
+                (self._control_pulse.size, *self._H_d.shape), dtype=np.result_type(self._H_d, self._H_c, float)
+            )
+            np.multiply(self._control_pulse[:, None, None], self._H_c[None, :, :], out=hamiltonian)
+            hamiltonian += self._H_d
         else:
-            full_hamiltonian = np.stack([self.evaluate_hamiltonian(value) for value in self._control_pulse])
-        dimension = full_hamiltonian.shape[1]
-
-        # The trace of a Hermitian matrix is real; keeping it complex would make the public eigenenergies complex.
-        energy_offset = np.trace(full_hamiltonian, axis1=1, axis2=2).real / dimension
-        hamiltonian_centered = full_hamiltonian - energy_offset[:, None, None] * np.eye(dimension)
+            hamiltonian = stack_samples(self.evaluate_hamiltonian, self._control_pulse)
+        hamiltonian = hamiltonian.astype(np.result_type(hamiltonian.dtype, float), copy=False)
+        dimension = hamiltonian.shape[1]
 
         # State indices are required for a full solve, but not for plotting/eigenenergy access.
         if isinstance(config, _ControlParameters):
@@ -827,11 +834,25 @@ class ControlModel:
                         f"{label}={index} is out of range for a {dimension}-dimensional Hamiltonian."
                     )
 
+        numerical_partial_H = self._flag_numerical_partial_H and not self._affine_hamiltonian
+        # Rounding error of the samples for the numerical derivative, set by their magnitude before centering.
+        sample_scale = float(np.max(np.abs(hamiltonian))) if numerical_partial_H else 0.0
+        # The trace of a Hermitian matrix is real; keeping it complex would make the public eigenenergies complex.
+        energy_offset = np.trace(hamiltonian, axis1=1, axis2=2).real / dimension
+        diagonal = np.arange(dimension)
+        hamiltonian[:, diagonal, diagonal] -= energy_offset[:, None]
+
+        # The finite differences need the samples, so they run before the eigenvectors are allocated.
+        partial_H = None
+        if numerical_partial_H:
+            partial_H = self._compute_numerical_partial_H(hamiltonian, sample_scale=sample_scale)
+
         try:
             with limit_blas_threads(dimension):
-                energies, eigenvectors = np.linalg.eigh(hamiltonian_centered)
+                energies, eigenvectors = np.linalg.eigh(hamiltonian)
         except np.linalg.LinAlgError as exc:
             raise SolverError("Hamiltonian eigendecomposition failed.") from exc
+        del hamiltonian
 
         energies = np.asarray(energies, dtype=float)
         if not np.all(np.isfinite(energies)):
@@ -841,20 +862,34 @@ class ControlModel:
 
         if self._affine_hamiltonian:
             assert self._H_c is not None
-            full_partial_H = self._H_c
-        elif self._flag_numerical_partial_H:
-            full_partial_H = self._compute_numerical_partial_H(full_hamiltonian)
-        else:
-            full_partial_H = np.stack(
-                [self._call_partial_hamiltonian(**self._evaluation_kwargs(value)) for value in self._control_pulse]
+            partial_H = self._H_c
+        elif partial_H is None:
+            partial_H = stack_samples(
+                lambda value: self._call_partial_hamiltonian(**self._evaluation_kwargs(value)), self._control_pulse
             )
 
+        self._matrix_elements = self._derivative_matrix_elements(eigenvectors, partial_H)
+        self._flags["eigenproblem_solved"] = True
+
+    def _derivative_matrix_elements(self, eigenvectors: np.ndarray, partial_H: np.ndarray) -> np.ndarray:
+        """
+        |<m|dH/dx|n>| between the eigenvectors at every grid point, with shape (n_points, dim, dim).
+
+        ``partial_H`` is one matrix (affine model) or one per grid point. The products are formed in chunks of grid
+        points, so their temporaries stay small compared with the (n_points, dim, dim) inputs.
+        """
+        n_points, dimension = eigenvectors.shape[:2]
+        chunk = max(1, self._MATRIX_ELEMENT_CHUNK_BYTES // (16 * dimension * dimension))
+        matrix_elements = np.empty((n_points, dimension, dimension), dtype=float)
         with limit_blas_threads(dimension):
-            matrix_elements = np.abs(eigenvectors.conj().transpose(0, 2, 1) @ full_partial_H @ eigenvectors)
+            for start in range(0, n_points, chunk):
+                block = slice(start, min(start + chunk, n_points))
+                vectors = eigenvectors[block]
+                derivative = partial_H if partial_H.ndim == 2 else partial_H[block]
+                np.abs(vectors.conj().transpose(0, 2, 1) @ derivative @ vectors, out=matrix_elements[block])
         if not np.all(np.isfinite(matrix_elements)):
             raise SolverError("Hamiltonian derivative matrix elements contain non-finite values.")
-        self._matrix_elements = matrix_elements
-        self._flags["eigenproblem_solved"] = True
+        return matrix_elements
 
     def _metric_ratio(
         self,
@@ -1022,7 +1057,9 @@ class ControlModel:
             )
         self._metric_tensor = metric
 
-    def _compute_numerical_partial_H(self, samples: np.ndarray | None = None) -> np.ndarray:
+    def _compute_numerical_partial_H(
+        self, samples: np.ndarray | None = None, sample_scale: float | None = None
+    ) -> np.ndarray:
         """
         Evaluate the derivative of the traceless part of H, d(H - tr(H) I / N)/dx, at every point of the control grid.
 
@@ -1041,6 +1078,9 @@ class ControlModel:
         ----------
         samples : np.ndarray | None
             Hamiltonian evaluated on the control grid, with shape (n_points, *H_shape). Evaluated if not given.
+        sample_scale : float | None
+            If given, ``samples`` are already traceless (they are used as they are, without a copy) and
+            ``sample_scale`` is max|H| of the samples before the trace was removed, which sets their rounding error.
 
         Returns
         -------
@@ -1070,9 +1110,10 @@ class ControlModel:
         if samples.shape[0] != x_grid.size:
             raise SolverError("Hamiltonian samples do not match the control grid.")
 
-        # Rounding error of the samples, set by their full magnitude before the trace is removed.
-        sample_scale = float(np.max(np.abs(samples)))
-        samples = traceless(samples)
+        if sample_scale is None:
+            # Rounding error of the samples, set by their full magnitude before the trace is removed.
+            sample_scale = float(np.max(np.abs(samples)))
+            samples = traceless(samples)
 
         n_points = x_grid.size
         # The grid is a linspace, so its nominal step follows from the endpoints. The individual steps differ from it
@@ -1086,7 +1127,10 @@ class ControlModel:
             stencil = min(self._FD_ORDER + 1, n_points)
             derivative = uniform_grid_derivative(samples, step, stencil)
             estimate = uniform_grid_derivative(samples, step, stencil - 2)
-            error = np.max(np.abs(derivative - estimate), axis=tuple(range(1, samples.ndim)))
+            # In place, so the difference does not need another (n_points, *H_shape) array.
+            estimate -= derivative
+            error = np.max(np.abs(estimate), axis=tuple(range(1, samples.ndim)))
+            del estimate
             tolerance = max(max(self._FD_RTOL, roundoff) * float(np.max(np.abs(derivative))), sample_noise)
             inaccurate = error > tolerance
             fallback = derivative

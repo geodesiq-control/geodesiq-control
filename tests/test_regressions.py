@@ -1,4 +1,5 @@
 import functools
+import tracemalloc
 import warnings
 from types import SimpleNamespace
 from typing import Any, cast
@@ -892,3 +893,56 @@ def test_vectorized_diabatic_metric_matches_the_sum_over_transitions():
                 expected[i] += elements[i, m, n] ** beta / abs(energies[i, n] - energies[i, m]) ** alpha
 
     np.testing.assert_allclose(model._metric_tensor, expected, rtol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Memory of the eigenproblem (C-17)
+# ---------------------------------------------------------------------------
+class TestEigenproblemMemory:
+    N_POINTS, DIM = 1025, 64
+
+    @classmethod
+    def _matrices(cls) -> tuple[np.ndarray, np.ndarray]:
+        rng = np.random.default_rng(1)
+        a = rng.normal(size=(cls.DIM, cls.DIM)) + 1j * rng.normal(size=(cls.DIM, cls.DIM))
+        return (a + a.conj().T) / 2, np.diag(np.linspace(-1.0, 1.0, cls.DIM))
+
+    def _model(self, kind: str) -> ControlModel:
+        h_d, h_c = self._matrices()
+        if kind == "affine":
+            model = ControlModel(H_d=h_d, H_c=h_c)
+        elif kind == "exact":
+            model = ControlModel(lambda x: h_d + x * h_c, lambda x: h_c)
+        else:
+            model = ControlModel(lambda x: h_d + x * h_c)
+        model.set_control(control_name=None if kind == "affine" else "x", pulse_initial=-1.0, pulse_final=1.0,
+                          num_steps=self.N_POINTS, )
+        return model
+
+    # Peak memory of _solve_eigenproblem in complex (N, d, d) stacks. Before C-17 the three paths took about 5, 6.5
+    # and 7.5 stacks; now about 2, 2.2 and 3.5. The bounds leave room for the small chunk temporaries.
+    @pytest.mark.parametrize(("kind", "bound"), [("affine", 2.5), ("exact", 2.75), ("numerical", 4.0)])
+    def test_peak_memory_stays_bounded(self, kind: str, bound: float):
+        model = self._model(kind)
+        stack = self.N_POINTS * self.DIM ** 2 * 16
+
+        tracemalloc.start()
+        try:
+            model._solve_eigenproblem()
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+        assert peak < bound * stack
+
+    def test_chunked_matrix_elements_match_the_direct_product(self, monkeypatch):
+        model = self._model("exact")
+        h_d, h_c = self._matrices()
+        # A few grid points per chunk, so the last chunk is incomplete.
+        monkeypatch.setattr(ControlModel, "_MATRIX_ELEMENT_CHUNK_BYTES", 7 * 16 * self.DIM ** 2)
+        model._solve_eigenproblem()
+
+        x = model.control_pulse
+        _, vectors = np.linalg.eigh(h_d[None] + x[:, None, None] * h_c[None])
+        expected = np.abs(vectors.conj().transpose(0, 2, 1) @ h_c @ vectors)
+        np.testing.assert_allclose(model._matrix_elements, expected, atol=1e-12)

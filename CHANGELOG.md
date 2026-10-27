@@ -31,6 +31,12 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   adiabatic fraction plus the occupied state at each point, instead of a dense `(n_points, dim, dim)` array, and the
   diabatic metric is evaluated without a Python loop over all pairs of states. For `dim = 200` and `num_steps = 1025`
   building the list drops from 658 MB peak memory and 136 ms to 3 MB and 3 ms. The metric is unchanged.
+- The eigenproblem needs less memory. The Hamiltonian samples are centered in place and released right after the
+  diagonalization, samples are written into one preallocated array, the numerical derivative runs before the
+  eigenvectors exist and forms its sums in pieces, and `|<m|dH/dx|n>|` is computed in chunks of grid points. The peak
+  drops from about 5, 6.5 and 7.5 to about 2, 2.2 and 3.5 complex `(num_steps, dim, dim)` arrays for affine models,
+  callable models with `partial_H_func`, and callable models with the numerical derivative (for `dim = 256` and
+  `num_steps = 1025`, one such array is 1.07 GB). The results are unchanged.
 - `solve_problem()` and `plot_metric_tensor()` no longer evaluate the Hamiltonian once per call just to get its
   dimension once it is known, and a `num_steps` that is incompatible with the default `romb` integrator (not
   `2**k + 1`) is rejected before the eigenproblem is solved instead of after.

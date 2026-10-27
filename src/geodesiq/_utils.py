@@ -1,4 +1,4 @@
-from collections.abc import Generator, Mapping, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from fractions import Fraction
@@ -196,6 +196,29 @@ def is_hermitian(matrix: np.ndarray, rtol: float = HERMITIAN_RTOL) -> bool:
         array
     )
     return bool(np.linalg.norm(array - array.conj().T) <= tolerance)
+
+
+def stack_samples(function: Callable[[float], Any], points: np.ndarray) -> np.ndarray:
+    """
+    Evaluate ``function`` at every point and stack the results along a new first axis, like ``np.stack``.
+
+    The results are written into one preallocated array, so the list of samples and the stacked copy of
+    ``np.stack`` do not both exist. The dtype is at least ``float`` and is widened (e.g. to complex) if a later sample
+    requires it.
+    """
+    first = np.asarray(function(points[0]))
+    stacked = np.empty((len(points), *first.shape), dtype=np.result_type(first.dtype, float))
+    stacked[0] = first
+    for index in range(1, len(points)):
+        sample = np.asarray(function(points[index]))
+        if sample.shape != first.shape:
+            raise ValidationError(
+                f"All samples must have the same shape: expected {first.shape}, got {sample.shape} at point {index}."
+            )
+        if not np.can_cast(sample.dtype, stacked.dtype, casting="safe"):
+            stacked = stacked.astype(np.result_type(stacked.dtype, sample.dtype))
+        stacked[index] = sample
+    return stacked
 
 
 def traceless(matrices: np.ndarray) -> np.ndarray:
@@ -479,6 +502,10 @@ def finite_difference_weights(offsets: tuple[int, ...]) -> np.ndarray:
     return weights
 
 
+# Size of the pieces in which uniform_grid_derivative forms its weighted sums.
+_DERIVATIVE_CHUNK_BYTES = 2**22
+
+
 def uniform_grid_derivative(samples: np.ndarray, step: float, n_points: int) -> np.ndarray:
     """
     First derivative along axis 0 of samples taken on a uniform grid with spacing ``step``.
@@ -496,11 +523,16 @@ def uniform_grid_derivative(samples: np.ndarray, step: float, n_points: int) -> 
     starts = np.clip(np.arange(n) - half, 0, n - n_points)
     relative = starts - np.arange(n)
     boundaries = np.flatnonzero(np.diff(relative)) + 1
+    # Rows per piece, so that the temporary ``weight * samples[...]`` stays small for large matrices.
+    rows = max(1, _DERIVATIVE_CHUNK_BYTES // max(1, derivative[0].nbytes))
     for block in np.split(np.arange(n), boundaries):
         first, last = int(block[0]), int(block[-1]) + 1
         offsets = tuple(int(relative[first]) + j for j in range(n_points))
         weights = finite_difference_weights(offsets)
-        for offset, weight in zip(offsets, weights, strict=True):
-            derivative[first:last] += weight * samples[first + offset : last + offset]
+        for lo in range(first, last, rows):
+            hi = min(lo + rows, last)
+            for offset, weight in zip(offsets, weights, strict=True):
+                derivative[lo:hi] += weight * samples[lo + offset : hi + offset]
 
-    return derivative / step
+    derivative /= step
+    return derivative
