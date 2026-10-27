@@ -1,11 +1,9 @@
-# About geodesiq-control
+"""Report geodesiq version, dependency versions and runtime environment information."""
 
 import importlib
-import inspect
 import os
 import platform
 import sys
-from pathlib import Path
 
 from ._meta import __author__, __version__
 
@@ -23,14 +21,6 @@ def _module_version(module_name: str) -> str:
     return str(getattr(module, "__version__", "unknown"))
 
 
-def _installation_path() -> Path:
-    """Resolve the package installation path for reporting."""
-    source_file = inspect.getsourcefile(_installation_path)
-    if source_file is None:
-        return Path(__file__).resolve().parent
-    return Path(source_file).resolve().parent
-
-
 def about() -> None:
     """Print information on geodesiq, key dependencies, and runtime environment."""
     print()
@@ -41,7 +31,6 @@ def about() -> None:
     print(f"Python Version:     {platform.python_version()} ({sys.implementation.name})")
     print(f"Number of CPUs:     {os.cpu_count()}")
     print(f"Platform Info:      {platform.system()} ({platform.release()}, {platform.machine()})")
-    # print(f"Installation path:  {_installation_path()}")
 
     print("\nCore Dependencies:")
     print(f"Numpy Version:      {_module_version('numpy')}")

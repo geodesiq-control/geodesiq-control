@@ -16,6 +16,13 @@ if TYPE_CHECKING:
 
 
 class Dynamics:
+    """Simulate closed- or open-system evolution of a pulsed ControlModel.
+
+    Use the model's optimal pulse rescaled to a physical duration, or supply a custom
+    sampled pulse. Methods compute evolution operators, fidelities and state populations;
+    collapse operators enable Lindblad evolution for state observables.
+    """
+
     def __init__(
         self,
         model: ControlModel,
@@ -39,7 +46,7 @@ class Dynamics:
 
         Parameters
         ----------
-        model: ControlModel
+        model : ControlModel
             An instance of the ControlModel class containing the Hamiltonian and the system parameters.
         duration : float | None
             Duration of the optimal control pulse (t_f). Must not be combined with ``times`` and ``pulse``.
@@ -263,9 +270,11 @@ class Dynamics:
         c_ops: Sequence[qt.Qobj | qt.QobjEvo | np.ndarray] | None = None,
     ) -> float:
         """
-        Compute the state transfer fidelity with Lindblad master equation. Depending on whether initial/final states are
-        explicitly given, then the time evolution is constructed. If integers of None are given then eigenstate
-        evolution is assumed.
+        Compute state transfer fidelity for closed- or open-system evolution.
+
+        Without collapse operators the evolution is closed. Supplying ``c_ops`` enables
+        the Lindblad master equation. Integer state indices or omitted states select
+        eigenstates at the pulse endpoints; explicit states are used directly.
 
         Parameters
         ----------
@@ -278,8 +287,13 @@ class Dynamics:
             Target state, of the same kind as ``initial_state``.
         c_ops : Sequence[qt.Qobj | qt.QobjEvo | np.ndarray] | None
             Collapse operators for the Lindblad master equation: a list or tuple of (d, d) Qobj, np.ndarray or
-            QobjEvo, which may be mixed.
+            QobjEvo, which may be mixed. None or an empty sequence gives closed evolution.
 
+        Returns
+        -------
+        float
+            Squared QuTiP fidelity between the target state and the evolved final state.
+            For pure states this is the squared magnitude of their overlap.
         """
         dimension = self._dimension()
         collapse_operators = _as_collapse_operators(c_ops, dimension)

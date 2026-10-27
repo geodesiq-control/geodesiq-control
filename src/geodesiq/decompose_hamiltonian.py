@@ -77,13 +77,38 @@ class HamiltonianDecomposition:
     relative_total_error: float
 
     def qobjevo(self, order: int = 3) -> qt.QobjEvo:
-        """Construct H(t) = H_d + sum_i u_i(t) H_i as a QuTiP QobjEvo."""
+        """Construct H(t) = H_d + sum_i u_i(t) H_i as a QuTiP QobjEvo.
+
+        Parameters
+        ----------
+        order : int
+            Spline interpolation order for the sampled coefficients (default is 3).
+            Use 0 for sample-and-hold or 1 for linear interpolation.
+
+        Returns
+        -------
+        qt.QobjEvo
+            Time-dependent Hamiltonian with coefficients interpolated on ``times``.
+        """
         terms = [self.H_d]
         terms.extend([[H, coefficient] for H, coefficient in zip(self.H_controls, self.coefficients, strict=False)])
         return qt.QobjEvo(terms, tlist=self.times, order=order)
 
     def reconstruct_sample(self, index: int) -> qt.Qobj:
-        """Reconstruct H at one of the sampled times."""
+        """Reconstruct H at one of the sampled times.
+
+        Parameters
+        ----------
+        index : int
+            Index into ``times`` and the coefficient samples. Negative indices count
+            from the end, following NumPy indexing conventions.
+
+        Returns
+        -------
+        qt.Qobj
+            Hamiltonian at ``times[index]``, reconstructed using the retained control terms.
+            Discarded terms are not included.
+        """
         H = self.H_d.copy()
 
         for H_control, coefficient in zip(self.H_controls, self.coefficients, strict=False):

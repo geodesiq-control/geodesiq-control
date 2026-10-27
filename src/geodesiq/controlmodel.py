@@ -319,7 +319,30 @@ class ControlModel:
         return {**self._parameters, control_name: float(control_value)}
 
     def evaluate_hamiltonian(self, control_value: float) -> np.ndarray:
-        """Evaluate and validate the Hamiltonian at one control value."""
+        """Evaluate and validate the Hamiltonian at one control value.
+
+        Parameters
+        ----------
+        control_value : float
+            Finite real value of the control parameter. Callable models receive it
+            under ``control_name``, together with the stored fixed parameters.
+
+        Returns
+        -------
+        np.ndarray
+            Hamiltonian matrix of shape ``(dimension, dimension)``. For affine models
+            this is ``H_d + control_value * H_c``.
+
+        Raises
+        ------
+        InvalidControlParameterError
+            If ``control_value`` is not a finite real number.
+        MissingControlParameterError
+            If a callable model has no configured ``control_name``.
+        ValidationError
+            If a callable returns a non-square, non-finite or non-Hermitian matrix,
+            or changes the Hamiltonian dimension after it has been established.
+        """
 
         if not isinstance(control_value, (int, float, np.integer, np.floating)) or isinstance(control_value, bool):
             raise InvalidControlParameterError("Control value must be a finite real number.")
@@ -532,6 +555,20 @@ class ControlModel:
 
         The values are stored as deep copies, so changing a passed object in place (e.g. an array) does not affect the
         model until it is passed to ``set_parameters`` again.
+
+        Parameters
+        ----------
+        **parameters : Any
+            Fixed keyword arguments passed to ``H_func`` and ``partial_H_func``.
+            Supplied names replace their stored values; other parameters are retained.
+            A change invalidates the cached eigensystem and all dependent results.
+
+        Raises
+        ------
+        ImmutableConfigurationError
+            If the model was constructed with constant ``H_d`` and ``H_c`` matrices.
+        InvalidControlParameterError
+            If a parameter name is the configured ``control_name``.
         """
 
         if self._affine_hamiltonian:

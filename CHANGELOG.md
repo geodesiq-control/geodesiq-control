@@ -71,6 +71,8 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Fixed
 
+- Complete API docstrings for Hamiltonian evaluation, fixed parameters, decomposition helpers and state fidelity;
+  document the `Dynamics` class and `about` module, and remove the unused installation-path reporting helper.
 - `ControlModel.plot_eigenvalues()` and `ControlModel.plot_metric_tensor()` raise `ValidationError` when `ax` is not
   a matplotlib `Axes` or `fig` is not a `Figure`/`SubFigure` (e.g. a figure passed positionally as `ax`), instead of
   silently returning `None`. Their return type is now `tuple[Figure | SubFigure, Axes]` without `| None`, so
