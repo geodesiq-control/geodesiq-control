@@ -17,10 +17,6 @@
 [![PyPI - License](https://img.shields.io/pypi/l/geodesiq)](https://opensource.org/license/lgpl-2-1)
 [![PyPI Downloads](https://api.pepy.tech/badge/geodesiq/month?left_text=downloads%20%7C%20pip)](https://pypi.org/project/geodesiq/)
 
-[//]: # ([![Coverage Status]&#40;https://img.shields.io/coveralls/qutip/qutip.svg?logo=Coveralls&#41;]&#40;https://coveralls.io/r/qutip/qutip&#41;)
-[//]: # ([![Maintainability]&#40;https://api.codeclimate.com/v1/badges/df502674f1dfa1f1b67a/maintainability&#41;]&#40;https://codeclimate.com/github/qutip/qutip/maintainability&#41;)
-
-
 ---
 [Installation](#installation) | [Example code](#example-code) | [Documentation](https://geodesiq.readthedocs.io) |
 [Citing geodesiq](#citing-geodesiq)
@@ -97,6 +93,15 @@ If the Hamiltonian is affine in the control, `H(z) = H_d + z H_c`, pass the two 
 `ControlModel(H_d=..., H_c=...)`, which is considerably faster. More examples are available in the
 [`examples/`](https://github.com/geodesiq-control/geodesiq-control/tree/main/examples) notebooks.
 
+The notebooks need a few packages that `pip install geodesiq` does not install: `tqdm` (Landau–Zener), `joblib`
+(double quantum dot), and `parameterrun` and `quspin` (many-body). To run all of them:
+
+```bash
+pip install jupyterlab tqdm joblib parameterrun quspin
+```
+
+In a clone of the repository, `uv sync --group notebooks` installs them as well.
+
 ## Public API
 
 Top-level imports are intentionally kept small and explicit:
@@ -126,7 +131,7 @@ Use the following checks before submitting changes:
 ```bash
 uv run ruff check src tests
 uv run ruff format --check src
-uv run ty check src
+uv run ty check src tests
 uv run pytest
 uv run mkdocs build --strict
 uv run python -m build
