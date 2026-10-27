@@ -300,6 +300,44 @@ class TestOptimalPulse:
         assert not hasattr(dynamics, "evaluate_hamiltonian")
         np.testing.assert_allclose(dynamics._evaluate_hamiltonian(1.5), real_model.evaluate_hamiltonian(1.5))
 
+    def test_later_model_changes_do_not_reach_an_existing_dynamics(self):
+        # The propagation was frozen at construction, but the endpoint eigenstates and the adiabatic basis used the
+        # live model, so a changed parameter mixed two Hamiltonians without an error (D-03).
+        model = ControlModel(lz_hamiltonian)
+        model.set_parameters(delta=1.0)
+        model.set_control(control_name="lam", pulse_initial=-5.0, pulse_final=5.0, initial_state=0, alpha=2.0,
+                          beta=2.0, num_steps=129)
+        model.solve_problem(pulse_accuracy=50)
+        dynamics = Dynamics(model, duration=10.0)
+        fidelity = dynamics.state_fidelity()
+        populations = dynamics.populations()
+
+        model.set_parameters(delta=0.2)
+        model.set_control(control_name="lam", initial_state=1)
+
+        assert dynamics.state_fidelity() == fidelity
+        np.testing.assert_array_equal(dynamics.populations(), populations)
+        np.testing.assert_allclose(dynamics._evaluate_hamiltonian(0.0), lz_hamiltonian(0.0, delta=1.0))
+        model.solve_problem(pulse_accuracy=50)
+        assert Dynamics(model, duration=10.0).state_fidelity() != fidelity
+
+    def test_parameters_are_copied_into_the_snapshot(self):
+        # A mutable parameter changed in place after construction must not reach the snapshot either.
+        def hamiltonian(lam: float, couplings: list) -> np.ndarray:
+            return np.array([[lam, couplings[0]], [couplings[0], -lam]], dtype=float)
+
+        couplings = [1.0]
+        model = ControlModel(hamiltonian)
+        model.set_parameters(couplings=couplings)
+        model.set_control(control_name="lam", pulse_initial=-2.0, pulse_final=2.0, initial_state=0, alpha=2.0,
+                          beta=2.0, num_steps=33)
+        model.solve_problem(pulse_accuracy=20)
+        dynamics = Dynamics(model, duration=5.0)
+
+        model.set_parameters(couplings=[0.3])
+
+        np.testing.assert_allclose(dynamics._evaluate_hamiltonian(0.0), [[0.0, 1.0], [1.0, 0.0]])
+
     def test_matches_synthesized_pulse_control(self, real_model):
         duration = 2.5
         dynamics = Dynamics(real_model, duration=duration)

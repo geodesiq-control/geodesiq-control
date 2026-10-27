@@ -28,6 +28,7 @@ from ._utils import (
     values_equal,
 )
 from .exceptions import (
+    ConfigurationError,
     ImmutableConfigurationError,
     InvalidControlParameterError,
     MetricComputationError,
@@ -250,8 +251,10 @@ class ControlModel:
             raise ImmutableConfigurationError(
                 "Direct H_func evaluation is unavailable when H_d and H_c define the Hamiltonian."
             )
-        matrix = np.asarray(H_func(*args, **{**self._parameters, **kwargs}))
+        return self._validate_hamiltonian(np.asarray(H_func(*args, **{**self._parameters, **kwargs})))
 
+    def _validate_hamiltonian(self, matrix: np.ndarray) -> np.ndarray:
+        """Check a matrix returned by H_func, and record the Hamiltonian dimension on the first call."""
         if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
             raise ValidationError(f"H_func must return a 2D square matrix, got shape {matrix.shape}.")
 
@@ -357,12 +360,7 @@ class ControlModel:
             or changes the Hamiltonian dimension after it has been established.
         """
 
-        if not isinstance(control_value, (int, float, np.integer, np.floating)) or isinstance(control_value, bool):
-            raise InvalidControlParameterError("Control value must be a finite real number.")
-
-        control_value = float(control_value)
-        if not np.isfinite(control_value):
-            raise InvalidControlParameterError("Control value must be finite.")
+        control_value = self._check_control_value(control_value)
 
         if self._affine_hamiltonian:
             assert self._H_d is not None
@@ -370,6 +368,47 @@ class ControlModel:
             return self._H_d + control_value * self._H_c
 
         return self._call_hamiltonian(**self._evaluation_kwargs(control_value))
+
+    def _frozen_hamiltonian(self) -> Callable[[float], np.ndarray]:
+        """
+        Evaluator of the current Hamiltonian that later changes to the model do not affect (used by ``Dynamics``).
+
+        It takes copies of ``H_d`` and ``H_c``, or of the fixed parameters and ``control_name`` of a callable model,
+        and validates like ``evaluate_hamiltonian``. ``H_func`` itself cannot be replaced; state that it keeps
+        internally (e.g. in a closure) is not copied.
+        """
+        if self._affine_hamiltonian:
+            if self._H_d is None or self._H_c is None:
+                raise ConfigurationError("Affine ControlModel is missing its constant drift or control Hamiltonian.")
+            H_d, H_c = self._H_d.copy(), self._H_c.copy()
+
+            def evaluate_affine(control_value: float) -> np.ndarray:
+                return H_d + self._check_control_value(control_value) * H_c
+
+            return evaluate_affine
+
+        H_func = self._H_func
+        if H_func is None:
+            raise MissingControlParameterError("H_func is not configured.")
+        kwargs = self._evaluation_kwargs(0.0)  # Checks that control_name is set.
+        control_name = self.control_name
+        assert control_name is not None
+        kwargs = deepcopy(kwargs)
+
+        def evaluate_callable(control_value: float) -> np.ndarray:
+            kwargs[control_name] = self._check_control_value(control_value)
+            return self._validate_hamiltonian(np.asarray(H_func(**kwargs)))
+
+        return evaluate_callable
+
+    @staticmethod
+    def _check_control_value(control_value: float) -> float:
+        if not isinstance(control_value, (int, float, np.integer, np.floating)) or isinstance(control_value, bool):
+            raise InvalidControlParameterError("Control value must be a finite real number.")
+        control_value = float(control_value)
+        if not np.isfinite(control_value):
+            raise InvalidControlParameterError("Control value must be finite.")
+        return control_value
 
     # Setters and getters are defined for the critical attributes of the ControlModel class, so we have control over how
     # the user modifies them. Every control setter delegates to set_control(), which validates the full configuration

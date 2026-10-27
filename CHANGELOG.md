@@ -76,6 +76,11 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Fixed
 
+- `Dynamics` captures the model's Hamiltonian at construction (copies of `H_d`/`H_c`, or of the fixed parameters and
+  `control_name` of a callable model), as it already did for the pulse and the state indices. Before, the
+  propagation was frozen but the endpoint eigenstates and the adiabatic basis of `populations()` used the live model,
+  so changing a parameter afterwards mixed two Hamiltonians without an error. Create a new `Dynamics` to use a
+  changed model.
 - Document that, with the default `solve_ivp`, `solver_kwargs` act on the inverse equation `dtau/dx`: its independent
   variable is the control, so `max_step`, `first_step` and `min_step` are in control units and `atol`/`rtol` apply to
   `tau(x)`. Behaviour is unchanged.

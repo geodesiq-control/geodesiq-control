@@ -50,7 +50,10 @@ class Dynamics:
         Parameters
         ----------
         model : ControlModel
-            An instance of the ControlModel class containing the Hamiltonian and the system parameters.
+            An instance of the ControlModel class containing the Hamiltonian and the system parameters. Its
+            Hamiltonian (copies of ``H_d``/``H_c``, or of the fixed parameters and ``control_name``), state indices and
+            pulse are captured here, so later changes to the model do not affect this object; create a new
+            ``Dynamics`` to use them. State kept inside ``H_func`` itself (e.g. in a closure) is not copied.
         duration : float | None
             Duration of the optimal control pulse (t_f). Must not be combined with ``times`` and ``pulse``.
         times : ArrayLike | None
@@ -162,11 +165,13 @@ class Dynamics:
         # The pulse between samples, with the same interpolation as the propagated Hamiltonian.
         self._pulse_coefficient = qt.coefficient(self._pulse, tlist=self._pulse_times, order=self._order)
 
-        self._model = model
+        # Snapshot of the model: later changes to it (parameters, control_name, states) do not reach this object, so
+        # the propagation, the endpoint eigenstates and the adiabatic basis all use the same Hamiltonian (D-03).
+        self._hamiltonian: Callable[[float], np.ndarray] = model._frozen_hamiltonian()
         self._initial_state: int | None = model.initial_state
         self._final_state: int | None = model.final_state
         if model.hamiltonian_dimension is None:
-            model.evaluate_hamiltonian(float(self._pulse[0]))  # Fixes the dimension of callable models
+            self._hamiltonian(float(self._pulse[0]))  # Fixes the dimension of callable models
         self._hamiltonian_dimension: int | None = model.hamiltonian_dimension
 
         if model.affine_hamiltonian:
@@ -256,8 +261,8 @@ class Dynamics:
             raise ValidationError(f"QuTiP solver rejected the configuration or options: {exc}") from exc
 
     def _evaluate_hamiltonian(self, control_value: float) -> np.ndarray:
-        """Evaluate the model's Hamiltonian at one control value (the model is not snapshotted, see D-03)."""
-        return self._model.evaluate_hamiltonian(float(control_value))
+        """Evaluate the Hamiltonian of the model, as it was when this object was created, at one control value."""
+        return self._hamiltonian(float(control_value))
 
     def _eigenstate(self, control_value: float, state_index: int) -> qt.Qobj:
         hamiltonian = qt.Qobj(self._evaluate_hamiltonian(control_value))
