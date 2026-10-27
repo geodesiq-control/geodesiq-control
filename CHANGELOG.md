@@ -76,6 +76,8 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Fixed
 
+- Clarify that the sampled-metric normalization cancels algebraically from both normalized solver equations;
+  custom solvers use the PCHIP interpolant's own integral to avoid a quadrature-induced endpoint mismatch.
 - Align plotting docstrings with the supported `Figure`/`SubFigure` inputs, tuple returns and validation errors;
   correct the documented eigenvalue-plot default title and document Dynamics configuration errors.
 - Complete API docstrings for Hamiltonian evaluation, fixed parameters, decomposition helpers and state fidelity;

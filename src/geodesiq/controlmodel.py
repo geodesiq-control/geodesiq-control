@@ -798,6 +798,11 @@ class ControlModel:
         pass them explicitly: ``solve_problem(solver=scipy.integrate.solve_ivp, solver_kwargs={},
         metric_integrator=scipy.integrate.romb, metric_integrator_kwargs={})``. Changing any of them invalidates only
         the dependent cached results (the metric for the integrator, the pulse for the solver).
+
+        ``metric_integrator`` computes the positive scale ``a_tilde`` from the sampled metric. Both solver paths
+        renormalize the PCHIP interpolant to span ``tau`` in [0, 1], so this scale cancels algebraically from their
+        normalized equations. In particular, custom solvers use the integral of that interpolant for their
+        normalization, avoiding an endpoint mismatch from using a different quadrature on the raw metric samples.
         """
         if pulse_accuracy is None:
             pulse_accuracy = (
