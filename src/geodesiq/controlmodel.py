@@ -1318,15 +1318,17 @@ class ControlModel:
         if self._control_pulse is None or self._metric_tensor is None or self._a_tilde is None:
             raise SolverError("ODE cannot be solved before the control pulse and metric tensor are available.")
 
-        factor = self._a_tilde / np.sqrt(self._metric_tensor)
-        if not np.all(np.isfinite(factor)) or np.any(factor <= 0):
-            raise MetricComputationError("ODE speed factor is non-finite or non-positive.")
+        # ds/dx = sqrt(G) / a_tilde stays finite where the metric vanishes (the pulse passes such a point infinitely
+        # fast), unlike the speed dx/ds = a_tilde / sqrt(G).
+        inverse_speed = np.sqrt(self._metric_tensor) / self._a_tilde
+        if not np.all(np.isfinite(inverse_speed)) or np.any(inverse_speed < 0):
+            raise MetricComputationError("ODE rate ds/dx = sqrt(G) / a_tilde is non-finite or negative.")
 
         order = np.argsort(self._control_pulse)
-        # Both solver paths use the PCHIP interpolant of ds/dx = 1 / factor(x), which keeps the samples positive.
+        # Both solver paths use the PCHIP interpolant of ds/dx, which keeps the non-negative samples non-negative.
         inverse_interpolation = PchipInterpolator(
             self._control_pulse[order],
-            1.0 / factor[order],
+            inverse_speed[order],
             extrapolate=False,
         )
         antiderivative = inverse_interpolation.antiderivative()
@@ -1344,9 +1346,9 @@ class ControlModel:
             if reserved:
                 names = ", ".join(sorted(reserved))
                 raise ValidationError(f"solver_kwargs must not override internally managed option(s): {names}.")
-            # The ODE dx/ds = factor(x) is autonomous, so solve its inverse ds/dx = 1 / factor(x) and invert s(x)
-            # afterward. The speed factor can span many orders of magnitude (e.g. large alpha/beta), which makes the
-            # forward problem require steps below floating-point spacing, while the inverse is well conditioned.
+            # The ODE dx/ds = a_tilde / sqrt(G(x)) is autonomous, so solve its inverse ds/dx = sqrt(G(x)) / a_tilde and
+            # invert s(x) afterward. The speed can span many orders of magnitude (e.g. large alpha/beta), which makes
+            # the forward problem require steps below floating-point spacing, while the inverse is well conditioned.
             x_grid = np.linspace(x_start, x_end, max(self._control_pulse.size, 8 * pulse_accuracy))
 
             if kwargs:
@@ -1382,6 +1384,15 @@ class ControlModel:
             t = s
             y = PchipInterpolator(s_grid[keep], x_grid[keep])(np.clip(s, s_grid[keep][0], s_grid[keep][-1]))
         else:
+            # The forward equation divides by ds/dx, so it is undefined where the metric vanishes.
+            zeros = inverse_speed == 0
+            if np.any(zeros):
+                sample = ", ".join(f"{value:.6g}" for value in self._control_pulse[zeros][:3])
+                raise MetricComputationError(
+                    f"The metric tensor is zero at control value(s) {sample}, where the forward equation "
+                    "dx/ds = a_tilde / sqrt(G) of a custom solver is infinite. Use the default solver "
+                    "(scipy.integrate.solve_ivp), which integrates ds/dx instead."
+                )
             # Normalize the forward ODE with the exact integral of the interpolant it uses, so that x(1) = x_end.
             # (a_tilde comes from the raw samples and differs from it, which made the pulse overshoot or fall short.)
             length = direction * float(antiderivative(x_end) - antiderivative(x_start))

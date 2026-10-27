@@ -81,6 +81,11 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   did not improve the result. Only the traceless part of H is differentiated (the trace part does not change the
   metric), and the tolerances are floored at the rounding error the offset leaves in the samples. For
   `H = 1e10 * I + x * sz + 0.1 * sx` this also reduces the metric error from 28% to 0.1%.
+- A metric tensor that is exactly zero at isolated grid points (e.g. a coupling that vanishes at `x = 0` on a grid
+  containing 0) is now solved by the default solver, which integrates the finite `ds/dx = sqrt(G)/a`; the pulse passes
+  such a point infinitely fast. Before, the warning about the zero was followed by "ODE speed factor is non-finite or
+  non-positive". A custom `solver`, which integrates the forward equation `dx/ds`, raises `MetricComputationError`
+  naming the zero points instead.
 - `solve_problem()` accepts array values in `solver_kwargs` and `metric_integrator_kwargs` (e.g. `x` for
   `scipy.integrate.trapezoid`) on repeated calls. Comparing them with the stored kwargs raised "The truth value of an
   array ... is ambiguous". They are now compared element-wise and stored as deep copies, so an array changed in place

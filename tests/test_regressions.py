@@ -145,6 +145,40 @@ def test_zero_metric_raises_instead_of_entering_solver():
         model.solve_problem()
 
 
+def _isolated_zero_metric_model() -> ControlModel:
+    # The coupling x**3 vanishes exactly at the grid point x = 0, so the metric is zero there (C-04).
+    sz = np.diag([1.0, -1.0])
+    sx = np.array([[0.0, 1.0], [1.0, 0.0]])
+    model = ControlModel(lambda x: x ** 3 * sx + sz, partial_H_func=lambda x: 3 * x ** 2 * sx)
+    model.set_control(control_name="x", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0, beta=2.0,
+                      num_steps=129, )
+    return model
+
+
+@pytest.mark.parametrize("solver_kwargs", [None, {"rtol": 1e-10}])
+def test_isolated_zero_of_the_metric_is_passed_by_the_default_solver(solver_kwargs):
+    # The default solver integrates ds/dx = sqrt(G) / a_tilde, which is finite at G = 0. Before, the speed
+    # a_tilde / sqrt(G) was built first and raised "ODE speed factor is non-finite or non-positive".
+    model = _isolated_zero_metric_model()
+
+    with pytest.warns(NumericalStabilityWarning, match="near control value\\(s\\) 0"):
+        model.solve_problem(pulse_accuracy=401, solver_kwargs=solver_kwargs)
+
+    pulse = model.control_sol
+    assert pulse[0] == -1.0 and pulse[-1] == 1.0
+    assert np.all(np.diff(pulse) >= 0)
+    # The problem is symmetric in x, so the zero at x = 0 is passed at half the normalized time. The pulse jumps
+    # through it, so s(x = 0) is only resolved to one sample of the pulse.
+    assert abs(np.interp(0.0, pulse, model.s) - 0.5) <= 1.0 / (401 - 1)
+
+
+def test_isolated_zero_of_the_metric_is_rejected_clearly_by_a_custom_solver():
+    model = _isolated_zero_metric_model()
+
+    with pytest.warns(NumericalStabilityWarning), pytest.raises(MetricComputationError, match="forward equation"):
+        model.solve_problem(solver=functools.partial(solve_ivp, rtol=1e-8))
+
+
 def test_degenerate_gap_raises_clear_metric_error():
     def hamiltonian(z: float) -> np.ndarray:
         return np.array([[z, 0.0], [0.0, -z]])
