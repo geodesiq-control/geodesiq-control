@@ -2,7 +2,7 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
-from scipy.integrate import solve_ivp
+from scipy.integrate import solve_ivp, trapezoid
 
 from geodesiq import (
     ControlModel,
@@ -994,13 +994,13 @@ class TestSolveProblem:
         def custom_metric_integrator(values, dx=1.0, scale=1.0):
             calls["dx"] = dx
             calls["scale"] = scale
-            return np.trapezoid(values, dx=dx) * scale
+            return trapezoid(values, dx=dx) * scale
 
         configured_ham.solve_problem(metric_integrator=custom_metric_integrator,
                                      metric_integrator_kwargs={"scale": 1.0}, )
 
         dx = float(np.abs(configured_ham._control_pulse[1] - configured_ham._control_pulse[0]))
-        expected = np.trapezoid(np.sqrt(configured_ham._metric_tensor), dx=dx)
+        expected = trapezoid(np.sqrt(configured_ham._metric_tensor), dx=dx)
 
         assert np.isclose(calls["dx"], dx)
         assert np.isclose(calls["scale"], 1.0)
@@ -1026,7 +1026,7 @@ class TestSolveProblem:
     def test_array_valued_metric_integrator_kwargs_are_compared_elementwise(self, configured_ham):
         # Comparing the kwargs dicts with != raised "The truth value of an array ... is ambiguous" (C-11).
         def integrator(values, dx=1.0, x=None):
-            return np.trapezoid(values, x=x)
+            return trapezoid(values, x=x)
 
         x = configured_ham.control_pulse
         configured_ham.solve_problem(metric_integrator=integrator, metric_integrator_kwargs={"x": x.copy()})
@@ -1055,7 +1055,7 @@ class TestSolveProblem:
 
     def test_array_kwargs_changed_in_place_invalidate_the_cache(self, configured_ham):
         def integrator(values, dx=1.0, x=None):
-            return np.trapezoid(values, x=x)
+            return trapezoid(values, x=x)
 
         x = configured_ham.control_pulse.copy()
         kwargs = {"x": x}
@@ -1507,7 +1507,7 @@ class TestSolveProblemErrors:
         ham.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0, beta=2.0,
                         num_steps=100)
 
-        ham.solve_problem(metric_integrator=lambda values, dx: np.trapezoid(values, dx=dx))
+        ham.solve_problem(metric_integrator=lambda values, dx: trapezoid(values, dx=dx))
         assert ham._flags["ode_solved"]
 
     def test_warm_solve_does_not_evaluate_the_hamiltonian(self):

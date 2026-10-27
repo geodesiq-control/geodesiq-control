@@ -314,8 +314,10 @@ def test_eigenenergies_of_complex_hamiltonian_are_real(mode: str) -> None:
     model.set_control(control_name="x", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0, beta=2.0,
                       num_steps=33, )
 
+    # numpy.exceptions exists only from numpy 1.25, and numpy 2.0 removed the top-level alias (P-02).
+    complex_warning = np.exceptions.ComplexWarning if hasattr(np, "exceptions") else np.ComplexWarning
     with warnings.catch_warnings():
-        warnings.simplefilter("error", np.exceptions.ComplexWarning)
+        warnings.simplefilter("error", complex_warning)
         energies = model.eigenenergies
         model.solve_problem(pulse_accuracy=50)
 
