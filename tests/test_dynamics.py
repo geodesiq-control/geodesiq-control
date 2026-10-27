@@ -448,6 +448,71 @@ class TestInterpolationOrder:
 
 
 # ------------------------------------------------------------
+# Validation of explicit states, gates and collapse operators (D-08)
+# ------------------------------------------------------------
+
+
+class TestExplicitStateValidation:
+    KET_0 = np.array([1.0, 0.0])
+    KET_1 = np.array([0.0, 1.0])
+
+    def test_unnormalized_states_are_rejected(self, default_dynamics):
+        # state_fidelity(2a, 2b) returned 15.85 and populations(2a) summed to 4 (D-08).
+        with pytest.raises(ValidationError, match="must be normalized"):
+            default_dynamics.state_fidelity(initial_state=2 * self.KET_0, final_state=2 * self.KET_1)
+        with pytest.raises(ValidationError, match="must be normalized"):
+            default_dynamics.populations(initial_state=2 * self.KET_0)
+        with pytest.raises(ValidationError, match="unit trace"):
+            default_dynamics.state_fidelity(initial_state=2 * np.diag([1.0, 0.0]), final_state=self.KET_1)
+
+    def test_non_hermitian_density_matrix_is_rejected(self, default_dynamics):
+        with pytest.raises(ValidationError, match="must be Hermitian"):
+            default_dynamics.populations(initial_state=np.array([[0.5, 0.5], [0.0, 0.5]]))
+
+    @pytest.mark.parametrize("bad_state", [qt.basis(3, 0), qt.Qobj(np.ones(4) / 2), 0.5j * qt.basis(2, 0).proj()])
+    def test_wrong_qobj_states_raise_validation_error_not_type_error(self, default_dynamics, bad_state):
+        # Qobj states skipped the dimension check and failed inside QuTiP with a raw TypeError, or were used as given.
+        with pytest.raises(ValidationError):
+            default_dynamics.state_fidelity(initial_state=bad_state, final_state=qt.basis(2, 1))
+
+    def test_ket_bra_density_matrix_and_qobj_give_the_same_fidelity(self, default_dynamics):
+        reference = default_dynamics.state_fidelity(initial_state=self.KET_0, final_state=self.KET_1)
+
+        equivalent_inputs = [
+            (qt.basis(2, 0), qt.basis(2, 1)),
+            (self.KET_0.reshape(1, 2), self.KET_1.reshape(1, 2)),
+            (np.outer(self.KET_0, self.KET_0), qt.basis(2, 1)),
+            (self.KET_0.reshape(2, 1), self.KET_1),
+        ]
+        # A density matrix is propagated with a different equation, so agreement is at the solver tolerance (1e-6).
+        for initial, final in equivalent_inputs:
+            fidelity = default_dynamics.state_fidelity(initial_state=initial, final_state=final)
+            assert fidelity == pytest.approx(reference, abs=1e-5)
+
+    def test_wrong_gate_or_target_dimension_raises_validation_error(self, default_dynamics):
+        with pytest.raises(ValidationError, match="target_gate must have shape"):
+            default_dynamics.average_gate_fidelity(target_gate=qt.qeye(3), final_only=True)
+        with pytest.raises(ValidationError, match="gate must have shape"):
+            default_dynamics.average_gate_fidelity(gate=qt.qeye(3), target_gate=qt.sigmax())
+        with pytest.raises(ValidationError, match=r"gate\[1\] must have shape"):
+            default_dynamics.average_gate_fidelity(gate=[qt.qeye(2), qt.qeye(3)], target_gate=qt.sigmax())
+
+    def test_collapse_operators_are_validated_and_accept_tuples(self, default_dynamics):
+        dephasing = np.sqrt(1e-3) * qt.sigmaz()
+
+        from_list = default_dynamics.state_fidelity(c_ops=[dephasing])
+        from_tuple = default_dynamics.state_fidelity(c_ops=(dephasing,))
+        from_array = default_dynamics.state_fidelity(c_ops=[dephasing.full()])
+        assert from_tuple == pytest.approx(from_list, abs=1e-12)
+        assert from_array == pytest.approx(from_list, abs=1e-12)
+
+        with pytest.raises(ValidationError, match=r"c_ops\[0\] must have shape"):
+            default_dynamics.state_fidelity(c_ops=[qt.qeye(3)])
+        with pytest.raises(ValidationError, match=r"c_ops\[0\] must be a Qobj or a numpy array"):
+            default_dynamics.populations(c_ops=["dephasing"])
+
+
+# ------------------------------------------------------------
 # Testing gate and state transfer fidelity
 # ------------------------------------------------------------
 
@@ -517,13 +582,13 @@ def test_state_fidelity_invalid_dimensions(default_dynamics):
     bad_state = np.array([[1.0], [0.0], [0.0]])
     valid_state = np.array([[1.0], [0.0]])
 
-    with pytest.raises(ValidationError, match="must have the same dimension"):
+    with pytest.raises(ValidationError, match="must be a ket of shape"):
         default_dynamics.state_fidelity(initial_state=bad_state, final_state=valid_state)
 
 
 def test_state_fidelity_type_mismatch_error(default_dynamics):
     """Passing mixed or invalid types (like strings) must raise a ValidationError."""
-    with pytest.raises(ValidationError, match="either integers, numpy arrays with correct dimensions"):
+    with pytest.raises(ValidationError, match="both be integer indices, or both be explicit states"):
         default_dynamics.state_fidelity(initial_state=cast(Any, "invalid_type"), final_state=1)
 
 
@@ -657,11 +722,11 @@ def test_populations_reject_unknown_basis(default_dynamics):
 
 
 def test_populations_reject_invalid_initial_state(default_dynamics):
-    with pytest.raises(ValidationError, match="same dimension"):
+    with pytest.raises(ValidationError, match="must be a ket of shape"):
         default_dynamics.populations(initial_state=np.array([1.0, 0.0, 0.0]))
     with pytest.raises(ValidationError, match="must be between"):
         default_dynamics.populations(initial_state=2)
-    with pytest.raises(ValidationError, match="Initial state must be"):
+    with pytest.raises(ValidationError, match="initial_state must be an integer index"):
         default_dynamics.populations(initial_state=cast(Any, "ground"))
 
 
@@ -765,7 +830,7 @@ def test_state_fidelity_accepts_numpy_integer_indices(default_dynamics):
 
 
 def test_state_fidelity_rejects_bool_indices(default_dynamics):
-    with pytest.raises(ValidationError, match="either integers"):
+    with pytest.raises(ValidationError, match="integer index, a Qobj or a numpy array"):
         default_dynamics.state_fidelity(initial_state=cast(Any, True), final_state=cast(Any, False))
 
 

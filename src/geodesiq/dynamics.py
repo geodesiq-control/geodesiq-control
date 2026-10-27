@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any, List, Literal, Optional, Tuple, cast
 import numpy as np
 import qutip as qt
 
-from ._utils import limit_blas_threads, validate_state_index
+from ._utils import is_hermitian, limit_blas_threads, validate_state_index
 from .controlmodel import ControlModel
 from .decompose_hamiltonian import decompose_hamiltonian
 from .exceptions import ConfigurationError, MissingArgsError, ValidationError
@@ -265,14 +265,19 @@ class Dynamics:
         Parameters
         ----------
         initial_state : Optional[np.ndarray, int or qt.Qobj]
-            Initial state for pulsed time evolution.
+            Initial state for pulsed time evolution. Both states must be omitted (the model's state indices), both be
+            integer indices (eigenstates at the pulse endpoints), or both be explicit states: a ket, bra or density
+            matrix of the model dimension, as a numpy array or Qobj. Kets must be normalized and density matrices
+            Hermitian with unit trace (within 1e-6); otherwise a ``ValidationError`` is raised.
         final_state : Optional[np.ndarray, int or qt.Qobj]
-            Final state for pulsed time evolution.
+            Target state, of the same kind as ``initial_state``.
         c_ops : Optional[list]
-            Collapse operators (passed as a list of Qobj or np.ndarray) for the Lindblad master equation.
+            Collapse operators for the Lindblad master equation: a list or tuple of (d, d) Qobj, np.ndarray or
+            QobjEvo.
 
         """
-        c_ops = _as_collapse_operators(c_ops)
+        dimension = self._dimension()
+        collapse_operators = _as_collapse_operators(c_ops, dimension)
 
         control_initial, control_final = self._boundary_controls
 
@@ -292,43 +297,31 @@ class Dynamics:
             psi_target = self._eigenstate(control_final, final_index)
 
         elif _is_index(initial_state) and _is_index(final_state):
-            dimension = self._hamiltonian_dimension
-
-            if dimension is None:
-                raise ConfigurationError("Hamiltonian dimension is unavailable.")
-
             initial_index = validate_state_index(cast(int, initial_state), dimension, "initial_state")
             final_index = validate_state_index(cast(int, final_state), dimension, "final_state")
 
             psi_init = self._eigenstate(control_initial, initial_index)
             psi_target = self._eigenstate(control_final, final_index)
 
-        elif isinstance(initial_state, np.ndarray) and isinstance(final_state, np.ndarray):
-            if (
-                initial_state.shape[0] != self._hamiltonian_dimension
-                or final_state.shape[0] != self._hamiltonian_dimension
-            ):
-                raise ValidationError(
-                    f"Initial and final states must have the same dimension as the ControlModel. Shape of ControlModel:"
-                    f" {(self._hamiltonian_dimension, self._hamiltonian_dimension)}."
-                    f" Shape of initial state: {initial_state.shape}"
-                )
-
-            psi_init = qt.Qobj(initial_state)
-            psi_target = qt.Qobj(final_state)
-        elif isinstance(initial_state, qt.Qobj) and isinstance(final_state, qt.Qobj):
-            psi_init = initial_state
-            psi_target = final_state
+        elif (
+            initial_state is not None
+            and final_state is not None
+            and not (_is_index(initial_state) or _is_index(final_state))
+        ):
+            psi_init = _as_state(initial_state, dimension, "initial_state")
+            psi_target = _as_state(final_state, dimension, "final_state")
         else:
             raise ValidationError(
-                "Initial and final states must be either integers, numpy arrays with correct dimensions or Qobj "
-                "instances."
+                "Initial and final states must both be omitted, both be integer indices, or both be explicit states "
+                "(Qobj or numpy array)."
             )
 
         options = {"store_final_state": True, "store_states": False}
 
         with self._blas_threads():
-            result = qt.mesolve(self._qevo, psi_init, cast(Any, pulse_times), c_ops=cast(Any, c_ops), options=options)
+            result = qt.mesolve(
+                self._qevo, psi_init, cast(Any, pulse_times), c_ops=cast(Any, collapse_operators), options=options
+            )
 
         psi_f = result.final_state
         if psi_f is None:
@@ -364,15 +357,16 @@ class Dynamics:
             ``final_only`` is True).
         """
 
-        if isinstance(target_gate, np.ndarray):
-            target_gate = qt.Qobj(target_gate)
+        dimension = self._dimension()
+        if target_gate is not None:
+            target_gate = _as_operator(target_gate, dimension, "target_gate")
 
         if gate is None:
             operators = self.time_evolution_operator(final_only=final_only)
         elif isinstance(gate, qt.Qobj):
-            operators = [gate]
+            operators = [_as_operator(gate, dimension, "gate")]
         elif isinstance(gate, list) and all(isinstance(g, qt.Qobj) for g in gate):
-            operators = gate
+            operators = [_as_operator(g, dimension, f"gate[{index}]") for index, g in enumerate(gate)]
         else:
             raise ValidationError("Gate must be a Qobj or a list of Qobj instances.")
 
@@ -392,28 +386,18 @@ class Dynamics:
                 )
             return self._eigenstate(control_initial, self._initial_state)
 
+        dimension = self._dimension()
         if _is_index(initial_state):
-            dimension = self._hamiltonian_dimension
-            if dimension is None:
-                raise ConfigurationError("Hamiltonian dimension is unavailable.")
             index = validate_state_index(cast(int, initial_state), dimension, "initial_state")
             return self._eigenstate(control_initial, index)
 
-        if isinstance(initial_state, np.ndarray):
-            if initial_state.shape[0] != self._hamiltonian_dimension:
-                raise ValidationError(
-                    f"Initial state must have the same dimension as the ControlModel. Shape of ControlModel:"
-                    f" {(self._hamiltonian_dimension, self._hamiltonian_dimension)}."
-                    f" Shape of initial state: {initial_state.shape}"
-                )
-            return qt.Qobj(initial_state)
+        return _as_state(initial_state, dimension, "initial_state")
 
-        if isinstance(initial_state, qt.Qobj):
-            return initial_state
-
-        raise ValidationError(
-            "Initial state must be either an integer, a numpy array with correct dimensions or a Qobj instance."
-        )
+    def _dimension(self) -> int:
+        """Hilbert-space dimension of the model, which every explicit state and operator must match."""
+        if self._hamiltonian_dimension is None:
+            raise ConfigurationError("Hamiltonian dimension is unavailable.")
+        return self._hamiltonian_dimension
 
     def populations(
         self,
@@ -446,14 +430,16 @@ class Dynamics:
         if basis not in ("adiabatic", "diabatic"):
             raise ValidationError(f"basis must be 'adiabatic' or 'diabatic', got {basis!r}.")
 
-        c_ops = _as_collapse_operators(c_ops)
+        collapse_operators = _as_collapse_operators(c_ops, self._dimension())
         psi_init = self._resolve_initial_state(initial_state)
 
         pulse_times: list[float] = np.asarray(self._pulse_times, dtype=float).tolist()
         options = {"store_states": True}
 
         with self._blas_threads():
-            result = qt.mesolve(self._qevo, psi_init, cast(Any, pulse_times), c_ops=cast(Any, c_ops), options=options)
+            result = qt.mesolve(
+                self._qevo, psi_init, cast(Any, pulse_times), c_ops=cast(Any, collapse_operators), options=options
+            )
 
             states = result.states
             if len(states) != len(pulse_times):
@@ -559,10 +545,70 @@ def _is_index(value: Any) -> bool:
     return isinstance(value, (int, np.integer)) and not isinstance(value, (bool, np.bool_))
 
 
-def _as_collapse_operators(c_ops: Any) -> Optional[List[qt.Qobj]]:
-    """Validate collapse operators, converting numpy arrays to Qobj."""
+# Tolerance on the norm of an explicit ket, or the trace of an explicit density matrix.
+_STATE_NORM_TOL = 1e-6
+
+
+def _as_operator(value: Any, dimension: int, name: str) -> qt.Qobj:
+    """Validate a (d, d) operator given as a Qobj or numpy array, and return it with the Hamiltonian's dimensions."""
+    if not isinstance(value, (qt.Qobj, np.ndarray)):
+        raise ValidationError(f"{name} must be a Qobj or a numpy array, got {type(value).__name__}.")
+    array = value.full() if isinstance(value, qt.Qobj) else np.asarray(value)
+    if array.shape != (dimension, dimension):
+        raise ValidationError(f"{name} must have shape {(dimension, dimension)}, got {array.shape}.")
+    if not np.issubdtype(array.dtype, np.number) or not np.all(np.isfinite(array)):
+        raise ValidationError(f"{name} must contain only finite numbers.")
+    return qt.Qobj(array)
+
+
+def _as_state(value: Any, dimension: int, name: str) -> qt.Qobj:
+    """
+    Validate an explicit state given as a Qobj or numpy array: a ket (shape (d,) or (d, 1)), a bra (shape (1, d)),
+    which is converted to a ket, or a density matrix (shape (d, d)). Kets must have unit norm and density matrices
+    unit trace (within ``_STATE_NORM_TOL``), and density matrices must be Hermitian. The state is returned with the
+    Hamiltonian's dimensions, so tensor-structured Qobj inputs are accepted.
+    """
+    if not isinstance(value, (qt.Qobj, np.ndarray)):
+        raise ValidationError(f"{name} must be an integer index, a Qobj or a numpy array, got {type(value).__name__}.")
+    array = value.full() if isinstance(value, qt.Qobj) else np.asarray(value)
+    if not np.issubdtype(array.dtype, np.number) or not np.all(np.isfinite(array)):
+        raise ValidationError(f"{name} must contain only finite numbers.")
+
+    if array.shape in ((dimension,), (dimension, 1), (1, dimension)):
+        ket = array.reshape(dimension, 1)
+        if array.shape == (1, dimension):
+            ket = ket.conj()
+        norm = float(np.linalg.norm(ket))
+        if abs(norm - 1.0) > _STATE_NORM_TOL:
+            raise ValidationError(f"{name} must be normalized, got norm {norm:.6g}.")
+        return qt.Qobj(ket)
+
+    if array.shape == (dimension, dimension):
+        trace = complex(np.trace(array))
+        if abs(trace - 1.0) > _STATE_NORM_TOL:
+            raise ValidationError(f"{name} as a density matrix must have unit trace, got {trace:.6g}.")
+        if not is_hermitian(array):
+            raise ValidationError(f"{name} as a density matrix must be Hermitian.")
+        return qt.Qobj(array)
+
+    raise ValidationError(
+        f"{name} must be a ket of shape {(dimension,)} or {(dimension, 1)}, a bra of shape {(1, dimension)}, or a "
+        f"density matrix of shape {(dimension, dimension)}; got {array.shape}."
+    )
+
+
+def _as_collapse_operators(c_ops: Any, dimension: int) -> Optional[List[qt.Qobj | qt.QobjEvo]]:
+    """Validate collapse operators (a list or tuple of (d, d) Qobj, numpy arrays or QobjEvo)."""
     if c_ops is None:
         return None
-    if isinstance(c_ops, list):
-        return [qt.Qobj(op) if isinstance(op, np.ndarray) else op for op in c_ops]
-    raise ValidationError("Collapse operators must be provided as a list of Qobj or numpy arrays.")
+    if not isinstance(c_ops, (list, tuple)):
+        raise ValidationError("Collapse operators must be provided as a list or tuple of Qobj or numpy arrays.")
+    operators: List[qt.Qobj | qt.QobjEvo] = []
+    for index, op in enumerate(c_ops):
+        if isinstance(op, qt.QobjEvo):
+            if tuple(op.shape) != (dimension, dimension):
+                raise ValidationError(f"c_ops[{index}] must have shape {(dimension, dimension)}, got {op.shape}.")
+            operators.append(op)
+        else:
+            operators.append(_as_operator(op, dimension, f"c_ops[{index}]"))
+    return operators

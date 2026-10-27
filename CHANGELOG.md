@@ -109,6 +109,11 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   required length, instead of SciPy's raw `ValueError` ("The length of the input vector x must be greater than
   padlen"). The zero-phase filtering needs more than `3 * (2 * n + 1)` samples for `n` second-order sections (12 for
   `filter_order=3`, 15 for 4).
+- `Dynamics` validates explicit states, gates and collapse operators. Unnormalized kets and density matrices without
+  unit trace raise `ValidationError` (before, `state_fidelity(2 * a, 2 * b)` returned 15.85 and `populations(2 * a)`
+  summed to 4), and states, `gate`, `target_gate` and `c_ops` of the wrong dimension raise `ValidationError` instead of
+  a raw `TypeError` from QuTiP. Explicit states may be kets, bras or density matrices, as arrays or `Qobj` (also mixed,
+  and with any tensor structure), and `c_ops` may be a tuple.
 
 ## [0.3.0] - 2026-10-01
 
