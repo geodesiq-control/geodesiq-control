@@ -215,6 +215,30 @@ def is_hermitian(matrix: np.ndarray, rtol: float = HERMITIAN_RTOL) -> bool:
     return bool(np.linalg.norm(array - array.conj().T) <= tolerance)
 
 
+# Relative tolerance for dropping the imaginary part of real-valued samples, measured against the largest real part.
+REAL_RTOL = 1e-10
+
+
+def real_samples(values: np.ndarray, name: str, rtol: float = REAL_RTOL) -> np.ndarray:
+    """
+    Return the real part of complex samples whose imaginary part is negligible, relative to their scale.
+
+    The samples are accepted if ``max|Im| <= rtol * max(max|Re|, tiny)``, so the check does not depend on the units of
+    the samples. Real input is returned unchanged.
+
+    Raises
+    ------
+    ValidationError
+        If the imaginary part is not negligible.
+    """
+    if not np.iscomplexobj(values):
+        return values
+    scale = max(float(np.max(np.abs(values.real), initial=0.0)), np.finfo(float).tiny)
+    if np.max(np.abs(values.imag), initial=0.0) > rtol * scale:
+        raise ValidationError(f"{name} must contain real-valued samples.")
+    return values.real
+
+
 def stack_samples(function: Callable[[float], Any], points: np.ndarray) -> np.ndarray:
     """
     Evaluate ``function`` at every point and stack the results along a new first axis, like ``np.stack``.

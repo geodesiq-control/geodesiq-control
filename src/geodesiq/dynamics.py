@@ -7,7 +7,7 @@ import qutip as qt
 from numpy.typing import ArrayLike, NDArray
 from qutip.solver.integrator import IntegratorException
 
-from ._utils import is_hermitian, limit_blas_threads, validate_state_index
+from ._utils import is_hermitian, limit_blas_threads, real_samples, validate_state_index
 from .controlmodel import ControlModel
 from .decompose_hamiltonian import decompose_hamiltonian
 from .exceptions import ConfigurationError, MissingArgsError, SolverError, ValidationError
@@ -216,11 +216,7 @@ class Dynamics:
             )
         if not np.issubdtype(pulse_values.dtype, np.number):
             raise ValidationError("pulse must contain real-valued samples.")
-        if np.iscomplexobj(pulse_values):
-            if not np.allclose(pulse_values.imag, 0.0):
-                raise ValidationError("pulse must contain real-valued samples.")
-            pulse_values = pulse_values.real
-        pulse_values = np.asarray(pulse_values, dtype=float)
+        pulse_values = np.asarray(real_samples(pulse_values, "pulse"), dtype=float)
         if not np.all(np.isfinite(pulse_values)):
             raise ValidationError("pulse contains NaN or infinite values.")
 

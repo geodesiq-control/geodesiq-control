@@ -8,6 +8,7 @@ from numpy.typing import ArrayLike, NDArray
 from scipy.signal import ShortTimeFFT
 from scipy.signal.windows import hann
 
+from ._utils import real_samples
 from .exceptions import IOErrorGeodesiQ, ValidationError
 from .warnings import GeodesiQWarning
 
@@ -46,11 +47,7 @@ class PulseControl:
             raise ValidationError(f"pulse must be one-dimensional; received shape {values.shape}.")
         if values.size < 2:
             raise ValidationError("pulse must contain at least two samples.")
-        if np.iscomplexobj(values):
-            if not np.allclose(values.imag, 0.0):
-                raise ValidationError("pulse must contain real-valued samples.")
-            values = values.real
-        values = np.asarray(values, dtype=float)
+        values = np.asarray(real_samples(values, "pulse"), dtype=float)
         if not np.all(np.isfinite(values)):
             raise ValidationError("pulse contains NaN or infinite values.")
 
@@ -345,45 +342,57 @@ class PulseControl:
         Parameters
         ----------
         filename : str | Path
-            Name for the data file saved.
+            Name for the data file saved. The extension is appended unless the name already ends with it, so dots in
+            the name are kept (``"pulse_tf1.5"`` is written to ``pulse_tf1.5.npz``).
         file_extension : str
-            Data type the pulse should be stored in (i.e. 'txt', 'npz', 'csv'). Default is 'npz'.
+            Data type the pulse should be stored in ('npz', 'txt' or 'csv', case-insensitive, with or without a
+            leading dot). Default is 'npz'.
         overwrite : bool
-            Ensures accidental overwrites.
+            If False (default), raise instead of replacing an existing file.
 
         Returns
         -------
         output_path: Path
             Path of the written file.
+
+        Raises
+        ------
+        ValidationError
+            If ``file_extension`` is not a supported type.
+        IOErrorGeodesiQ
+            If the file exists and ``overwrite`` is False.
         """
 
-        # Remove possible file_extension starting with a dot
-        if file_extension.startswith("."):
-            file_extension = file_extension[1:]
-
+        if not isinstance(file_extension, str):
+            raise ValidationError(
+                f"file_extension must be a string ('npz', 'txt' or 'csv'); received {type(file_extension).__name__}."
+            )
+        file_extension = file_extension.lower().removeprefix(".")
         if file_extension not in ("npz", "txt", "csv"):
             raise ValidationError(
-                f"Unsupported data_type '{file_extension}'. Supported types are: 'npz', 'txt', and 'csv'."
+                f"Unsupported file_extension '{file_extension}'. Supported types are: 'npz', 'txt', and 'csv'."
             )
 
         output_path = Path(filename)
-        if output_path.suffix != f".{file_extension}":
-            output_path = output_path.with_suffix(f".{file_extension}")
-
-        if output_path.exists() and not overwrite:
-            raise IOErrorGeodesiQ(f"File already exists (choose overwrite=True to remove safety check.): {output_path}")
+        if not output_path.name.lower().endswith(f".{file_extension}"):
+            output_path = output_path.with_name(f"{output_path.name}.{file_extension}")
 
         t: np.ndarray = np.asarray(self._pulse_times)
         pulse: np.ndarray = np.asarray(self._pulse)
 
-        # Save data depending on users preference
-        if file_extension == "npz":
-            np.savez(output_path, times=t, pulse=pulse)
-        elif file_extension == "txt":
-            np.savetxt(output_path, np.column_stack((t, pulse)), header="t pulse", comments="", fmt="%.17g")
-        else:
-            np.savetxt(
-                output_path, np.column_stack((t, pulse)), delimiter=",", header="t,pulse", comments="", fmt="%.17g"
-            )
+        # Mode "x" creates the file only if it does not exist yet, so the check and the write are one step.
+        try:
+            with open(output_path, "wb" if overwrite else "xb") as file:
+                if file_extension == "npz":
+                    np.savez(file, times=t, pulse=pulse)
+                else:
+                    delimiter, header = (" ", "t pulse") if file_extension == "txt" else (",", "t,pulse")
+                    np.savetxt(
+                        file, np.column_stack((t, pulse)), delimiter=delimiter, header=header, comments="", fmt="%.17g"
+                    )
+        except FileExistsError:
+            raise IOErrorGeodesiQ(
+                f"File already exists (choose overwrite=True to remove safety check.): {output_path}"
+            ) from None
 
         return output_path

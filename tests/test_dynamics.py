@@ -526,6 +526,7 @@ class TestCustomPulse:
             (np.linspace(0.0, 1.0, 4), np.ones(5), "same length"),
             (np.linspace(0.0, 1.0, 2), np.array(["a", "b"]), "pulse must contain real-valued samples"),
             (np.linspace(0.0, 1.0, 2), np.array([1.0, 1.0j]), "pulse must contain real-valued samples"),
+            (np.linspace(0.0, 1.0, 2), 1e-9 * np.array([1.0, 1.0j]), "pulse must contain real-valued samples"),
             (np.linspace(0.0, 1.0, 2), np.array([1.0, np.inf]), "pulse contains NaN or infinite"),
         ],
     )

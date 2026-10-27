@@ -5,7 +5,7 @@ import pytest
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
-from geodesiq.exceptions import ValidationError
+from geodesiq.exceptions import IOErrorGeodesiQ, ValidationError
 from geodesiq.pulses import PulseControl
 
 # ------------------------------------------------------------
@@ -232,7 +232,7 @@ def test_export_pulse_unsupported_extension(default_pulse, tmp_path):
     """Verify export_pulse raises error for unsupported file extensions."""
     test_file_base = os.path.join(tmp_path, "test_pulse_invalid")
 
-    with pytest.raises(ValidationError, match="Unsupported data_type"):
+    with pytest.raises(ValidationError, match="Unsupported file_extension"):
         default_pulse.export_pulse(filename=test_file_base, file_extension="json")
 
     assert not os.listdir(tmp_path)
@@ -483,8 +483,84 @@ def test_export_returns_path_and_does_not_print(default_pulse, tmp_path, capsys)
 def test_export_unsupported_extension_is_checked_before_existing_file(default_pulse, tmp_path):
     (tmp_path / "pulse.json").write_text("{}")
 
-    with pytest.raises(ValidationError, match="Unsupported data_type"):
+    with pytest.raises(ValidationError, match="Unsupported file_extension"):
         default_pulse.export_pulse(tmp_path / "pulse", file_extension="json")
+
+
+# ------------------------------------------------------------
+# Export file names with dots and extension validation (D-12)
+# ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("filename", "file_extension", "expected"),
+    [
+        ("pulse_tf1.5", "npz", "pulse_tf1.5.npz"),
+        ("pulse_tf1.5", "txt", "pulse_tf1.5.txt"),
+        ("pulse.v2.csv", "csv", "pulse.v2.csv"),
+        ("pulse.npz", "txt", "pulse.npz.txt"),
+        ("pulse.NPZ", "npz", "pulse.NPZ"),
+        ("pulse", "NPZ", "pulse.npz"),
+        ("pulse", ".CSV", "pulse.csv"),
+    ],
+)
+def test_export_appends_suffix_and_keeps_dots(default_pulse, tmp_path, filename: str, file_extension: str, expected):
+    output_path = default_pulse.export_pulse(tmp_path / filename, file_extension=file_extension)
+
+    assert output_path == tmp_path / expected
+    assert sorted(path.name for path in tmp_path.iterdir()) == [expected]
+
+
+def test_export_names_differing_after_a_dot_do_not_collide(default_pulse, tmp_path):
+    first = default_pulse.export_pulse(tmp_path / "pulse_tf2.5")
+    second = default_pulse.export_pulse(tmp_path / "pulse_tf2.7")
+
+    assert first != second
+    with np.load(second) as data:
+        np.testing.assert_array_equal(data["pulse"], default_pulse.pulse)
+
+
+@pytest.mark.parametrize("file_extension", [None, 3, b"npz"])
+def test_export_rejects_non_string_extension(default_pulse, tmp_path, file_extension):
+    with pytest.raises(ValidationError, match="file_extension must be a string"):
+        default_pulse.export_pulse(tmp_path / "pulse", file_extension=file_extension)
+
+    assert not any(tmp_path.iterdir())
+
+
+def test_export_without_overwrite_leaves_existing_file_untouched(default_pulse, tmp_path):
+    (tmp_path / "pulse.txt").write_text("keep")
+
+    with pytest.raises(IOErrorGeodesiQ, match="File already exists"):
+        default_pulse.export_pulse(tmp_path / "pulse", file_extension="txt")
+
+    assert (tmp_path / "pulse.txt").read_text() == "keep"
+
+
+# ------------------------------------------------------------
+# Relative check of the imaginary part (D-13)
+# ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("scale", [1e-9, 1.0, 1e9])
+def test_complex_pulse_with_negligible_imaginary_part_is_accepted(scale: float):
+    values = scale * np.linspace(1.0, 2.0, 5)
+
+    pc = PulseControl(pulse=values * (1 + 1e-14j), duration=1.0)
+
+    np.testing.assert_array_equal(pc.pulse, values)
+    assert pc.pulse.dtype == np.float64
+
+
+@pytest.mark.parametrize("scale", [1e-9, 1.0, 1e9])
+def test_complex_pulse_with_relevant_imaginary_part_is_rejected(scale: float):
+    with pytest.raises(ValidationError, match="pulse must contain real-valued samples"):
+        PulseControl(pulse=scale * np.linspace(1.0, 2.0, 5) * (1 + 1e-6j), duration=1.0)
+
+
+def test_purely_imaginary_pulse_is_rejected():
+    with pytest.raises(ValidationError, match="pulse must contain real-valued samples"):
+        PulseControl(pulse=np.array([0.0, 1e-20j]), duration=1.0)
 
 
 @pytest.mark.parametrize("linear_steps", [1, 0, -3, 2.5, True, "4"])

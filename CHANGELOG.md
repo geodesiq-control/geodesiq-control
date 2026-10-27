@@ -86,6 +86,13 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Fixed
 
+- `export_pulse()` appends the extension instead of replacing the part of the name after its last dot:
+  `"pulse_tf1.5"` is written to `pulse_tf1.5.npz` (before, `pulse_tf1.npz`, so `pulse_tf2.5` and `pulse_tf2.7`
+  collided). `file_extension` is case-insensitive, a non-string raises `ValidationError` instead of `AttributeError`,
+  and without `overwrite` the file is created only if it does not exist, in one step with the write.
+- Complex pulse samples (`PulseControl`, `Dynamics(times=..., pulse=...)`) are accepted when
+  `max|Im| <= 1e-10 max|Re|`, a check relative to the scale of the pulse. Before, the absolute `np.allclose` tolerance
+  accepted a 100 % imaginary part at 1e-9 scale and rejected rounding-level ones at 1e9 scale.
 - A custom ODE solver that returns other time points than the requested uniform `t_eval` is resampled onto it (PCHIP),
   so `tau` is always uniform. Before, its own grid was stored as `tau`, while `Dynamics(duration=...)`,
   `synthesize_pulse()` and `PulseControl` rebuilt a uniform time grid from the sample count, which distorted the pulse.
