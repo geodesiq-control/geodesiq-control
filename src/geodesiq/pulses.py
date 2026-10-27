@@ -166,6 +166,14 @@ class PulseControl:
             Rescaled time array corresponding to the filtered control pulse.
         filtered_pulse : np.ndarray
             Returns the (butterworth-)filtered control pulse.
+
+        Raises
+        ------
+        ValidationError
+            If ``cutoff_freq`` is not positive and below the Nyquist frequency, if ``filter_order`` is not a positive
+            integer, or if the pulse is too short for the filter: the zero-phase filtering pads ``3 * (2 * n + 1)``
+            samples at each end, with ``n`` the number of second-order sections (``3`` less for an odd order, e.g. 12
+            for order 3 and 15 for order 4), and needs more samples than that.
         """
         if not isinstance(cutoff_freq, (int, float, np.integer, np.floating)) or isinstance(cutoff_freq, bool):
             raise ValidationError("cutoff_freq must be a finite positive number.")
@@ -188,6 +196,17 @@ class PulseControl:
 
         # Design Butterworth filter
         sos = sp.signal.butter(N=filter_order, Wn=cutoff_freq, btype="low", fs=sampling_rate, output="sos")
+
+        # sosfiltfilt pads both ends with padlen samples and needs a longer pulse; padlen as computed by SciPy
+        # (first-order sections of odd filter orders have zero trailing coefficients, which shorten it).
+        n_taps = 2 * len(sos) + 1 - min(int(np.sum(sos[:, 2] == 0)), int(np.sum(sos[:, 5] == 0)))
+        padlen = 3 * n_taps
+        if self._pulse.size <= padlen:
+            raise ValidationError(
+                f"The pulse has {self._pulse.size} samples, but zero-phase filtering with filter_order={filter_order} "
+                f"pads {padlen} samples at each end and needs more than {padlen}. Use a larger pulse_accuracy in "
+                "solve_problem() or a lower filter_order."
+            )
 
         # Apply the filter to the pulse using filtfilt for zero-phase filtering
         filtered_pulse = sp.signal.sosfiltfilt(sos, self._pulse)

@@ -274,6 +274,27 @@ def test_filter_order_bool(default_pulse):
         default_pulse.filtered_pulse(cutoff_freq=0.1, filter_order=True)
 
 
+# sosfiltfilt pads padlen samples at each end: 3 * (2 * n_sections + 1), minus 3 for the first-order section of an odd
+# order, i.e. 12 for orders 3 and 15 for order 4.
+@pytest.mark.parametrize(("filter_order", "padlen"), [(3, 12), (4, 15)])
+def test_filtered_pulse_too_short_raises_validation_error(filter_order: int, padlen: int):
+    # SciPy raised a raw ValueError "The length of the input vector x must be greater than padlen" (D-06).
+    pulse = PulseControl(pulse=np.linspace(-1.0, 1.0, padlen), duration=10.0)
+
+    with pytest.raises(ValidationError, match=f"pads {padlen} samples"):
+        pulse.filtered_pulse(cutoff_freq=0.1, filter_order=filter_order)
+
+
+@pytest.mark.parametrize(("filter_order", "padlen"), [(3, 12), (4, 15)])
+def test_filtered_pulse_accepts_the_shortest_valid_pulse(filter_order: int, padlen: int):
+    pulse = PulseControl(pulse=np.linspace(-1.0, 1.0, padlen + 1), duration=10.0)
+
+    _, filtered = pulse.filtered_pulse(cutoff_freq=0.1, filter_order=filter_order)
+
+    assert filtered.shape == (padlen + 1,)
+    assert np.all(np.isfinite(filtered))
+
+
 # ------------------------------------------------------------
 # Testing initialization and attributes
 # ------------------------------------------------------------

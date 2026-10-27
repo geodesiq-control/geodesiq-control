@@ -105,6 +105,10 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 - The single-threaded BLAS mode for small Hamiltonians (dimension up to 256) also covers BLAS libraries loaded by an
   import after the first solve (e.g. `import torch`). The library list was read once and cached for the whole session.
   The API docs now state that this limit applies to the whole process while it is active.
+- `PulseControl.filtered_pulse()` raises `ValidationError` for a pulse that is too short for the filter, naming the
+  required length, instead of SciPy's raw `ValueError` ("The length of the input vector x must be greater than
+  padlen"). The zero-phase filtering needs more than `3 * (2 * n + 1)` samples for `n` second-order sections (12 for
+  `filter_order=3`, 15 for 4).
 
 ## [0.3.0] - 2026-10-01
 
