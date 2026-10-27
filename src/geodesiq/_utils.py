@@ -1,3 +1,4 @@
+import sys
 from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -473,15 +474,31 @@ def validate_state_index(index: int, dimension: int, name: str) -> int:
 SMALL_MATRIX_DIMENSION = 256
 
 
-@lru_cache(maxsize=1)
+# The controller and the number of imported modules when it was created.
+_controller_cache: dict[str, Any] = {"controller": None, "modules": -1}
+
+
 def _threadpool_controller() -> ThreadpoolController:
-    # Inspecting the loaded BLAS libraries is slow, so it is done once and reused.
-    return ThreadpoolController()
+    # Inspecting the loaded BLAS libraries takes about 10 ms, so the controller is reused. It is re-created when modules
+    # have been imported since, because an import (e.g. torch) can load another BLAS library, which a controller created
+    # earlier would not limit. Counting sys.modules costs about a microsecond.
+    modules = len(sys.modules)
+    if _controller_cache["controller"] is None or _controller_cache["modules"] != modules:
+        _controller_cache["controller"] = ThreadpoolController()
+        _controller_cache["modules"] = modules
+    return _controller_cache["controller"]
 
 
 @contextmanager
 def limit_blas_threads(dimension: int) -> Generator[None, None, None]:
-    """Run BLAS/LAPACK single-threaded inside the context if ``dimension`` is small, otherwise leave it untouched."""
+    """
+    Run BLAS/LAPACK single-threaded inside the context if ``dimension`` is small, otherwise leave it untouched.
+
+    For small matrices, the threading overhead of BLAS outweighs its gain. The limit is set through ``threadpoolctl``,
+    which changes the thread count of the BLAS libraries themselves: while the context is active it applies to the
+    whole process, so BLAS calls made from other threads at the same time also run single-threaded. BLAS libraries
+    loaded by a later import are included; a library loaded without an import (e.g. through ``ctypes``) is not.
+    """
     if dimension <= SMALL_MATRIX_DIMENSION:
         with _threadpool_controller().limit(limits=1, user_api="blas"):
             yield

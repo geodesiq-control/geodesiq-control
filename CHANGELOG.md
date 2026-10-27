@@ -93,6 +93,9 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 - With a callable `partial_H_func`, the first derivative evaluation validates the `H_func` result it uses for the
   dimension, so an `H_func` that returns e.g. a nested list no longer raises `AttributeError`. `str(model)` now also
   shows `final_state`, `dia_alpha` and `dia_beta`.
+- The single-threaded BLAS mode for small Hamiltonians (dimension up to 256) also covers BLAS libraries loaded by an
+  import after the first solve (e.g. `import torch`). The library list was read once and cached for the whole session.
+  The API docs now state that this limit applies to the whole process while it is active.
 
 ## [0.3.0] - 2026-10-01
 

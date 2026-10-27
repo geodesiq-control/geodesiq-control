@@ -75,3 +75,11 @@ exceptions before downstream interpolation or propagation.
 
 The numerical derivative accepts complex-valued Hamiltonians and preserves their complex dtype. Supplying an analytical
 derivative remains preferable for performance and controlled accuracy.
+
+## Threading
+
+For Hamiltonians of dimension up to 256, the diagonalization and matrix products in `ControlModel` and `Dynamics`
+run single-threaded, because for small matrices the threading overhead of BLAS outweighs its gain. The limit is set
+with `threadpoolctl` on the BLAS libraries themselves, so while it is active it applies to the whole process: BLAS
+calls made from other threads at the same time also run on one thread. To solve several models in parallel, use
+processes (e.g. `multiprocessing`) rather than threads; larger Hamiltonians are not limited.

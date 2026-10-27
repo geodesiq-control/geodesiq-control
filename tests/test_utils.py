@@ -1,4 +1,6 @@
+import sys
 import tracemalloc
+import types
 
 import numpy as np
 import pytest
@@ -7,6 +9,7 @@ from threadpoolctl import threadpool_info
 from geodesiq._utils import (
     DIABATIC_BLEND_START,
     SMALL_MATRIX_DIMENSION,
+    _threadpool_controller,
     build_dia_list,
     finite_difference_weights,
     limit_blas_threads,
@@ -290,3 +293,17 @@ class TestLimitBlasThreads:
 
         with limit_blas_threads(SMALL_MATRIX_DIMENSION + 1):
             assert _blas_threads() == before
+
+    def test_controller_is_reused_until_a_module_is_imported(self, monkeypatch):
+        # The controller is a snapshot of the loaded BLAS libraries, so it was cached forever and missed libraries that
+        # a later import (e.g. torch) loads (C-20).
+        first = _threadpool_controller()
+        assert _threadpool_controller() is first
+
+        monkeypatch.setitem(sys.modules, "geodesiq_test_new_module", types.ModuleType("geodesiq_test_new_module"))
+
+        refreshed = _threadpool_controller()
+        assert refreshed is not first
+        assert _threadpool_controller() is refreshed
+        with limit_blas_threads(SMALL_MATRIX_DIMENSION):
+            assert all(n == 1 for n in _blas_threads())
