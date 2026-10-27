@@ -228,6 +228,11 @@ def test_export_pulse_strips_leading_dot(default_pulse, tmp_path):
 # ------------------------------------------------------------
 
 
+#  A low cutoff moves the endpoints of the ramp, which filtered_pulse() reports with a GeodesiQWarning (D-05).
+IGNORE_MOVED_ENDPOINTS = pytest.mark.filterwarnings("ignore:.*The filtered pulse:geodesiq.warnings.GeodesiQWarning")
+
+
+@IGNORE_MOVED_ENDPOINTS
 def test_filtered_pulse_returns_correct_shapes(default_pulse):
     """Verify filtered_pulse returns arrays of correct shape."""
     cutoff_freq = 0.1
@@ -274,6 +279,7 @@ def test_filtered_pulse_non_integer_filter_order(default_pulse):
         default_pulse.filtered_pulse(cutoff_freq=0.1, filter_order=3.5)
 
 
+@IGNORE_MOVED_ENDPOINTS
 def test_filtered_pulse_preserves_time_array(default_pulse):
     """Verify filtered_pulse returns the same time array."""
     times, _ = default_pulse.filtered_pulse(cutoff_freq=0.1)
@@ -289,21 +295,102 @@ def test_filter_order_bool(default_pulse):
 # order, i.e. 12 for orders 3 and 15 for order 4.
 @pytest.mark.parametrize(("filter_order", "padlen"), [(3, 12), (4, 15)])
 def test_filtered_pulse_too_short_raises_validation_error(filter_order: int, padlen: int):
-    # SciPy raised a raw ValueError "The length of the input vector x must be greater than padlen" (D-06).
+    # SciPy raised a raw ValueError "The length of the input vector x must be greater than padlen" (D-06). This
+    # applies to the sosfiltfilt padding modes; the default hold padding extends the pulse itself.
     pulse = PulseControl(pulse=np.linspace(-1.0, 1.0, padlen), duration=10.0)
 
     with pytest.raises(ValidationError, match=f"pads {padlen} samples"):
-        pulse.filtered_pulse(cutoff_freq=0.1, filter_order=filter_order)
+        pulse.filtered_pulse(cutoff_freq=0.1, filter_order=filter_order, padding="odd")
 
 
+@IGNORE_MOVED_ENDPOINTS
 @pytest.mark.parametrize(("filter_order", "padlen"), [(3, 12), (4, 15)])
-def test_filtered_pulse_accepts_the_shortest_valid_pulse(filter_order: int, padlen: int):
+@pytest.mark.parametrize("padding", ["odd", "hold"])
+def test_filtered_pulse_accepts_the_shortest_valid_pulse(filter_order: int, padlen: int, padding: str):
     pulse = PulseControl(pulse=np.linspace(-1.0, 1.0, padlen + 1), duration=10.0)
 
-    _, filtered = pulse.filtered_pulse(cutoff_freq=0.1, filter_order=filter_order)
+    _, filtered = pulse.filtered_pulse(cutoff_freq=0.1, filter_order=filter_order, padding=padding)
 
     assert filtered.shape == (padlen + 1,)
     assert np.all(np.isfinite(filtered))
+
+
+def geodesic_lz_pulse() -> PulseControl:
+    """Geometric LZ pulse from -10 to 10 at t_f = 10, which is steep at both ends (the review's reference pulse)."""
+    from geodesiq import ControlModel
+
+    model = ControlModel(H_d=np.array([[0.0, 1.0], [1.0, 0.0]]), H_c=np.diag([1.0, -1.0]))
+    model.set_control(pulse_initial=-10.0, pulse_final=10.0, initial_state=0, alpha=2.0, beta=2.0)
+    model.solve_problem(pulse_accuracy=1000)
+    return model.synthesize_pulse(10.0)
+
+
+@pytest.mark.filterwarnings("ignore::geodesiq.warnings.NumericalStabilityWarning")
+class TestFilterEndpointsAndResponse:
+    """D-05: endpoint handling, gain at the cutoff, and the causal mode of filtered_pulse()."""
+
+    def test_moved_endpoints_are_reported(self):
+        from geodesiq.warnings import GeodesiQWarning
+
+        pulse = geodesic_lz_pulse()
+
+        with pytest.warns(GeodesiQWarning, match="starts at -8.76.* instead of -10 and ends at 8.76.* instead of 10"):
+            _, filtered = pulse.filtered_pulse(cutoff_freq=1.0)
+
+        # Hold padding treats both ends alike: the antisymmetric pulse stays antisymmetric.
+        np.testing.assert_allclose(filtered, -filtered[::-1], atol=1e-10)
+
+    def test_hold_padding_converges_and_odd_padding_keeps_the_former_result(self):
+        import scipy.signal as signal
+
+        pulse = geodesic_lz_pulse()
+        values, dt = pulse.pulse, pulse.times[1] - pulse.times[0]
+        sos = signal.butter(3, 0.3, fs=1.0 / dt, output="sos")
+        hold = 100_000
+        held = np.concatenate((np.full(hold, values[0]), values, np.full(hold, values[-1])))
+
+        with pytest.warns(Warning):
+            _, filtered = pulse.filtered_pulse(cutoff_freq=0.3)
+        with pytest.warns(Warning):
+            _, odd = pulse.filtered_pulse(cutoff_freq=0.3, padding="odd")
+
+        np.testing.assert_allclose(filtered, signal.sosfiltfilt(sos, held)[hold:-hold], rtol=0, atol=1e-10)
+        np.testing.assert_array_equal(odd, signal.sosfiltfilt(sos, values))
+
+    def test_a_pulse_that_is_flat_at_its_ends_keeps_its_endpoints(self):
+        t = np.linspace(0.0, 10.0, 1001)
+        pulse = PulseControl(pulse=np.tanh(4.0 * (t - 5.0)), duration=10.0)
+
+        for causal in (False, True):
+            _, filtered = pulse.filtered_pulse(cutoff_freq=2.0, causal=causal)
+            assert abs(filtered[0] - pulse.pulse[0]) < 1e-6
+            if not causal:
+                assert abs(filtered[-1] - pulse.pulse[-1]) < 1e-6
+
+    @IGNORE_MOVED_ENDPOINTS
+    @pytest.mark.parametrize(("causal", "gain"), [(False, 0.5), (True, 1.0 / np.sqrt(2.0))])
+    def test_gain_at_the_cutoff(self, causal: bool, gain: float):
+        # Zero-phase filtering squares the magnitude response: -6 dB at the cutoff instead of -3 dB.
+        t = np.linspace(0.0, 200.0, 20001)
+        pulse = PulseControl(pulse=np.sin(2.0 * np.pi * t), duration=200.0)
+
+        _, filtered = pulse.filtered_pulse(cutoff_freq=1.0, causal=causal)
+
+        assert np.max(np.abs(filtered[5000:15000])) == pytest.approx(gain, abs=2e-3)
+
+    def test_causal_filter_starts_in_the_steady_state_of_the_first_value(self):
+        pulse = geodesic_lz_pulse()
+
+        with pytest.warns(Warning, match="ends at"):
+            _, filtered = pulse.filtered_pulse(cutoff_freq=1.0, causal=True)
+
+        assert filtered[0] == pytest.approx(-10.0, abs=1e-9)
+
+    @pytest.mark.parametrize(("kwargs", "message"), [({"padding": "zero"}, "padding must be one of"),
+                                                     ({"causal": 1}, "causal must be True or False")])
+    def test_invalid_options_raise_validation_error(self, default_pulse, kwargs, message):
+        with pytest.raises(ValidationError, match=message):
+            default_pulse.filtered_pulse(cutoff_freq=0.1, **kwargs)
 
 
 # ------------------------------------------------------------
@@ -396,6 +483,7 @@ def test_filtered_pulse_rejects_invalid_cutoff_types(default_pulse, cutoff_freq)
         default_pulse.filtered_pulse(cutoff_freq=cutoff_freq)
 
 
+@IGNORE_MOVED_ENDPOINTS
 def test_filtered_pulse_accepts_numpy_filter_order(default_pulse):
     times, filtered = default_pulse.filtered_pulse(cutoff_freq=0.1, filter_order=np.int64(2))
 

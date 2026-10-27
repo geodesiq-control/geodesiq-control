@@ -38,8 +38,8 @@ pulse = model.synthesize_pulse(duration=duration)
 dynamics = Dynamics(model, duration=duration)
 print(dynamics.state_fidelity())  # 0.999791
 
-times, filtered = pulse.filtered_pulse(cutoff_freq=2.0)
-print(Dynamics(model, times=times, pulse=filtered).state_fidelity())  # 0.999960
+times, filtered = pulse.filtered_pulse(cutoff_freq=2.0)  # warns that the endpoints moved to -9.29 and 9.29
+print(Dynamics(model, times=times, pulse=filtered).state_fidelity())  # 0.999997
 ```
 
 If the Hamiltonian is affine in the control, `H(z) = H_d + z H_c`, pass the matrices instead of a function,

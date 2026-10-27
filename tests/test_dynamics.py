@@ -401,6 +401,8 @@ class TestCustomPulse:
 
         assert custom.state_fidelity() == pytest.approx(optimal.state_fidelity(), rel=1e-8)
 
+    # The low cutoffs move the steep endpoints of these pulses, which filtered_pulse() reports (D-05).
+    @pytest.mark.filterwarnings("ignore:.*The filtered pulse:geodesiq.warnings.GeodesiQWarning")
     def test_filtered_pulse_from_pulse_control(self):
         model = _build_solved_model(pulse_accuracy=200)
         duration = 50.0
@@ -418,6 +420,7 @@ class TestCustomPulse:
         optimal = Dynamics(model, duration=duration).state_fidelity(initial_state=0, final_state=0)
         assert fidelity == pytest.approx(optimal, abs=1e-2)
 
+    @pytest.mark.filterwarnings("ignore:.*The filtered pulse:geodesiq.warnings.GeodesiQWarning")
     def test_filtered_pulse_from_pulse_control_affine(self):
         model = _build_solved_affine_model(pulse_accuracy=200)
         pulse_control = model.synthesize_pulse(duration=20.0)

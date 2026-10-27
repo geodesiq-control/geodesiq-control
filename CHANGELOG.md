@@ -26,6 +26,14 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Changed
 
+- `PulseControl.filtered_pulse()` holds the first and last values before and after the pulse (`padding="hold"`, the
+  new default), as an arbitrary waveform generator does, instead of SciPy's odd extension. Both ends are now treated
+  alike (the odd extension moved the end of a steep pulse much more than its start), so filtered results change; pass
+  `padding="odd"` for the former behaviour. `causal=True` applies the filter forward only (-3 dB at the cutoff, with
+  a phase lag), as a transmission line would. The docstring now states that the default zero-phase filtering squares
+  the magnitude response (-6 dB at `cutoff_freq`, effective order `2 * filter_order`), and a `GeodesiQWarning` reports
+  when an endpoint moves by more than 1% of the pulse range, since `Dynamics` still measures fidelities against the
+  eigenstates at the original endpoints.
 - Rename the normalized-time grid from `ControlModel.s` to `ControlModel.tau` (`tau = t / t_f`) to match the
   manuscript notation. Update callers to use `model.tau`; numerical results and defensive-copy behavior are unchanged.
 - The source distribution includes the test suite, so downstream packagers can run it (`pytest` from the unpacked

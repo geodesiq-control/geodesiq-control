@@ -1,3 +1,4 @@
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -8,6 +9,7 @@ from scipy.signal import ShortTimeFFT
 from scipy.signal.windows import hann
 
 from .exceptions import IOErrorGeodesiQ, ValidationError
+from .warnings import GeodesiQWarning
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
@@ -20,6 +22,11 @@ class PulseControl:
     in the ControlModel class. The class allows for the synthesis of the pulse, filtering, and plotting of the pulse
     shape and its Fourier spectrum.
     """
+
+    # Padding modes of filtered_pulse(): hold the end values, or a padtype of scipy.signal.sosfiltfilt.
+    _FILTER_PADDINGS = ("hold", "odd", "even", "constant", None)
+    # filtered_pulse() warns when an endpoint moves by more than this fraction of the pulse range.
+    _FILTER_ENDPOINT_RTOL = 1e-2
 
     def __init__(self, pulse: ArrayLike, duration: float) -> None:
         """
@@ -153,10 +160,20 @@ class PulseControl:
         return frequencies, times, magnitude
 
     def filtered_pulse(
-        self, cutoff_freq: float, filter_order: int = 3
+        self, cutoff_freq: float, filter_order: int = 3, padding: str | None = "hold", causal: bool = False
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """
         Apply a low-pass Butterworth filter to the control pulse.
+
+        By default the filter is applied forward and backward (``scipy.signal.sosfiltfilt``): there is no phase shift,
+        but the filter is acausal, the magnitude response is the square of the designed one (gain 1/2, i.e. -6 dB, at
+        ``cutoff_freq``) and the effective order is ``2 * filter_order``. With ``causal=True`` it is applied once
+        (``scipy.signal.sosfilt``), as a transmission line would: gain 1/sqrt(2) (-3 dB) at ``cutoff_freq`` and a
+        phase lag.
+
+        Low-pass filtering moves the endpoints of a pulse that is steep there, as geodesic pulses usually are.
+        ``Dynamics`` still measures fidelities against the eigenstates at ``pulse_initial`` and ``pulse_final``, so a
+        ``GeodesiQWarning`` is issued when an endpoint moves by more than 1% of the pulse range.
 
         Parameters
         ----------
@@ -164,6 +181,14 @@ class PulseControl:
             Cutoff frequency in units of 1 / time (e.g., Hz if time is in seconds) for the low-pass Butterworth filter.
         filter_order : int
             Order of the Butterworth filter.
+        padding : str | None
+            How the pulse is extended beyond its ends for the zero-phase filter. ``"hold"`` (default) holds the first
+            and last values for as long as the filter's impulse response takes to decay, as an arbitrary waveform
+            generator does before and after the pulse. ``"odd"``, ``"even"``, ``"constant"`` and None are passed to
+            ``sosfiltfilt`` as ``padtype``; ``"odd"`` was the default up to version 0.3.0. Not used with
+            ``causal=True``, which starts in the steady state of the first value (as after holding it).
+        causal : bool
+            Apply the filter forward only, instead of forward and backward.
 
         Returns
         -------
@@ -176,9 +201,15 @@ class PulseControl:
         ------
         ValidationError
             If ``cutoff_freq`` is not positive and below the Nyquist frequency, if ``filter_order`` is not a positive
-            integer, or if the pulse is too short for the filter: the zero-phase filtering pads ``3 * (2 * n + 1)``
-            samples at each end, with ``n`` the number of second-order sections (``3`` less for an odd order, e.g. 12
-            for order 3 and 15 for order 4), and needs more samples than that.
+            integer, if ``padding`` or ``causal`` is invalid, or if the pulse is too short for a zero-phase filter
+            without hold padding: ``sosfiltfilt`` pads ``3 * (2 * n + 1)`` samples at each end, with ``n`` the number
+            of second-order sections (``3`` less for an odd order, e.g. 12 for order 3 and 15 for order 4), and needs
+            more samples than that.
+
+        Warns
+        -----
+        GeodesiQWarning
+            If the first or last filtered value differs from the original one by more than 1% of the pulse range.
         """
         if not isinstance(cutoff_freq, (int, float, np.integer, np.floating)) or isinstance(cutoff_freq, bool):
             raise ValidationError("cutoff_freq must be a finite positive number.")
@@ -189,6 +220,11 @@ class PulseControl:
         if not isinstance(filter_order, (int, np.integer)) or isinstance(filter_order, bool) or filter_order < 1:
             raise ValidationError("filter_order must be a positive integer.")
         filter_order = int(filter_order)
+
+        if padding not in self._FILTER_PADDINGS:
+            raise ValidationError(f"padding must be one of {', '.join(map(repr, self._FILTER_PADDINGS))}.")
+        if not isinstance(causal, (bool, np.bool_)):
+            raise ValidationError("causal must be True or False.")
 
         # Compute the sampling rate from the rescaled time array
         dt = float(np.abs(self._pulse_times[1] - self._pulse_times[0]))  # Uniform spacing by construction
@@ -202,21 +238,51 @@ class PulseControl:
         # Design Butterworth filter
         sos = sp.signal.butter(N=filter_order, Wn=cutoff_freq, btype="low", fs=sampling_rate, output="sos")
 
-        # sosfiltfilt pads both ends with padlen samples and needs a longer pulse; padlen as computed by SciPy
-        # (first-order sections of odd filter orders have zero trailing coefficients, which shorten it).
-        n_taps = 2 * len(sos) + 1 - min(int(np.sum(sos[:, 2] == 0)), int(np.sum(sos[:, 5] == 0)))
-        padlen = 3 * n_taps
-        if self._pulse.size <= padlen:
-            raise ValidationError(
-                f"The pulse has {self._pulse.size} samples, but zero-phase filtering with filter_order={filter_order} "
-                f"pads {padlen} samples at each end and needs more than {padlen}. Use a larger pulse_accuracy in "
-                "solve_problem() or a lower filter_order."
+        if causal:
+            # Start in the steady state of the first value, as after holding it before the pulse.
+            initial = sp.signal.sosfilt_zi(sos) * self._pulse[0]
+            filtered_pulse, _ = sp.signal.sosfilt(sos, self._pulse, zi=initial)
+        elif padding == "hold":
+            # Hold the end values until the impulse response has decayed by 1e-12. Its slowest pole decays at the rate
+            # 2 pi f_c sin(pi / (2 N)) of the analog Butterworth prototype.
+            decay_time = np.log(1e12) / (2 * np.pi * cutoff_freq * np.sin(np.pi / (2 * filter_order)))
+            hold = int(np.ceil(decay_time / dt))
+            held = np.concatenate((np.full(hold, self._pulse[0]), self._pulse, np.full(hold, self._pulse[-1])))
+            filtered_pulse = sp.signal.sosfiltfilt(sos, held, padtype="constant")[hold:-hold]
+        else:
+            # sosfiltfilt pads both ends with padlen samples and needs a longer pulse; padlen as computed by SciPy
+            # (first-order sections of odd filter orders have zero trailing coefficients, which shorten it).
+            n_taps = 2 * len(sos) + 1 - min(int(np.sum(sos[:, 2] == 0)), int(np.sum(sos[:, 5] == 0)))
+            padlen = 3 * n_taps if padding is not None else 0
+            if self._pulse.size <= padlen:
+                raise ValidationError(
+                    f"The pulse has {self._pulse.size} samples, but zero-phase filtering with "
+                    f"filter_order={filter_order} pads {padlen} samples at each end and needs more than {padlen}. "
+                    "Use a larger pulse_accuracy in solve_problem(), a lower filter_order or padding='hold'."
+                )
+            filtered_pulse = sp.signal.sosfiltfilt(sos, self._pulse, padtype=padding)
+
+        # Dynamics compares with the eigenstates at the original endpoints, which a moved endpoint no longer reaches.
+        # The rounding term keeps a constant pulse (zero range) from warning.
+        scale = float(np.max(np.abs(self._pulse)))
+        tolerance = self._FILTER_ENDPOINT_RTOL * float(np.ptp(self._pulse)) + 100 * np.finfo(float).eps * scale
+        moved = [
+            f"{label} {new:.6g} instead of {old:.6g}"
+            for label, new, old in (
+                ("starts at", filtered_pulse[0], self._pulse[0]),
+                ("ends at", filtered_pulse[-1], self._pulse[-1]),
+            )
+            if abs(new - old) > tolerance
+        ]
+        if moved:
+            warnings.warn(
+                f"The filtered pulse {' and '.join(moved)}. Fidelities from Dynamics still refer to the eigenstates at "
+                "the original endpoints; use a higher cutoff_freq if the endpoints must be kept.",
+                GeodesiQWarning,
+                stacklevel=2,
             )
 
-        # Apply the filter to the pulse using filtfilt for zero-phase filtering
-        filtered_pulse = sp.signal.sosfiltfilt(sos, self._pulse)
-
-        return self._pulse_times.copy(), filtered_pulse
+        return self._pulse_times.copy(), np.asarray(filtered_pulse, dtype=float)
 
     def plot_pulse(
         self,

@@ -80,9 +80,10 @@ dynamics = Dynamics(model, duration=duration)
 print(f"Optimal pulse fidelity:  {dynamics.state_fidelity():.6f}")  # 0.999791
 
 # ----- ... or by a low-pass filtered version of it -----
+# (warns that the filter moves the steep endpoints of the pulse, here to -9.29 and 9.29)
 times, filtered = pulse.filtered_pulse(cutoff_freq=2.0)
 filtered_dynamics = Dynamics(model, times=times, pulse=filtered)
-print(f"Filtered pulse fidelity: {filtered_dynamics.state_fidelity():.6f}")  # 0.999960
+print(f"Filtered pulse fidelity: {filtered_dynamics.state_fidelity():.6f}")  # 0.999997
 
 # ----- Compare with a linear ramp of the same duration -----
 ramp = Dynamics(model, times=times, pulse=np.linspace(z0, zf, times.size))
