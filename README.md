@@ -133,6 +133,18 @@ If you use `geodesiq` in your research, please cite it. The citation metadata is
 
 ## Development
 
+Check that generated figures in `dev/figures/` match the local manuscript clone in `paper/Figures/` by SHA-256:
+
+```bash
+python dev/sync_figures.py --check
+python dev/sync_figures.py --sync
+```
+
+The default is a read-only check (exit code 1 for missing or changed figures, 2 for errors).
+`--sync` copies missing or changed files and verifies their hashes; paper-only files are preserved.
+Both directories must exist. Pull the manuscript clone before syncing and review its diff before pushing to Overleaf.
+Use `--source` and `--destination` to override the directories; defaults work from any working directory.
+
 Use the following checks before submitting changes:
 
 ```bash

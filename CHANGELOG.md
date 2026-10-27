@@ -8,6 +8,8 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Added
 
+- `dev/sync_figures.py` checks SHA-256 hashes between `dev/figures/` and `paper/Figures/`; `--sync` copies and verifies
+  missing or changed figures while preserving paper-only files.
 - `Dynamics(..., options=...)` configures QuTiP solver settings for all propagation methods, including tolerances,
   internal step limits and integration method. Numerical defaults are unchanged; integration failures now raise
   `SolverError` with the original exception chained, and rejected solver configurations raise `ValidationError`.
