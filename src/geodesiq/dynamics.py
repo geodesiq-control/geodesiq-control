@@ -23,6 +23,7 @@ class Dynamics:
         times: Optional[np.ndarray] = None,
         pulse: Optional[np.ndarray] = None,
         hbar: float = 1.0,
+        order: Optional[int] = None,
     ):
         """
         Initialize the Dynamics object, which depends on an instance of the ControlModel class. This class deals with
@@ -47,6 +48,13 @@ class Dynamics:
             Control pulse values sampled at ``times``. Must be given together with ``times``.
         hbar : float
             Reduced Planck's constant (default is 1).
+        order : Optional[int]
+            Interpolation of the pulse between its samples, for the propagation and for every Hamiltonian evaluated
+            between samples: ``0`` holds each sample until the next one (as an arbitrary waveform generator does), ``1``
+            interpolates linearly, and ``3`` uses a cubic spline. The default None uses ``3`` for the optimal pulse
+            (``duration``), which is densely sampled and smooth, and ``1`` for a custom pulse (``times``/``pulse``), so
+            that e.g. the piecewise-linear ``discretized_pulse()`` is simulated as the pulse it describes. A cubic
+            spline through a few samples can deviate strongly between them and overshoot the sampled range.
         """
 
         if not isinstance(model, ControlModel):
@@ -62,13 +70,20 @@ class Dynamics:
             raise ValidationError("hbar must be a finite positive number.")
         self._hbar: float = hbar
 
+        if order is not None and (
+            not isinstance(order, (int, np.integer)) or isinstance(order, bool) or int(order) not in (0, 1, 3)
+        ):
+            raise ValidationError("order must be None, 0 (hold), 1 (linear) or 3 (cubic spline).")
+        custom_pulse = times is not None or pulse is not None
+        self._order: int = (1 if custom_pulse else 3) if order is None else int(order)
+
         self._pulse_times: np.ndarray
         self._pulse: np.ndarray
         self._duration: float
         # Control values whose eigenstates define the default initial and target states.
         self._boundary_controls: tuple[float, float]
 
-        if times is not None or pulse is not None:
+        if custom_pulse:
             if duration is not None:
                 raise ValidationError(
                     "Provide either duration (optimal pulse) or times and pulse (custom pulse), not both."
@@ -107,6 +122,9 @@ class Dynamics:
             self._duration = duration
             self._pulse_times = duration * np.linspace(0.0, 1.0, len(self._pulse))
 
+        # The pulse between samples, with the same interpolation as the propagated Hamiltonian.
+        self._pulse_coefficient = qt.coefficient(self._pulse, tlist=self._pulse_times, order=self._order)
+
         self.evaluate_hamiltonian = lambda control_value: model.evaluate_hamiltonian(float(control_value))
         self._initial_state: int | None = model.initial_state
         self._final_state: int | None = model.final_state
@@ -124,12 +142,12 @@ class Dynamics:
             self._qevo = qt.QobjEvo(
                 [qt.Qobj(H_d) / self._hbar, [qt.Qobj(H_c) / self._hbar, self._pulse]],
                 tlist=self._pulse_times,
-                order=3,
+                order=self._order,
             )
         else:
             with self._blas_threads():
                 decomposition = decompose_hamiltonian(self._get_ham, self._pulse_times, drift="mean", rtol=1e-10)
-            self._qevo = decomposition.qobjevo()
+            self._qevo = decomposition.qobjevo(order=self._order)
 
     @staticmethod
     def _validate_custom_pulse(times: np.ndarray, pulse: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -193,9 +211,10 @@ class Dynamics:
 
     def _get_ham(self, t: float) -> qt.Qobj:
         """
-        Construct the time-dependent ControlModel using QuTiP Qobj
+        Construct the Hamiltonian H(x(t))/hbar as a QuTiP Qobj, with the pulse interpolated between its samples in the
+        same way as in the propagation (see ``order``).
         """
-        control_val_t = float(np.interp(t, self._pulse_times, self._pulse))
+        control_val_t = float(np.real(self._pulse_coefficient(t)))
 
         return qt.Qobj(self.evaluate_hamiltonian(control_val_t)) / self._hbar
 

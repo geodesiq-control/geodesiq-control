@@ -16,8 +16,17 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   accepts the same initial states as `state_fidelity()` and optional collapse operators.
 - `Dynamics.plot_populations()` plots these populations over time, with the same `fig`, `ax`, `legend` and label
   arguments as `ControlModel.plot_eigenvalues()` and an optional `states` selection.
+- `Dynamics(..., order=...)` selects how the pulse is interpolated between its samples: `0` holds each sample (as an
+  arbitrary waveform generator does), `1` is linear and `3` is a cubic spline.
 
 ### Changed
+
+- `Dynamics` with a custom pulse (`times`/`pulse`) now interpolates it linearly between samples by default, instead of
+  with a cubic spline, so that e.g. the piecewise-linear `discretized_pulse()` is simulated as the waveform it
+  describes. With 4 samples the spline deviated from it by up to 2.1 (for a sweep of width 20) and changed the state
+  fidelity from 0.969 to 0.935; on a coarse step it overshot the sampled range. The optimal pulse (`duration`) keeps the
+  cubic spline, so its results are unchanged. The Hamiltonian evaluated between samples now uses the same
+  interpolation as the propagation (it was always linear before).
 
 - The diabatic transition list now depends on the control value. For `initial_state != final_state` the occupied
   instantaneous eigenstate is followed along the sweep: anticrossings with the neighbouring state towards

@@ -53,6 +53,16 @@ In both cases the default initial and target states of `state_fidelity()` are th
 `pulse_initial` and `pulse_final` of the model, so fidelities of different pulses are directly comparable. If the model
 has no control endpoints configured, the endpoints of the custom pulse are used instead.
 
+Between its samples, the pulse is interpolated with a cubic spline for the optimal pulse and linearly for a custom pulse,
+so that the piecewise-linear `discretized_pulse()` is simulated as the waveform it describes (a cubic spline through a
+few samples can deviate strongly between them and overshoot the sampled range). Pass `order` to choose explicitly:
+`0` holds each sample until the next one, as an arbitrary waveform generator does, `1` is linear and `3` is cubic.
+
+```python
+times, ramps = pulse.discretized_pulse(linear_steps=5)
+awg = Dynamics(model, times=times, pulse=ramps, order=0)  # sample-and-hold
+```
+
 ## State populations
 
 `Dynamics.populations()` returns an array of shape `(len(times), dimension)` with the population of every state during

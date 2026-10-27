@@ -228,7 +228,8 @@ class TestCustomPulse:
     def test_reproduces_optimal_pulse_dynamics(self, real_model):
         """Feeding the optimal pulse explicitly must give the same result as passing only the duration."""
         optimal = Dynamics(real_model, duration=2.0)
-        custom = Dynamics(real_model, times=optimal.times, pulse=optimal.pulse)
+        # A custom pulse is interpolated linearly by default; use the cubic spline of the optimal pulse.
+        custom = Dynamics(real_model, times=optimal.times, pulse=optimal.pulse, order=3)
 
         assert custom.state_fidelity() == pytest.approx(optimal.state_fidelity(), rel=1e-8)
         np.testing.assert_allclose(
@@ -237,7 +238,7 @@ class TestCustomPulse:
 
     def test_reproduces_optimal_pulse_dynamics_affine(self, affine_model):
         optimal = Dynamics(affine_model, duration=2.0)
-        custom = Dynamics(affine_model, times=optimal.times, pulse=optimal.pulse)
+        custom = Dynamics(affine_model, times=optimal.times, pulse=optimal.pulse, order=3)
 
         assert custom.state_fidelity() == pytest.approx(optimal.state_fidelity(), rel=1e-8)
 
@@ -366,6 +367,84 @@ class TestCustomPulse:
     def test_invalid_custom_pulse_raises(self, real_model, times, pulse, match: str):
         with pytest.raises(ValidationError, match=match):
             Dynamics(real_model, times=times, pulse=pulse)
+
+
+# ------------------------------------------------------------
+# Interpolation of the pulse between samples (D-01, D-10)
+# ------------------------------------------------------------
+
+
+class TestInterpolationOrder:
+    # A coarse piecewise-linear pulse, like discretized_pulse() returns: 4 samples on [0, 5].
+    TIMES = np.array([0.0, 5.0 / 3.0, 10.0 / 3.0, 5.0])
+    PULSE = np.array([1.0, 2.5, 2.0, 3.0])
+
+    @staticmethod
+    def _propagated_hamiltonian(dynamics: Dynamics, t: float) -> np.ndarray:
+        return dynamics._qevo(t).full() * dynamics._hbar
+
+    def test_default_order_is_cubic_for_optimal_and_linear_for_custom_pulses(self, real_model):
+        assert Dynamics(real_model, duration=2.0)._order == 3
+        assert Dynamics(real_model, times=self.TIMES, pulse=self.PULSE)._order == 1
+
+    @pytest.mark.parametrize("model_fixture", ["real_model", "affine_model"])
+    @pytest.mark.parametrize("order", [0, 1, 3])
+    def test_propagated_hamiltonian_matches_get_ham_between_samples(self, request, model_fixture: str, order: int):
+        # Before, the propagation always used a cubic spline while _get_ham interpolated linearly (D-10). For the LZ
+        # model H is affine in the control, so both must agree exactly for every order and both model kinds.
+        model = request.getfixturevalue(model_fixture)
+        dynamics = Dynamics(model, times=self.TIMES, pulse=self.PULSE, order=order)
+
+        for t in np.linspace(self.TIMES[0], self.TIMES[-1], 37):
+            np.testing.assert_allclose(self._propagated_hamiltonian(dynamics, t), dynamics._get_ham(t).full(),
+                                       atol=1e-10)
+
+    @pytest.mark.parametrize("model_fixture", ["real_model", "affine_model"])
+    def test_default_custom_pulse_is_piecewise_linear(self, request, model_fixture: str):
+        # The cubic spline deviated from the piecewise-linear discretized pulse between samples (D-01).
+        model = request.getfixturevalue(model_fixture)
+        dynamics = Dynamics(model, times=self.TIMES, pulse=self.PULSE)
+
+        for t in np.linspace(self.TIMES[0], self.TIMES[-1], 37):
+            expected = lz_hamiltonian(float(np.interp(t, self.TIMES, self.PULSE)))
+            np.testing.assert_allclose(self._propagated_hamiltonian(dynamics, t), expected, atol=1e-10)
+
+    def test_order_zero_holds_each_sample(self, affine_model):
+        dynamics = Dynamics(affine_model, times=self.TIMES, pulse=self.PULSE, order=0)
+
+        for start, end, value in zip(self.TIMES[:-1], self.TIMES[1:], self.PULSE[:-1], strict=True):
+            for t in np.linspace(start, end, 5)[:-1]:
+                np.testing.assert_allclose(self._propagated_hamiltonian(dynamics, t), lz_hamiltonian(value),
+                                           atol=1e-12)
+
+    def test_linear_interpolation_stays_within_the_sampled_range(self, affine_model):
+        # A coarsely sampled step in [-1, 1]: a cubic spline overshoots it, linear interpolation does not.
+        times = np.linspace(0.0, 4.0, 9)
+        step = np.where(times < 2.0, -1.0, 1.0)
+        t_fine = np.linspace(0.0, 4.0, 401)
+
+        linear = Dynamics(affine_model, times=times, pulse=step)
+        cubic = Dynamics(affine_model, times=times, pulse=step, order=3)
+        linear_values = [self._propagated_hamiltonian(linear, t)[0, 0].real for t in t_fine]
+        cubic_values = [self._propagated_hamiltonian(cubic, t)[0, 0].real for t in t_fine]
+
+        assert max(np.abs(linear_values)) <= 1.0 + 1e-12
+        assert max(np.abs(cubic_values)) > 1.05
+
+    def test_discretized_pulse_fidelity_depends_on_the_interpolation(self, real_model):
+        times, values = real_model.synthesize_pulse(duration=5.0).discretized_pulse(linear_steps=4)
+
+        default = Dynamics(real_model, times=times, pulse=values).state_fidelity()
+        linear = Dynamics(real_model, times=times, pulse=values, order=1).state_fidelity()
+        cubic = Dynamics(real_model, times=times, pulse=values, order=3).state_fidelity()
+
+        assert default == pytest.approx(linear, rel=1e-12)
+        assert abs(cubic - linear) > 1e-6
+
+    @pytest.mark.parametrize("order", [2, 4, -1, 1.0, True, "linear"])
+    def test_invalid_order_is_rejected(self, real_model, order: Any):
+        with pytest.raises(ValidationError, match="order must be"):
+            Dynamics(real_model, duration=2.0, order=order)
 
 
 # ------------------------------------------------------------
