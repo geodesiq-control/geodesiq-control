@@ -679,9 +679,7 @@ class ControlModel:
             self._flags["eigenproblem_solved"] = False
 
         if states_changed:
-            self._flags["dia_list_computed"] = (
-                candidate_initial_state is not None and candidate_initial_state == candidate_final_state
-            )
+            self._flags["dia_list_computed"] = False
             self._dia_list = None
 
         if metric_changed:
@@ -786,15 +784,23 @@ class ControlModel:
             self._flags["ode_solved"] = False
 
     def _solve_dia_list(self, config: _ControlParameters) -> None:
-        """Compute the diabatic-passage list for a validated control configuration."""
+        """
+        Compute the diabatic-passage list for a validated control configuration.
+
+        An adiabatic transfer (equal initial and final states) needs no list: ``_dia_list`` stays ``None``, and the
+        stage is marked done so that the metric, which depends on it, can be marked as computed.
+        """
         if self._flags["dia_list_computed"]:
             return
 
-        if self._centered_energies is None:
-            raise SolverError("Eigenenergies are unavailable before computing diabatic passages.")
-        self._dia_list = build_dia_list(
-            self._centered_energies, initial_state=config.initial_state, final_state=config.final_state
-        )
+        if config.initial_state == config.final_state:
+            self._dia_list = None
+        else:
+            if self._centered_energies is None:
+                raise SolverError("Eigenenergies are unavailable before computing diabatic passages.")
+            self._dia_list = build_dia_list(
+                self._centered_energies, initial_state=config.initial_state, final_state=config.final_state
+            )
         self._flags["dia_list_computed"] = True
 
     def _solve_eigenproblem(self, config: _EigensystemParameters | None = None) -> None:
@@ -958,10 +964,11 @@ class ControlModel:
         if self._flags["metric_computed"]:
             return
 
+        # Also for an adiabatic transfer, where it only marks the (empty) stage as done.
+        self._solve_dia_list(config)
         if config.initial_state == config.final_state:
             self._compute_G_adiabatic(config)
         else:
-            self._solve_dia_list(config)
             self._compute_G_diabatic(config)
 
         if self._metric_tensor is None or self._control_pulse is None:

@@ -33,6 +33,14 @@ def lz_partial(lam, delta=1.0):
 LZ_H_D = np.array([[0.0, 1.0], [1.0, 0.0]])
 LZ_H_C = np.array([[1.0, 0.0], [0.0, -1.0]])
 
+_STAGES = ("eigenproblem_solved", "dia_list_computed", "metric_computed", "ode_solved")
+
+
+def mark_done(model: ControlModel, stage: str) -> None:
+    """Mark a cached stage and all stages it depends on as done (a flag cannot be True while a parent is False)."""
+    for name in _STAGES[: _STAGES.index(stage) + 1]:
+        model._flags[name] = True
+
 
 def _get_pyplot():
     """Lazy matplotlib import for plotting tests."""
@@ -611,8 +619,7 @@ class TestSetControl:
         assert bare_ham.num_steps == 2 ** 10 + 1
 
     def test_set_control_same_values_keep_flags(self, configured_ham):
-        configured_ham._flags["eigenproblem_solved"] = True
-        configured_ham._flags["metric_computed"] = True
+        mark_done(configured_ham, "metric_computed")
 
         configured_ham.set_control(control_name="lam", pulse_initial=-5.0, pulse_final=5.0, initial_state=0,
                                    final_state=0, alpha=2.0, beta=2.0, num_steps=2 ** 8 + 1, )
@@ -677,7 +684,7 @@ class TestSetControl:
     def test_implicit_final_state_follows_initial_state(self, configured_ham):
         # final_state kept its first (implicit) value, so this turned into a diabatic transfer 1 -> 0 that then
         # failed asking for dia_alpha/dia_beta (C-12).
-        configured_ham._flags["metric_computed"] = True
+        configured_ham.solve_problem()
         configured_ham.set_control(initial_state=1)
 
         assert configured_ham.final_state == 1
@@ -767,7 +774,7 @@ class TestFlagResets:
         assert configured_ham._flags["eigenproblem_solved"] is False
 
     def test_changing_alpha_resets_metric(self, configured_ham):
-        configured_ham._flags["metric_computed"] = True
+        mark_done(configured_ham, "metric_computed")
         configured_ham.alpha = 3.0
         assert configured_ham._flags["metric_computed"] is False
 
@@ -794,31 +801,31 @@ class TestFlagResets:
         assert configured_ham._flags["eigenproblem_solved"] is True
 
     def test_reassigning_same_initial_state_keeps_metric_flag(self, configured_ham):
-        configured_ham._flags["metric_computed"] = True
+        mark_done(configured_ham, "metric_computed")
         configured_ham.initial_state = 0
         assert configured_ham._flags["metric_computed"] is True
 
     def test_reassigning_same_final_state_keeps_metric_flag(self, configured_ham):
-        configured_ham._flags["metric_computed"] = True
+        mark_done(configured_ham, "metric_computed")
         configured_ham.final_state = 0
         assert configured_ham._flags["metric_computed"] is True
 
     def test_reassigning_same_alpha_keeps_metric_flag(self, configured_ham):
-        configured_ham._flags["metric_computed"] = True
+        mark_done(configured_ham, "metric_computed")
         configured_ham.alpha = 2.0
         assert configured_ham._flags["metric_computed"] is True
 
     def test_reassigning_same_beta_keeps_metric_flag(self, configured_ham):
-        configured_ham._flags["metric_computed"] = True
+        mark_done(configured_ham, "metric_computed")
         configured_ham.beta = 2.0
         assert configured_ham._flags["metric_computed"] is True
 
     def test_setting_dia_exponents_resets_metric_flag(self, configured_ham):
-        configured_ham._flags["metric_computed"] = True
+        mark_done(configured_ham, "metric_computed")
         configured_ham.dia_alpha = 1.5
         assert configured_ham._flags["metric_computed"] is False
 
-        configured_ham._flags["metric_computed"] = True
+        mark_done(configured_ham, "metric_computed")
         configured_ham.dia_beta = 1.5
         assert configured_ham._flags["metric_computed"] is False
 
@@ -1695,7 +1702,7 @@ class TestSolveProblemErrorsExtended:
 
     def test_solve_ode_returns_early_when_already_solved(self, configured_ham):
         configured_ham._previous_pulse_accuracy = 10
-        configured_ham._flags["ode_solved"] = True
+        mark_done(configured_ham, "ode_solved")
 
         configured_ham._solve_ode(10)
 
@@ -1764,12 +1771,50 @@ class TestDiabaticMetricPath:
 
     def test_solve_dia_list_returns_early_when_cached(self):
         ham = ControlModel(lz_hamiltonian, partial_H_func=lz_partial)
-        ham._flags["dia_list_computed"] = True
+        mark_done(ham, "dia_list_computed")
         ham._dia_list = np.array([[1]])
 
         ham._solve_dia_list({})
 
         np.testing.assert_array_equal(ham._dia_list, np.array([[1]]))
+
+    @staticmethod
+    def _assert_flags_consistent(model: ControlModel) -> None:
+        for name in ("dia_list_computed", "metric_computed", "ode_solved"):
+            if model._flags[name]:
+                assert all(model._flags[parent] for parent in model._flags._parents[name]), name
+
+    def test_state_change_lowers_the_dia_list_flag_also_for_equal_states(self, configured_ham):
+        # set_control set dia_list_computed=True for equal states even without an eigenproblem (C-13).
+        configured_ham.set_control(initial_state=1, final_state=1)
+
+        assert configured_ham._flags["eigenproblem_solved"] is False
+        assert configured_ham._flags["dia_list_computed"] is False
+        self._assert_flags_consistent(configured_ham)
+
+    def test_adiabatic_solve_marks_the_empty_dia_list_stage_done(self, configured_ham):
+        configured_ham.solve_problem()
+
+        assert configured_ham._flags["dia_list_computed"] is True
+        assert configured_ham._dia_list is None
+        self._assert_flags_consistent(configured_ham)
+
+    def test_switching_between_adiabatic_and_diabatic_keeps_flags_consistent(self, configured_ham):
+        configured_ham.solve_problem()
+        configured_ham.set_control(final_state=1, dia_alpha=-1.0, dia_beta=1.0)
+        self._assert_flags_consistent(configured_ham)
+
+        configured_ham.solve_problem()
+        assert configured_ham._dia_list is not None
+        self._assert_flags_consistent(configured_ham)
+
+        configured_ham.set_control(final_state=0)
+        assert configured_ham._flags["dia_list_computed"] is False
+        assert configured_ham._dia_list is None
+        configured_ham.solve_problem()
+        assert configured_ham._flags["ode_solved"] is True
+        assert configured_ham._dia_list is None
+        self._assert_flags_consistent(configured_ham)
 
 
 # ---------------------------------------------------------------------------

@@ -69,6 +69,8 @@ class Flags:
             If *name* is already registered or any parent does not exist.
         ValueError
             If both *parent* and *parents* are given.
+        ValidationError
+            If *value* is ``True`` while a parent is ``False``.
         """
         if name in self._values:
             raise KeyError(f"Flag '{name}' is already registered.")
@@ -84,6 +86,8 @@ class Flags:
         for parent_name in normalized_parents:
             if parent_name not in self._values:
                 raise KeyError(f"Parent flag '{parent_name}' does not exist.")
+        if value:
+            self._check_parents_up(name, normalized_parents)
 
         self._values[name] = value
         self._parents[name] = normalized_parents
@@ -114,6 +118,9 @@ class Flags:
     def set(self, name: str, value: bool) -> None:
         """Set the stored value of a flag.
 
+        A flag can only be set to ``True`` while all its parents are ``True``, so that a flag never claims a result
+        whose inputs are missing. Setting it to ``False`` also sets all its descendants to ``False``.
+
         Parameters
         ----------
         name:
@@ -125,10 +132,14 @@ class Flags:
         ------
         KeyError
             If *name* is not registered.
+        ValidationError
+            If *value* is ``True`` while a parent is ``False``.
         """
         self._check_exists(name)
         if not isinstance(value, bool):
             raise TypeError("Flag values must be booleans.")
+        if value:
+            self._check_parents_up(name, self._parents[name])
         self._values[name] = value
 
         for child in self._children[name]:
@@ -172,6 +183,11 @@ class Flags:
     def _check_exists(self, name: str) -> None:
         if name not in self._values:
             raise KeyError(f"Flag '{name}' is not registered.")
+
+    def _check_parents_up(self, name: str, parents: list[str]) -> None:
+        down = [parent for parent in parents if not self._values[parent]]
+        if down:
+            raise ValidationError(f"Flag '{name}' cannot be True while its parent flag(s) {down} are False.")
 
 
 # Relative tolerance for Hermiticity checks, measured against the Frobenius norm of the traceless part of the matrix.
