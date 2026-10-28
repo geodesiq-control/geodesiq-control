@@ -8,7 +8,18 @@ from qutip.solver.integrator import IntegratorException
 import geodesiq.dynamics as dynamics_module
 from geodesiq import ControlModel
 from geodesiq.dynamics import Dynamics
-from geodesiq.exceptions import ConfigurationError, MissingArgsError, SolverError, ValidationError
+from geodesiq.exceptions import (
+    ConfigurationError,
+    MissingArgsError,
+    MissingControlParameterError,
+    SolverError,
+    ValidationError,
+)
+from geodesiq.warnings import GeodesiQWarning, NumericalStabilityWarning
+
+# The fixture models sweep lam from 1 to 3 with final_state=1, so their diabatic passage lies at the start of the grid
+# (no anticrossing inside the sweep). They only need a solved model, so the warning about it is not relevant here.
+pytestmark = pytest.mark.filterwarnings("ignore::geodesiq.DiabaticEndpointWarning")
 
 # ------------------------------------------------------------
 # Real ControlModel() fixtures
@@ -113,10 +124,13 @@ class TestSolverOptions:
                 c_ops = [0.1 * qt.sigmaz()] if operation == "open_populations" else None
                 assert dynamics.populations(c_ops=c_ops).shape[1] == 2
         assert len(calls) == 2
+        # Runs that output only the end of the pulse scale nsteps by the number of sample intervals (D-19).
+        final_state_run = operation in ("final", "gate", "state", "open_state")
+        expected_nsteps = 5000 * (len(dynamics.times) - 1) if final_state_run else 5000
         for received in calls:
             assert received["atol"] == 1e-10
             assert received["rtol"] == 1e-8
-            assert received["nsteps"] == 5000
+            assert received["nsteps"] == expected_nsteps
             assert received["max_step"] == 0.05
             assert received["method"] == "dop853"
             assert received["store_states"] is (operation in ("full", "populations", "open_populations"))
@@ -255,6 +269,18 @@ def test_affine_initialization_rejects_missing_internal_matrix(affine_model):
 
     with pytest.raises(ConfigurationError, match="missing its constant drift or control Hamiltonian"):
         Dynamics(duration=2.0, model=affine_model)
+
+
+def test_unconfigured_model_raises_missing_control_parameters():
+    # D-18: control_pulse/control_sol never return None; the lazy solve reports the missing settings itself.
+    model = ControlModel(H_d=np.array([[0.0, 1.0], [1.0, 0.0]]), H_c=np.array([[1.0, 0.0], [0.0, -1.0]]))
+
+    with pytest.raises(MissingControlParameterError, match="pulse_initial, pulse_final"):
+        Dynamics(duration=2.0, model=model)
+
+    model.set_control(control_name="z", pulse_initial=-1.0, pulse_final=1.0, initial_state=0)
+    with pytest.raises(MissingControlParameterError, match="alpha, beta"):
+        Dynamics(duration=2.0, model=model)
 
 
 @pytest.mark.parametrize("duration", [0, -1, -1.5, np.nan, np.inf, -np.inf, True, False, "1.0", 1 + 2j, ], )
@@ -404,6 +430,7 @@ class TestCustomPulse:
 
     # The low cutoffs move the steep endpoints of these pulses, which filtered_pulse() reports (D-05).
     @pytest.mark.filterwarnings("ignore:.*The filtered pulse:geodesiq.warnings.GeodesiQWarning")
+    @pytest.mark.filterwarnings("ignore:.*boundary controls:geodesiq.warnings.GeodesiQWarning")
     def test_filtered_pulse_from_pulse_control(self):
         model = _build_solved_model(pulse_accuracy=200)
         duration = 50.0
@@ -422,6 +449,7 @@ class TestCustomPulse:
         assert fidelity == pytest.approx(optimal, abs=1e-2)
 
     @pytest.mark.filterwarnings("ignore:.*The filtered pulse:geodesiq.warnings.GeodesiQWarning")
+    @pytest.mark.filterwarnings("ignore:.*boundary controls:geodesiq.warnings.GeodesiQWarning")
     def test_filtered_pulse_from_pulse_control_affine(self):
         model = _build_solved_affine_model(pulse_accuracy=200)
         pulse_control = model.synthesize_pulse(duration=20.0)
@@ -465,9 +493,27 @@ class TestCustomPulse:
         times = np.linspace(0.0, 1.0, 11)
         pulse = np.linspace(1.2, 2.8, times.size)
 
-        dynamics = Dynamics(real_model, times=times, pulse=pulse)
+        message = r"runs from 1\.2 to 2\.8, but the model's boundary controls are 1 and 3"
+        with pytest.warns(GeodesiQWarning, match=message):
+            dynamics = Dynamics(real_model, times=times, pulse=pulse)
 
         assert dynamics._boundary_controls == (1.0, 3.0)
+
+    def test_pulse_ending_at_the_boundary_controls_does_not_warn(self, real_model):
+        times = np.linspace(0.0, 1.0, 11)
+        # Within 1% of the control range of the model (lam from 1 to 3).
+        pulse = np.linspace(1.0 + 0.019, 3.0 - 0.019, times.size)
+
+        Dynamics(real_model, times=times, pulse=pulse)  # GeodesiQWarning is an error in the tests
+
+    def test_degenerate_endpoint_eigenstate_warns(self):
+        # Levels 1 and 2 of diag(-1, 0, 0) + lam diag(0, 1, 1) are degenerate for every lam; level 0 is not.
+        model = ControlModel(H_d=np.diag([-1.0, 0.0, 0.0]), H_c=np.diag([0.0, 1.0, 1.0]))
+        dynamics = Dynamics(model, times=np.linspace(0.0, 1.0, 11), pulse=np.linspace(0.0, 1.0, 11))
+
+        with pytest.warns(NumericalStabilityWarning, match="Eigenstate 1 at control 1 is \\(nearly\\) degenerate"):
+            dynamics.state_fidelity(initial_state=0, final_state=1)
+        assert dynamics.state_fidelity(initial_state=0, final_state=0) == pytest.approx(1.0)
 
     def test_custom_pulse_does_not_require_solved_model(self):
         model = ControlModel(H_d=lz_hamiltonian(0.0), H_c=np.diag([1.0, -1.0]))
@@ -584,6 +630,7 @@ class TestInterpolationOrder:
                 np.testing.assert_allclose(self._propagated_hamiltonian(dynamics, t), lz_hamiltonian(value),
                                            atol=1e-12)
 
+    @pytest.mark.filterwarnings("ignore:.*boundary controls:geodesiq.warnings.GeodesiQWarning")
     def test_linear_interpolation_stays_within_the_sampled_range(self, affine_model):
         # A coarsely sampled step in [-1, 1]: a cubic spline overshoots it, linear interpolation does not.
         times = np.linspace(0.0, 4.0, 9)
@@ -759,9 +806,26 @@ def test_state_fidelity_invalid_dimensions(default_dynamics):
 
 
 def test_state_fidelity_type_mismatch_error(default_dynamics):
-    """Passing mixed or invalid types (like strings) must raise a ValidationError."""
-    with pytest.raises(ValidationError, match="both be integer indices, or both be explicit states"):
+    """Passing invalid types (like strings) must raise a ValidationError."""
+    with pytest.raises(ValidationError, match="initial_state must be an integer index, a Qobj or a numpy array"):
         default_dynamics.state_fidelity(initial_state=cast(Any, "invalid_type"), final_state=1)
+
+
+def test_state_fidelity_accepts_mixed_state_kinds(default_dynamics):
+    # D-15: the two states are resolved independently, as in populations(); mixing kinds gives the same result as
+    # the equivalent indices.
+    initial_control, final_control = default_dynamics._boundary_controls
+    psi_0 = default_dynamics._eigenstate(initial_control, 0)
+    psi_1_final = default_dynamics._eigenstate(final_control, 1)
+    reference = default_dynamics.state_fidelity(0, 1)
+
+    assert default_dynamics.state_fidelity(0, psi_1_final) == pytest.approx(reference, abs=1e-10)
+    assert default_dynamics.state_fidelity(psi_0.full(), 1) == pytest.approx(reference, abs=1e-10)
+    # Omitted initial state: the model's index (0); explicit target
+    assert default_dynamics.state_fidelity(final_state=psi_1_final) == pytest.approx(reference, abs=1e-10)
+    # A density-matrix target gives the same transition probability for a pure state
+    rho_target = psi_1_final * psi_1_final.dag()
+    assert default_dynamics.state_fidelity(0, rho_target) == pytest.approx(reference, abs=1e-8)
 
 
 def test_state_fidelity_invalid_c_ops_container(default_dynamics):
@@ -976,6 +1040,20 @@ def test_plot_populations_on_provided_figure(default_dynamics):
     plt.close(fig)
 
 
+@pytest.mark.parametrize(("kwargs", "expected_calls"), [({}, 1), ({"show": False}, 0)])
+def test_plot_populations_calls_show_by_default(default_dynamics, monkeypatch, kwargs, expected_calls):
+    """Like plot_pulse(), plot_populations() calls plt.show() unless show=False (W2-102)."""
+    import matplotlib.pyplot as plt
+
+    calls = []
+    monkeypatch.setattr(plt, "show", lambda: calls.append(1))
+
+    fig, _ = default_dynamics.plot_populations(**kwargs)
+
+    assert len(calls) == expected_calls
+    plt.close(fig)
+
+
 def test_plot_populations_rejects_out_of_range_states(default_dynamics):
     with pytest.raises(ValidationError, match="states must be between"):
         default_dynamics.plot_populations(states=[0, 2])
@@ -1020,15 +1098,41 @@ def test_state_fidelity_rejects_bool_indices(default_dynamics):
         default_dynamics.state_fidelity(initial_state=cast(Any, True), final_state=cast(Any, False))
 
 
-@pytest.mark.parametrize("fixture_name", ["default_dynamics", "affine_dynamics"])
+def test_adiabatic_basis_is_computed_once_per_object(default_dynamics, monkeypatch):
+    """populations(basis="adiabatic") evaluates H at every sample once, not on every call (D-19)."""
+    hamiltonian = default_dynamics._hamiltonian
+    evaluations = []
+
+    def counting_hamiltonian(control_value):
+        evaluations.append(control_value)
+        return hamiltonian(control_value)
+
+    monkeypatch.setattr(default_dynamics, "_hamiltonian", counting_hamiltonian)
+    # An explicit initial state, so that only the basis evaluates H (an index would add one eigenstate per call).
+    psi0 = np.array([1.0, 0.0])
+
+    first = default_dynamics.populations(initial_state=psi0, basis="adiabatic")
+    assert len(evaluations) == len(default_dynamics.times)
+    second = default_dynamics.populations(initial_state=psi0, basis="adiabatic")
+    assert len(evaluations) == len(default_dynamics.times)
+    np.testing.assert_array_equal(first, second)
+
+
+@pytest.mark.parametrize("fixture_name", ["real_model", "affine_model"])
 def test_final_only_propagator_matches_last_full_propagator(request, fixture_name: str):
-    dynamics = request.getfixturevalue(fixture_name)
+    model = request.getfixturevalue(fixture_name)
+    dynamics = Dynamics(model, duration=2.0)
 
     full = dynamics.time_evolution_operator()
     final = dynamics.time_evolution_operator(final_only=True)
 
     assert len(final) == 1
-    np.testing.assert_allclose(final[0].full(), full[-1].full(), atol=1e-6)
+    # final_only outputs only the end of the pulse, so the two agree within the solver tolerance (rtol=1e-6 for the
+    # default adams method), not to round-off (D-19). Tighter tolerances bring them together.
+    np.testing.assert_allclose(final[0].full(), full[-1].full(), atol=1e-4)
+    tight = Dynamics(model, duration=2.0, options={"atol": 1e-12, "rtol": 1e-10})
+    np.testing.assert_allclose(tight.time_evolution_operator(final_only=True)[0].full(),
+                               tight.time_evolution_operator()[-1].full(), atol=1e-8)
 
 
 def test_final_only_gate_fidelity_matches_last_value(affine_dynamics):
@@ -1118,3 +1222,57 @@ class TestLandauZenerFormula:
         optimal = Dynamics(model, duration=duration).state_fidelity(initial_state=0, final_state=0)
 
         assert optimal > self._linear_ramp_fidelity(rate, hbar=1.0) + 0.1
+
+
+class TestCallableHamiltonianDynamics:
+    """Callable models propagate the SVD decomposition of the sampled H(x(t)) (D-11, D-20 (ii) and (iii))."""
+
+    TIGHT = {"atol": 1e-12, "rtol": 1e-10, "nsteps": 100_000}
+    SX = np.array([[0.0, 1.0], [1.0, 0.0]])
+    SZ = np.diag([1.0, -1.0])
+
+    @classmethod
+    def _nonlinear_hamiltonian(cls, lam: float) -> np.ndarray:
+        return lam * cls.SZ + (1.0 + 0.3 * lam**2) * cls.SX
+
+    def test_converges_to_the_exact_hamiltonian_of_the_pulse(self):
+        """Against H(x(t)) evaluated exactly, the error falls as the square of the sample spacing."""
+        model = ControlModel(self._nonlinear_hamiltonian)
+        model.set_control(control_name="lam", pulse_initial=-2.0, pulse_final=2.0, initial_state=0, alpha=2.0,
+                          beta=2.0)
+        duration = 5.0
+        errors = []
+        for samples in (11, 41, 161):
+            times = np.linspace(0.0, duration, samples)
+            pulse = -2.0 + 4.0 * (times / duration) ** 2
+            propagator = Dynamics(model, times=times, pulse=pulse, options=self.TIGHT).time_evolution_operator(
+                final_only=True)[0].full()
+
+            # Exact reference: the order=1 pulse (linear interpolation) inserted into the nonlinear H.
+            exact_hamiltonian = qt.QobjEvo(
+                lambda t, times=times, pulse=pulse: qt.Qobj(self._nonlinear_hamiltonian(np.interp(t, times, pulse))))
+            reference = qt.sesolve(exact_hamiltonian, qt.qeye(2), [0.0, duration],
+                                   options={**self.TIGHT, "max_step": 0.01}).states[-1].full()
+            errors.append(np.max(np.abs(propagator - reference)))
+
+        assert errors[-1] < 5e-4
+        # Four times more samples reduce the error about 16-fold (second order); allow some slack.
+        assert errors[1] < errors[0] / 10
+        assert errors[2] < errors[1] / 10
+
+    def test_callable_and_affine_models_give_the_same_dynamics(self):
+        """The same Landau-Zener problem as a callable and as an affine model gives the same pulse and evolution."""
+        callable_model = ControlModel(lambda lam: lam * self.SZ + self.SX)
+        callable_model.set_control(control_name="lam", pulse_initial=-5.0, pulse_final=5.0, initial_state=0,
+                                   alpha=2.0, beta=2.0)
+        affine_model = ControlModel(H_d=self.SX, H_c=self.SZ)
+        affine_model.set_control(pulse_initial=-5.0, pulse_final=5.0, initial_state=0, alpha=2.0, beta=2.0)
+
+        callable_dynamics = Dynamics(callable_model, duration=10.0, options=self.TIGHT)
+        affine_dynamics = Dynamics(affine_model, duration=10.0, options=self.TIGHT)
+
+        np.testing.assert_allclose(callable_dynamics.pulse, affine_dynamics.pulse, atol=1e-10)
+        np.testing.assert_allclose(callable_dynamics.time_evolution_operator(final_only=True)[0].full(),
+                                   affine_dynamics.time_evolution_operator(final_only=True)[0].full(), atol=1e-7)
+        np.testing.assert_allclose(callable_dynamics.populations(), affine_dynamics.populations(), atol=1e-8)
+        assert callable_dynamics.state_fidelity() == pytest.approx(affine_dynamics.state_fidelity(), abs=1e-8)

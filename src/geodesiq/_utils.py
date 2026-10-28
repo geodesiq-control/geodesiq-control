@@ -1,16 +1,22 @@
 import sys
+import warnings
 from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from fractions import Fraction
 from functools import cache
 from math import factorial
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from threadpoolctl import ThreadpoolController
 
 from .exceptions import InvalidControlParameterError, ValidationError
+from .warnings import DiabaticEndpointWarning
+
+if TYPE_CHECKING:
+    from matplotlib.axes import Axes
+    from matplotlib.figure import Figure, SubFigure
 
 
 class Flags:
@@ -521,6 +527,12 @@ def build_dia_list(
     ------
     InvalidControlParameterError
         If ``final_state`` cannot be reached through anticrossings that lead towards it.
+
+    Warns
+    -----
+    DiabaticEndpointWarning
+        If a diabatic passage lies at an end of the grid, i.e. the gap between the two states has its minimum there and
+        the sweep contains no anticrossing of them. The passage is still made there.
     """
     energies = np.asarray(energies, dtype=float)
     if energies.ndim != 2 or energies.shape[0] < 2:
@@ -580,6 +592,19 @@ def build_dia_list(
             f"{state} and {state + step} follows."
         )
 
+    # A gap minimum at an end of the grid also counts as an anticrossing, so a sweep that stops before (or starts after)
+    # the actual anticrossing is accepted and passes it diabatically at that end. This is rarely intended.
+    for index, before, after in passages:
+        if index in (0, n_points - 1):
+            warnings.warn(
+                f"The diabatic passage from state {before} to state {after} lies at the "
+                f"{'start' if index == 0 else 'end'} of the control grid, where the gap between them has its minimum: "
+                "the sweep contains no anticrossing of these states. Check that pulse_initial and pulse_final enclose "
+                "the anticrossing.",
+                DiabaticEndpointWarning,
+                stacklevel=2,
+            )
+
     # Every transition from the occupied state is adiabatic unless it belongs to a diabatic anticrossing.
     fraction = np.ones((n_points, dim), dtype=float)
     fraction[np.arange(n_points), occupied] = -1
@@ -636,6 +661,41 @@ def validate_state_index(index: int, dimension: int, name: str) -> int:
         raise ValidationError(f"{name} must be between 0 and {dimension - 1}, got {index}.")
 
     return index
+
+
+# -----------------------------------
+# Plotting
+# -----------------------------------
+def figure_and_axes(fig: "Figure | SubFigure | None", ax: "Axes | None") -> "tuple[Figure | SubFigure, Axes]":
+    """
+    Return the figure and axis to plot on, creating whichever is missing.
+
+    A given ``ax`` takes precedence and its parent figure is returned. A given ``fig`` without axes gets a new one; a
+    figure that already has a single axis is drawn on that axis (instead of stacking an overlapping one on top), and a
+    figure with several axes needs ``ax`` to choose one. Any other type of ``fig`` or ``ax`` raises ``ValidationError``,
+    instead of a silent ``None`` result (e.g. for a figure passed positionally as ``ax``).
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.axes import Axes
+    from matplotlib.figure import Figure, SubFigure
+
+    if ax is not None:
+        if not isinstance(ax, Axes):
+            raise ValidationError(f"ax must be a matplotlib Axes or None, got {type(ax).__name__}.")
+        fig = ax.figure
+    elif fig is None:
+        fig, ax = plt.subplots()
+    elif isinstance(fig, (Figure, SubFigure)):
+        if not fig.axes:
+            ax = fig.add_subplot(111)
+        elif len(fig.axes) == 1:
+            ax = fig.axes[0]
+        else:
+            raise ValidationError(f"fig has {len(fig.axes)} axes; pass the one to draw on as ax.")
+    else:
+        raise ValidationError(f"fig must be a matplotlib Figure, SubFigure or None, got {type(fig).__name__}.")
+    assert fig is not None
+    return fig, ax
 
 
 # -----------------------------------

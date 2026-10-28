@@ -21,3 +21,7 @@ class PerformanceWarning(GeodesiQWarning):
 
 class ExperimentalFeatureWarning(GeodesiQWarning):
     """Feature is experimental and API/behavior may change."""
+
+
+class DiabaticEndpointWarning(GeodesiQWarning):
+    """A diabatic passage lies at an end of the control grid instead of at an anticrossing inside the sweep."""

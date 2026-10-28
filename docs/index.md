@@ -39,6 +39,7 @@ dynamics = Dynamics(model, duration=duration)
 print(dynamics.state_fidelity())  # 0.999791
 
 times, filtered = pulse.filtered_pulse(cutoff_freq=2.0)  # warns that the endpoints moved to -9.29 and 9.29
+# Dynamics warns too: the target is still the eigenstate at z = 10, not at the moved endpoint
 print(Dynamics(model, times=times, pulse=filtered).state_fidelity())  # 0.999997
 ```
 
@@ -51,10 +52,11 @@ If the Hamiltonian is affine in the control, `H(z) = H_d + z H_c`, pass the matr
   contracts.
 - The API reference documents every public class and function.
 - The [`examples/`](https://github.com/geodesiq-control/geodesiq-control/tree/main/examples) notebooks cover the
-  Landau-Zener, double-quantum-dot and many-body problems. They additionally need
+  Landau-Zener, double-quantum-dot, many-body and four-level diabatic–adiabatic problems. They additionally need
   `pip install jupyterlab tqdm joblib parameterrun quspin`.
 
 ## Citing geodesiq
 
 If you use `geodesiq` in your research, please cite it. The citation metadata is in
 [`CITATION.cff`](https://github.com/geodesiq-control/geodesiq-control/blob/main/CITATION.cff).
+The DOI reserved for the upcoming version 0.4.0 archive is [doi:10.5281/zenodo.23729703](https://doi.org/10.5281/zenodo.23729703); publication is pending.

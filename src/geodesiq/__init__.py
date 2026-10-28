@@ -19,7 +19,13 @@ from .exceptions import (
     ValidationError,
 )
 from .pulses import PulseControl
-from .warnings import ExperimentalFeatureWarning, GeodesiQWarning, NumericalStabilityWarning, PerformanceWarning
+from .warnings import (
+    DiabaticEndpointWarning,
+    ExperimentalFeatureWarning,
+    GeodesiQWarning,
+    NumericalStabilityWarning,
+    PerformanceWarning,
+)
 
 __all__ = [
     "ControlModel",
@@ -41,6 +47,7 @@ __all__ = [
     "NumericalStabilityWarning",
     "PerformanceWarning",
     "ExperimentalFeatureWarning",
+    "DiabaticEndpointWarning",
     "decompose_hamiltonian",
     "HamiltonianDecomposition",
     "__version__",

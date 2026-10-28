@@ -12,6 +12,7 @@
 
 [![Build Status](https://github.com/geodesiq-control/geodesiq-control/actions/workflows/ci.yml/badge.svg)](https://github.com/geodesiq-control/geodesiq-control/actions/workflows/ci.yml)
 [![Documentation Status](https://readthedocs.org/projects/geodesiq/badge/?version=latest)](https://geodesiq.readthedocs.io/en/latest/)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23729703.svg)](https://doi.org/10.5281/zenodo.23729703)
 [![Maintainability](https://qlty.sh/gh/geodesiq-control/projects/geodesiq-control/maintainability.svg)](https://qlty.sh/gh/geodesiq-control/projects/geodesiq-control)
 [![Coverage Status](https://coveralls.io/repos/github/geodesiq-control/geodesiq-control/badge.svg?branch=dev)](https://coveralls.io/github/geodesiq-control/geodesiq-control?branch=dev)
 [![PyPI - License](https://img.shields.io/pypi/l/geodesiq)](https://opensource.org/license/lgpl-2-1)
@@ -80,7 +81,8 @@ dynamics = Dynamics(model, duration=duration)
 print(f"Optimal pulse fidelity:  {dynamics.state_fidelity():.6f}")  # 0.999791
 
 # ----- ... or by a low-pass filtered version of it -----
-# (warns that the filter moves the steep endpoints of the pulse, here to -9.29 and 9.29)
+# (warns that the filter moves the steep endpoints of the pulse, here to -9.29 and 9.29, and Dynamics warns that
+# the fidelity is still measured against the eigenstates at z0 and zf)
 times, filtered = pulse.filtered_pulse(cutoff_freq=2.0)
 filtered_dynamics = Dynamics(model, times=times, pulse=filtered)
 print(f"Filtered pulse fidelity: {filtered_dynamics.state_fidelity():.6f}")  # 0.999997
@@ -130,6 +132,7 @@ The user guide and the full API reference are available at [geodesiq.readthedocs
 If you use `geodesiq` in your research, please cite it. The citation metadata is in
 [`CITATION.cff`](https://github.com/geodesiq-control/geodesiq-control/blob/main/CITATION.cff), and GitHub's
 "Cite this repository" button exports it as BibTeX or APA.
+The DOI reserved for the upcoming version 0.4.0 archive is [doi:10.5281/zenodo.23729703](https://doi.org/10.5281/zenodo.23729703); publication is pending.
 
 ## Development
 

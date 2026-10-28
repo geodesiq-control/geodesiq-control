@@ -1,3 +1,4 @@
+import warnings
 from collections.abc import Callable, Sequence
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -7,10 +8,11 @@ import qutip as qt
 from numpy.typing import ArrayLike, NDArray
 from qutip.solver.integrator import IntegratorException
 
-from ._utils import is_hermitian, limit_blas_threads, real_samples, validate_state_index
+from ._utils import figure_and_axes, is_hermitian, limit_blas_threads, real_samples, validate_state_index
 from .controlmodel import ControlModel
 from .decompose_hamiltonian import decompose_hamiltonian
 from .exceptions import ConfigurationError, MissingArgsError, SolverError, ValidationError
+from .warnings import GeodesiQWarning, NumericalStabilityWarning
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
@@ -24,6 +26,13 @@ class Dynamics:
     sampled pulse. Methods compute evolution operators, fidelities and state populations;
     collapse operators enable Lindblad evolution for state observables.
     """
+
+    # A custom pulse whose endpoint is further than this fraction of the control range from the model's boundary
+    # control triggers a warning.
+    _ENDPOINT_RTOL = 1e-2
+    # A selected endpoint eigenstate whose gap to a neighbouring level is below this fraction of the spectral
+    # bandwidth is treated as degenerate, and a warning is emitted.
+    _DEGENERACY_RTOL = 1e-8
 
     def __init__(
         self,
@@ -54,6 +63,8 @@ class Dynamics:
             Hamiltonian (copies of ``H_d``/``H_c``, or of the fixed parameters and ``control_name``), state indices and
             pulse are captured here, so later changes to the model do not affect this object; create a new
             ``Dynamics`` to use them. State kept inside ``H_func`` itself (e.g. in a closure) is not copied.
+            Index-based and default states are eigenstates at the model's ``pulse_initial`` and ``pulse_final``, also
+            for a custom pulse; without them, at the first and last pulse values.
         duration : float | None
             Duration of the optimal control pulse (t_f). Must not be combined with ``times`` and ``pulse``.
         times : ArrayLike | None
@@ -73,7 +84,9 @@ class Dynamics:
             QuTiP solver options shared by all evolution methods, including ``atol``, ``rtol``, ``nsteps``,
             ``max_step`` and ``method``. None keeps QuTiP's numerical defaults. The dictionary is deep-copied;
             required output-storage settings are overridden by each method. Supported options depend on the
-            integration method and are checked by QuTiP when evolution is requested.
+            integration method and are checked by QuTiP when evolution is requested. ``state_fidelity`` and the
+            final-only propagator output only the end of the pulse; since ``nsteps`` bounds the steps between two
+            outputs, it is then multiplied by the number of sample intervals (``len(times) - 1``).
 
         Notes
         -----
@@ -90,7 +103,15 @@ class Dynamics:
         MissingArgsError
             If neither pulse source is provided or only one of ``times`` and ``pulse`` is supplied.
         ConfigurationError
-            If the model's required pulse or Hamiltonian configuration is unavailable.
+            If the model's required pulse or Hamiltonian configuration is unavailable. With ``duration``, the model is
+            solved if needed: missing control parameters raise ``MissingControlParameterError``, and errors of
+            ``ControlModel.solve_problem()`` (e.g. ``SolverError``) propagate unchanged.
+
+        Warns
+        -----
+        GeodesiQWarning
+            If a custom pulse starts or ends further than 1% of the control range from the model's ``pulse_initial``
+            or ``pulse_final``. The fidelity against index-based states then also measures this endpoint mismatch.
         """
 
         if not isinstance(model, ControlModel):
@@ -137,6 +158,7 @@ class Dynamics:
             # Eigenstates are defined by the control problem of the model. Without one, use the pulse boundaries.
             if model.pulse_initial is not None and model.pulse_final is not None:
                 self._boundary_controls = (float(model.pulse_initial), float(model.pulse_final))
+                self._warn_moved_endpoints()
             else:
                 self._boundary_controls = (float(self._pulse[0]), float(self._pulse[-1]))
         else:
@@ -150,12 +172,8 @@ class Dynamics:
             if not np.isfinite(duration) or duration <= 0:
                 raise ValidationError("duration must be a finite positive number.")
 
-            # Attributes of the ControlModel instance
-            if model.control_pulse is None or model.control_sol is None:
-                raise ConfigurationError(
-                    "Control pulse is unavailable. Solve the ControlModel before computing the dynamics."
-                )
-
+            # Both properties solve the model if needed. They never return None: a missing configuration raises
+            # MissingControlParameterError (a ConfigurationError), and a failed solve raises its own error.
             control_grid = np.asarray(model.control_pulse, dtype=float)
             self._pulse = np.asarray(model.control_sol, dtype=float)
             self._boundary_controls = (float(control_grid[0]), float(control_grid[-1]))
@@ -191,6 +209,9 @@ class Dynamics:
                 decomposition = decompose_hamiltonian(self._get_ham, self._pulse_times, drift="mean", rtol=1e-10)
             self._qevo = decomposition.qobjevo(order=self._order)
 
+        # Eigenvectors of H at every pulse sample, computed on the first adiabatic populations() call (D-19).
+        self._adiabatic_eigenvectors: NDArray[np.complex128] | None = None
+
     @staticmethod
     def _validate_custom_pulse(times: ArrayLike, pulse: ArrayLike) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """Validate a user-provided pulse and its sampling times."""
@@ -221,6 +242,21 @@ class Dynamics:
             raise ValidationError("pulse contains NaN or infinite values.")
 
         return time_values.copy(), pulse_values.copy()
+
+    def _warn_moved_endpoints(self) -> None:
+        """Warn when a custom pulse does not start or end at the model's boundary controls (D-14)."""
+        control_initial, control_final = self._boundary_controls
+        scale = max(abs(control_initial), abs(control_final), 1.0)
+        tolerance = self._ENDPOINT_RTOL * abs(control_final - control_initial) + 100 * np.finfo(float).eps * scale
+        start, end = float(self._pulse[0]), float(self._pulse[-1])
+        if abs(start - control_initial) > tolerance or abs(end - control_final) > tolerance:
+            warnings.warn(
+                f"The pulse runs from {start:.6g} to {end:.6g}, but the model's boundary controls are "
+                f"{control_initial:.6g} and {control_final:.6g}. Index-based (and default) initial and target states "
+                "are the eigenstates at the boundary controls, so the fidelity also measures the endpoint mismatch.",
+                GeodesiQWarning,
+                stacklevel=3,
+            )
 
     @property
     def times(self) -> NDArray[np.float64]:
@@ -260,10 +296,51 @@ class Dynamics:
         """Evaluate the Hamiltonian of the model, as it was when this object was created, at one control value."""
         return self._hamiltonian(float(control_value))
 
+    def _endpoint_options(self, solver: type[qt.SESolver]) -> dict[str, Any]:
+        """
+        Return the step budget for a run that outputs only ``[t0, tf]`` instead of every sample time (D-19).
+
+        QuTiP's ``nsteps`` bounds the internal steps between two consecutive output times. It is therefore scaled by
+        the number of sample intervals, which keeps the budget of a run through every sample time. The user's
+        ``nsteps`` is scaled in the same way; methods without a step limit are left unchanged.
+        """
+        nsteps = self._options.get("nsteps")
+        if nsteps is None:
+            method = self._options.get("method", solver.solver_options.get("method"))
+            integrator = solver.avail_integrators().get(method)
+            nsteps = getattr(integrator, "integrator_options", {}).get("nsteps") if integrator is not None else None
+        if nsteps is None:
+            return {}
+        return {"nsteps": int(nsteps) * max(1, len(self._pulse_times) - 1)}
+
+    def _adiabatic_basis(self) -> NDArray[np.complex128]:
+        """
+        Return the eigenvectors of H at every pulse sample, shape ``(len(times), d, d)``, as columns sorted by energy.
+
+        The Hamiltonian is captured at construction, so they are computed once per object and reused by every
+        ``populations(basis="adiabatic")`` call, instead of re-evaluating and re-diagonalizing H each time.
+        """
+        if self._adiabatic_eigenvectors is None:
+            hamiltonians = np.stack([np.asarray(self._evaluate_hamiltonian(value)) for value in self._pulse])
+            with self._blas_threads():
+                _, eigenvectors = np.linalg.eigh(hamiltonians)
+            self._adiabatic_eigenvectors = np.asarray(eigenvectors, dtype=np.complex128)
+        return self._adiabatic_eigenvectors
+
     def _eigenstate(self, control_value: float, state_index: int) -> qt.Qobj:
         hamiltonian = qt.Qobj(self._evaluate_hamiltonian(control_value))
         with self._blas_threads():
-            _, eigenstates = hamiltonian.eigenstates()
+            energies, eigenstates = hamiltonian.eigenstates()
+        # Within a degenerate level the eigenvector is an arbitrary combination, and so is any fidelity against it.
+        bandwidth = float(energies[-1] - energies[0])
+        neighbours = energies[max(state_index - 1, 0) : state_index + 2]
+        if neighbours.size > 1 and float(np.min(np.diff(neighbours))) <= self._DEGENERACY_RTOL * bandwidth:
+            warnings.warn(
+                f"Eigenstate {state_index} at control {control_value:.6g} is (nearly) degenerate with a neighbouring "
+                "level, so it is an arbitrary vector of the degenerate subspace. Pass the state explicitly instead.",
+                NumericalStabilityWarning,
+                stacklevel=4,
+            )
         return eigenstates[state_index]
 
     def _get_ham(self, t: float) -> qt.Qobj:
@@ -283,7 +360,8 @@ class Dynamics:
         ----------
         final_only : bool
             If True, return only the propagator at the end of the pulse instead of one per time sample. This avoids
-            storing ``len(times)`` dense matrices, which matters for large Hilbert spaces.
+            storing ``len(times)`` dense matrices, which matters for large Hilbert spaces, and outputs nothing in
+            between; the result agrees with the last full propagator within the solver tolerance.
 
         Returns
         -------
@@ -300,10 +378,12 @@ class Dynamics:
         pulse_times: list[float] = np.asarray(self._pulse_times, dtype=float).tolist()
 
         if final_only:
-            # Integrate through every sample time (as for the full propagator), but keep only the final operator.
+            # Only the end of the pulse is output. The sample times do not bound the solver steps (the Hamiltonian
+            # carries the pulse), so this matches the last full propagator within the solver tolerance (D-19).
             identity = qt.qeye(self._qevo.dims[0])
-            options = {"store_final_state": True, "store_states": False}
-            result = self._run_solver(qt.sesolve, self._qevo, identity, cast(Any, pulse_times), options=options)
+            options = {"store_final_state": True, "store_states": False, **self._endpoint_options(qt.SESolver)}
+            endpoints = [pulse_times[0], pulse_times[-1]]
+            result = self._run_solver(qt.sesolve, self._qevo, identity, cast(Any, endpoints), options=options)
             if result.final_state is None:
                 raise ValidationError("Time evolution did not return a final propagator.")
             return [result.final_state]
@@ -322,19 +402,21 @@ class Dynamics:
         """
         Compute state transfer fidelity for closed- or open-system evolution.
 
-        Without collapse operators the evolution is closed. Supplying ``c_ops`` enables
-        the Lindblad master equation. Integer state indices or omitted states select
-        eigenstates at the pulse endpoints; explicit states are used directly.
+        Without collapse operators the evolution is closed (QuTiP's ``mesolve`` then solves the Schrödinger equation
+        for a ket). Supplying ``c_ops`` enables the Lindblad master equation. Integer state indices or omitted states
+        select eigenstates at the pulse endpoints; explicit states are used directly.
 
         Parameters
         ----------
         initial_state : np.ndarray | int | qt.Qobj | None
-            Initial state for pulsed time evolution. Both states must be omitted (the model's state indices), both be
-            integer indices (eigenstates at the pulse endpoints), or both be explicit states: a ket, bra or density
-            matrix of the model dimension, as a numpy array or Qobj. Kets must be normalized and density matrices
-            Hermitian with unit trace (within 1e-6); otherwise a ``ValidationError`` is raised.
+            Initial state for pulsed time evolution: omitted (the model's ``initial_state`` index), an integer index
+            (eigenstate at the start of the pulse), or an explicit state: a ket, bra or density matrix of the model
+            dimension, as a numpy array or Qobj. Kets must be normalized and density matrices Hermitian with unit
+            trace (within 1e-6); otherwise a ``ValidationError`` is raised.
         final_state : np.ndarray | int | qt.Qobj | None
-            Target state, of the same kind as ``initial_state``.
+            Target state, of any of the same kinds: omitted (the model's ``final_state`` index), an index (eigenstate
+            at the end of the pulse) or an explicit state. The two arguments are resolved independently, so the kinds
+            may be mixed.
         c_ops : Sequence[qt.Qobj | qt.QobjEvo | np.ndarray] | None
             Collapse operators for the Lindblad master equation: a list or tuple of (d, d) Qobj, np.ndarray or
             QobjEvo, which may be mixed. None or an empty sequence gives closed evolution.
@@ -342,8 +424,9 @@ class Dynamics:
         Returns
         -------
         float
-            Squared QuTiP fidelity between the target state and the evolved final state.
-            For pure states this is the squared magnitude of their overlap.
+            Squared QuTiP (Uhlmann) fidelity between the target state ``sigma`` and the evolved final state ``rho``,
+            ``F = (Tr sqrt(sqrt(rho) sigma sqrt(rho)))**2`` (the Jozsa fidelity). For pure states this is the
+            transition probability ``|<target|psi_final>|**2``.
 
         Raises
         ------
@@ -352,55 +435,32 @@ class Dynamics:
         ValidationError
             If states, collapse operators or solver options are invalid.
         ConfigurationError
-            If model state indices are needed but not configured, or the Hamiltonian dimension is unavailable.
+            If a model state index is needed but not configured, or the Hamiltonian dimension is unavailable.
+
+        Warns
+        -----
+        NumericalStabilityWarning
+            If an index-based (or default) state is degenerate with a neighbouring level, i.e. their gap is at most
+            1e-8 times the spectral bandwidth. The eigenvector, and hence the fidelity, is then arbitrary within the
+            degenerate subspace; pass the state explicitly.
         """
         dimension = self._dimension()
         collapse_operators = _as_collapse_operators(c_ops, dimension)
 
-        control_initial, control_final = self._boundary_controls
+        # Only the final state is needed, so only the end of the pulse is output (D-19).
+        endpoints = [float(self._pulse_times[0]), float(self._pulse_times[-1])]
 
-        pulse_times: list[float] = np.asarray(self._pulse_times, dtype=float).tolist()
+        # Each state is resolved on its own, as in populations(), so the kinds may be mixed (D-15).
+        psi_init = self._resolve_initial_state(initial_state)
+        psi_target = self._resolve_target_state(final_state)
 
-        if initial_state is None and final_state is None:
-            initial_index = self._initial_state
-            final_index = self._final_state
-
-            if initial_index is None or final_index is None:
-                raise ConfigurationError(
-                    "Initial and final state indices must be configured in the ControlModel "
-                    "when no explicit states are provided."
-                )
-
-            psi_init = self._eigenstate(control_initial, initial_index)
-            psi_target = self._eigenstate(control_final, final_index)
-
-        elif _is_index(initial_state) and _is_index(final_state):
-            initial_index = validate_state_index(cast(int, initial_state), dimension, "initial_state")
-            final_index = validate_state_index(cast(int, final_state), dimension, "final_state")
-
-            psi_init = self._eigenstate(control_initial, initial_index)
-            psi_target = self._eigenstate(control_final, final_index)
-
-        elif (
-            initial_state is not None
-            and final_state is not None
-            and not (_is_index(initial_state) or _is_index(final_state))
-        ):
-            psi_init = _as_state(initial_state, dimension, "initial_state")
-            psi_target = _as_state(final_state, dimension, "final_state")
-        else:
-            raise ValidationError(
-                "Initial and final states must both be omitted, both be integer indices, or both be explicit states "
-                "(Qobj or numpy array)."
-            )
-
-        options = {"store_final_state": True, "store_states": False}
+        options = {"store_final_state": True, "store_states": False, **self._endpoint_options(qt.MESolver)}
 
         result = self._run_solver(
             qt.mesolve,
             self._qevo,
             psi_init,
-            cast(Any, pulse_times),
+            cast(Any, endpoints),
             c_ops=cast(Any, collapse_operators),
             options=options,
         )
@@ -476,6 +536,25 @@ class Dynamics:
 
         return _as_state(initial_state, dimension, "initial_state")
 
+    def _resolve_target_state(self, final_state: np.ndarray | int | qt.Qobj | None) -> qt.Qobj:
+        """Target state, following the conventions of ``state_fidelity``: the eigenstates are at the final control."""
+        control_final = self._boundary_controls[1]
+
+        if final_state is None:
+            if self._final_state is None:
+                raise ConfigurationError(
+                    "The final state index must be configured in the ControlModel when no explicit target state is "
+                    "provided."
+                )
+            return self._eigenstate(control_final, self._final_state)
+
+        dimension = self._dimension()
+        if _is_index(final_state):
+            index = validate_state_index(cast(int, final_state), dimension, "final_state")
+            return self._eigenstate(control_final, index)
+
+        return _as_state(final_state, dimension, "final_state")
+
     def _dimension(self) -> int:
         """Hilbert-space dimension of the model, which every explicit state and operator must match."""
         if self._hamiltonian_dimension is None:
@@ -519,6 +598,12 @@ class Dynamics:
         ConfigurationError
             If the model's initial state index is needed but not configured, or the Hamiltonian dimension
             is unavailable.
+
+        Warns
+        -----
+        NumericalStabilityWarning
+            If an index-based (or default) initial state is degenerate with a neighbouring level (see
+            ``state_fidelity``).
         """
         if basis not in ("adiabatic", "diabatic"):
             raise ValidationError(f"basis must be 'adiabatic' or 'diabatic', got {basis!r}.")
@@ -537,16 +622,17 @@ class Dynamics:
             c_ops=cast(Any, collapse_operators),
             options=options,
         )
-        with self._blas_threads():
-            states = result.states
-            if len(states) != len(pulse_times):
-                raise ValidationError("Time evolution did not return a state for every time sample.")
+        states = result.states
+        if len(states) != len(pulse_times):
+            raise ValidationError("Time evolution did not return a state for every time sample.")
+        adiabatic_basis = self._adiabatic_basis() if basis == "adiabatic" else None
 
+        with self._blas_threads():
             populations = np.empty((len(states), states[0].shape[0]))
-            for i, (state, control_value) in enumerate(zip(states, self._pulse, strict=True)):
+            for i, state in enumerate(states):
                 data = state.full()
-                if basis == "adiabatic":
-                    _, eigenvectors = np.linalg.eigh(np.asarray(self._evaluate_hamiltonian(control_value)))
+                if adiabatic_basis is not None:
+                    eigenvectors = adiabatic_basis[i]
                     data = eigenvectors.conj().T @ data
                     if not state.isket:
                         data = data @ eigenvectors
@@ -571,6 +657,7 @@ class Dynamics:
         xlabel: str | None = None,
         ylabel: str | None = None,
         title: str | None = None,
+        show: bool = True,
         **plot_kwargs: Any,
     ) -> "tuple[Figure | SubFigure, Axes]":
         """
@@ -579,7 +666,8 @@ class Dynamics:
         Parameters
         ----------
         fig, ax
-            Optional matplotlib figure/axis. If not provided, they are created.
+            Optional matplotlib figure/axis. If not provided, they are created. A ``fig`` without ``ax`` is drawn on its
+            single axis, or gets a new one if it has none; a figure with several axes needs ``ax``.
         initial_state : np.ndarray | int | qt.Qobj | None
             Initial state of the evolution (see ``populations``).
         basis : {"adiabatic", "diabatic"}
@@ -598,6 +686,8 @@ class Dynamics:
             Label for the y-axis. Defaults to ``"Population"`` when not provided.
         title : str | None
             Plot title. Defaults to ``"Adiabatic populations"`` or ``"Diabatic populations"`` when not provided.
+        show : bool
+            Whether to call ``plt.show()``. Pass ``show=False`` to keep drawing on the figure.
         **plot_kwargs
             Extra kwargs forwarded to ``ax.plot`` for each state.
 
@@ -616,12 +706,7 @@ class Dynamics:
         else:
             indices = [validate_state_index(index, dimension, "states") for index in states]
 
-        if ax is None:
-            if fig is None:
-                fig, ax = plt.subplots()
-            else:
-                ax = fig.add_subplot(111)
-        fig = ax.figure
+        fig, ax = figure_and_axes(fig, ax)
 
         for index in indices:
             label = rf"$|E_{{{index}}}\rangle$" if basis == "adiabatic" else rf"$|{index}\rangle$"
@@ -634,6 +719,8 @@ class Dynamics:
         if legend:
             ax.legend(**(legend_kwargs or {}))
 
+        if show:
+            plt.show()
         return fig, ax
 
 

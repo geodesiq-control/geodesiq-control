@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-message: "If you use geodesiq in your research, please cite it as below."
+message: "If you use geodesiq in your research, please cite the software DOI and the accompanying manuscript below."
 type: software
 title: "geodesiq: Geometric optimal control"
 abstract: >-
@@ -10,7 +10,8 @@ authors:
     given-names: "David"
   - family-names: "Ventura Meinersen"
     given-names: "Christian"
-version: 0.3.0
+version: 0.4.0
+date-released: "2026-10-28"
 license: LGPL-2.1-only
 repository-code: "https://github.com/geodesiq-control/geodesiq-control"
 url: "https://pypi.org/project/geodesiq/"
@@ -19,3 +20,17 @@ keywords:
   - optimal control
   - geodesic
   - quantum computing
+# Reserved DOI for the upcoming 0.4.0 archive; publication is pending.
+doi: "10.5281/zenodo.23729703"
+preferred-citation:
+  type: unpublished
+  title: "geodesiq: a Python package for geometric diabatic–adiabatic optimal state transfer"
+  authors:
+    - family-names: "Fernandez-Fernandez"
+      given-names: "David"
+    - family-names: "Ventura-Meinersen"
+      given-names: "Chris"
+    - family-names: "Rimbach-Russ"
+      given-names: "Maximilian"
+    - family-names: "Platero"
+      given-names: "Gloria"

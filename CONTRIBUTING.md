@@ -13,8 +13,10 @@ Direct pushes to `main` are not allowed.
 Only `dev` is merged into `main` (no feature branch PRs directly into `main`).
 
 Automation flow:
-- CI runs on pushes to `dev` and PRs targeting `dev`.
-- Release runs only when a PR from `dev` into `main` is merged.
+- CI runs on every push to `dev` or `main` and on pull requests into `main`; a pull request into `main` fails unless
+  it comes from `dev`. Pull requests into `dev` do not run CI; their checks run once they are merged and pushed.
+- Release runs after every successful CI run triggered by a push to `main`. Since only `dev` is merged into `main`,
+  this is in practice the merge of a pull request from `dev`.
 - Publish runs only after a successful `Release` workflow from `main`.
 
 To recreate the development environment, run:
@@ -34,12 +36,15 @@ uv run pytest
 uv run ruff check src tests
 uv run ruff format --check src
 uv run ty check src tests
+uv run mkdocs build --strict
 uv run python -m build
-uv run python -m twine check dist/*
+uv run python -m twine check --strict dist/*
+uv run jupyter execute examples/landau_zener.ipynb
 ```
 
 `pytest` fails below 90% coverage. The package sources are formatted with `ruff format`; tests are linted but keep their
-own formatting.
+own formatting. CI builds the documentation on every push and executes `examples/landau_zener.ipynb` on pull requests
+into `main`.
 
 ## Documentation
 
@@ -68,7 +73,9 @@ does.
 
 ## Bumping the version
 
-Use the `dev/bump_version.py` script to update the version consistently across all project files (`src/geodesiq/_meta.py` and `CHANGELOG.md`).
+Use the `dev/bump_version.py` script to update the version consistently across all project files
+(`src/geodesiq/_meta.py`, `CHANGELOG.md`, and the `version` and `date-released` fields of `CITATION.cff`, which
+gets the same date as the new changelog heading).
 
 **Bump by increment type:**
 ```bash
@@ -82,11 +89,12 @@ python dev/bump_version.py --major   # e.g. 0.2.0 → 1.0.0
 python dev/bump_version.py 1.2.3
 ```
 
-The script accepts PEP 440 versions, rejects non-increasing versions, validates the changelog, supports dry runs, and updates `_meta.py` and `CHANGELOG.md` with rollback protection.
+The script accepts PEP 440 versions, rejects non-increasing versions, validates the changelog, supports dry runs
+(`--dry-run`), and updates `_meta.py`, `CHANGELOG.md` and `CITATION.cff` with rollback protection.
 
 After running the version-bump script:
 
-1. Review the changes to `src/geodesiq/_meta.py` and `CHANGELOG.md`.
+1. Review the changes to `src/geodesiq/_meta.py`, `CHANGELOG.md` and `CITATION.cff`.
 2. Commit the changes to `dev` and push them.
 3. Open a pull request from `dev` into `main`.
 4. Once the pull request is merged and CI succeeds on `main`, the `Release` workflow automatically:

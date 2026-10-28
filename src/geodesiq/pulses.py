@@ -8,7 +8,7 @@ from numpy.typing import ArrayLike, NDArray
 from scipy.signal import ShortTimeFFT
 from scipy.signal.windows import hann
 
-from ._utils import real_samples
+from ._utils import figure_and_axes, real_samples
 from .exceptions import IOErrorGeodesiQ, ValidationError
 from .warnings import GeodesiQWarning
 
@@ -292,6 +292,9 @@ class PulseControl:
         self,
         fig: "Figure | SubFigure | None" = None,
         ax: "Axes | None" = None,
+        xlabel: str | None = None,
+        ylabel: str | None = None,
+        title: str | None = None,
         show: bool = True,
         **plot_kwargs: Any,
     ) -> "tuple[Figure | SubFigure, Axes]":
@@ -302,7 +305,14 @@ class PulseControl:
         ----------
         fig, ax
             Optional matplotlib figure/axis. If not provided, they are created. When ``ax`` is given, the pulse is
-            drawn on it and ``fig`` is ignored.
+            drawn on it and ``fig`` is ignored. A ``fig`` that already has one axis is drawn on that axis; a figure
+            with several axes needs ``ax``.
+        xlabel : str | None
+            Label for the x-axis. Defaults to ``"Time $t$"`` when not provided.
+        ylabel : str | None
+            Label for the y-axis. Defaults to ``"Control Pulse"`` when not provided.
+        title : str | None
+            Plot title. No title is set when not provided.
         show : bool
             Whether to call ``plt.show()``. Pass ``show=False`` to keep drawing on a provided figure/axis.
         plot_kwargs : dict
@@ -316,16 +326,13 @@ class PulseControl:
         """
         import matplotlib.pyplot as plt
 
-        if ax is None:
-            if fig is None:
-                fig, ax = plt.subplots()
-            else:
-                ax = fig.add_subplot(111)
-        fig = ax.figure
+        fig, ax = figure_and_axes(fig, ax)
 
         ax.plot(self._pulse_times, self._pulse, **plot_kwargs)
-        ax.set_xlabel("Time $t$")
-        ax.set_ylabel("Control Pulse")
+        ax.set_xlabel("Time $t$" if xlabel is None else xlabel)
+        ax.set_ylabel("Control Pulse" if ylabel is None else ylabel)
+        if title is not None:
+            ax.set_title(title)
         if show:
             plt.show()
 
@@ -336,8 +343,9 @@ class PulseControl:
         Export (real-time) pulse data to a (npz, txt, csv) file.
 
         Values are written with full double precision (``%.17g``), so that e.g. nanosecond-scale times expressed in
-        seconds are preserved. The ``txt`` format is whitespace-delimited and the ``csv`` format is comma-delimited;
-        both have a one-line header with the column names.
+        seconds are preserved. The ``npz`` format stores the arrays ``times`` and ``pulse``. The ``txt`` format is
+        whitespace-delimited and the ``csv`` format is comma-delimited; both have a one-line header with the same names
+        (``times pulse`` or ``times,pulse``).
 
         Parameters
         ----------
@@ -386,7 +394,7 @@ class PulseControl:
                 if file_extension == "npz":
                     np.savez(file, times=t, pulse=pulse)
                 else:
-                    delimiter, header = (" ", "t pulse") if file_extension == "txt" else (",", "t,pulse")
+                    delimiter, header = (" ", "times pulse") if file_extension == "txt" else (",", "times,pulse")
                     np.savetxt(
                         file, np.column_stack((t, pulse)), delimiter=delimiter, header=header, comments="", fmt="%.17g"
                     )

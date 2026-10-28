@@ -1,6 +1,7 @@
 import sys
 import tracemalloc
 import types
+import warnings
 
 import numpy as np
 import pytest
@@ -22,6 +23,7 @@ from geodesiq._utils import (
     uniform_grid_derivative,
 )
 from geodesiq.exceptions import ValidationError
+from geodesiq.warnings import DiabaticEndpointWarning
 
 # ---------------------------------------------------------------------------
 # build_dia_list()
@@ -87,6 +89,25 @@ class TestBuildDiaList:
         dia_list = build_dia_list(energies, initial_state=1, final_state=2).dense()
 
         assert np.all(dia_list[self.x < -1.0, 1, 2] == 0)
+
+    @pytest.mark.parametrize("x", [np.linspace(1.0, 10.0, 101), np.linspace(-10.0, -1.0, 101)])
+    def test_passage_at_an_end_of_the_grid_warns(self, x):
+        # Two-level sweep that does not contain the anticrossing at x = 0: the gap minimum lies at the start (x >= 1)
+        # or at the end (x <= -1) of the grid. The transfer is still made there, fully diabatic, but it warns.
+        gap = 2.0 * np.sqrt(1.0 + x**2)
+        energies = np.stack([-gap / 2, gap / 2], axis=1)
+
+        with pytest.warns(DiabaticEndpointWarning, match="pulse_initial and pulse_final enclose"):
+            dia_list = build_dia_list(energies, initial_state=0, final_state=1)
+
+        assert np.all(dia_list.adiabatic_fraction[dia_list.adiabatic_fraction >= 0] == 0)
+
+    def test_interior_anticrossing_does_not_warn(self):
+        energies = three_level_energies(self.x, gap_01=np.full_like(self.x, 5.0))
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DiabaticEndpointWarning)
+            build_dia_list(energies, initial_state=1, final_state=2)
 
     def test_downward_transfer_crosses_the_first_anticrossing(self):
         energies = three_level_energies(self.x, gap_01=np.full_like(self.x, 5.0))

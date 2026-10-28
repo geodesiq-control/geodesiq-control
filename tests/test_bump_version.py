@@ -68,9 +68,23 @@ def test_citation_version_is_updated_atomically(tmp_path: Path) -> None:
     citation = tmp_path / "CITATION.cff"
     citation.write_text('cff-version: 1.2.0\ntitle: "x"\nversion: 1.2.3\nlicense: MIT\n', encoding="utf-8")
 
-    bump_version.update_project(meta, changelog, Version("1.3.0"), citation_file=citation)
+    bump_version.update_project(meta, changelog, Version("1.3.0"), citation_file=citation,
+                                release_date=date(2026, 2, 3))
 
-    assert citation.read_text(encoding="utf-8") == 'cff-version: 1.2.0\ntitle: "x"\nversion: 1.3.0\nlicense: MIT\n'
+    assert citation.read_text(encoding="utf-8") == (
+        'cff-version: 1.2.0\ntitle: "x"\nversion: 1.3.0\ndate-released: "2026-02-03"\nlicense: MIT\n')
+
+
+def test_citation_release_date_matches_the_changelog(tmp_path: Path) -> None:
+    meta, changelog = project_files(tmp_path)
+    citation = tmp_path / "CITATION.cff"
+    citation.write_text('cff-version: 1.2.0\nversion: 1.2.3\ndate-released: "2025-01-01"\n', encoding="utf-8")
+
+    bump_version.update_project(meta, changelog, Version("1.3.0"), citation_file=citation,
+                                release_date=date(2026, 2, 3))
+
+    assert citation.read_text(encoding="utf-8") == 'cff-version: 1.2.0\nversion: 1.3.0\ndate-released: "2026-02-03"\n'
+    assert "## [1.3.0] - 2026-02-03" in changelog.read_text(encoding="utf-8")
 
 
 def test_citation_without_version_is_rejected_before_writing(tmp_path: Path) -> None:

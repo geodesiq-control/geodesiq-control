@@ -1,3 +1,4 @@
+import sys
 import warnings
 from collections.abc import Callable, Mapping
 from copy import deepcopy
@@ -17,6 +18,7 @@ from ._utils import (
     build_dia_list,
     crossing_map,
     degenerate_clusters,
+    figure_and_axes,
     follow_state,
     is_hermitian,
     limit_blas_threads,
@@ -63,29 +65,12 @@ class _ControlParameters(_EigensystemParameters):
     dia_beta: float | None
 
 
-def _figure_and_axes(fig: "Figure | SubFigure | None", ax: "Axes | None") -> "tuple[Figure | SubFigure, Axes]":
-    """
-    Return the figure and axis to plot on, creating whichever is missing.
+def _show_if(show: bool) -> None:
+    """Call ``plt.show()`` when ``show`` is true, as every plot method does by default."""
+    if show:
+        import matplotlib.pyplot as plt
 
-    A given ``ax`` takes precedence and its parent figure is returned. Any other type of ``fig`` or ``ax`` raises
-    ``ValidationError``, instead of a silent ``None`` result (e.g. for a figure passed positionally as ``ax``).
-    """
-    import matplotlib.pyplot as plt
-    from matplotlib.axes import Axes
-    from matplotlib.figure import Figure, SubFigure
-
-    if ax is not None:
-        if not isinstance(ax, Axes):
-            raise ValidationError(f"ax must be a matplotlib Axes or None, got {type(ax).__name__}.")
-        fig = ax.figure
-    elif fig is None:
-        fig, ax = plt.subplots()
-    elif isinstance(fig, (Figure, SubFigure)):
-        ax = fig.add_subplot(111)
-    else:
-        raise ValidationError(f"fig must be a matplotlib Figure, SubFigure or None, got {type(fig).__name__}.")
-    assert fig is not None
-    return fig, ax
+        plt.show()
 
 
 class ControlModel:
@@ -125,6 +110,8 @@ class ControlModel:
     # time tau, i.e. |tau(x(tau_i)) - tau_i| <= _SOLVER_TAU_TOL at every sample
     # (solve_ivp at its default rtol=1e-3 stays below about 5e-3).
     _SOLVER_TAU_TOL = 1e-2
+    # ASCII stand-ins for the status marks of print_summary(), for outputs that cannot encode them (e.g. cp1252).
+    _SUMMARY_ASCII_MARKS = {"✅": "[OK]", "❌": "[--]", "→": "->"}
 
     def __init__(
         self,
@@ -1754,6 +1741,7 @@ class ControlModel:
         xlabel: str | None = None,
         ylabel: str | None = None,
         title: str | None = None,
+        show: bool = True,
         **plot_kwargs: Any,
     ) -> "tuple[Figure | SubFigure, Axes]":
         """
@@ -1762,8 +1750,9 @@ class ControlModel:
         Parameters
         ----------
         fig : Figure | SubFigure | None
-            Existing figure or subfigure. If ``ax`` is absent, a subplot is added to it; if neither is supplied,
-            a new figure and axes are created.
+            Existing figure or subfigure. If ``ax`` is absent, its single axis is used, or a subplot is added if it
+            has none (a figure with several axes needs ``ax``); if neither is supplied, a new figure and axes are
+            created.
         ax : Axes | None
             Existing axes to draw on. Its parent figure or subfigure is returned when supplied.
         legend : bool
@@ -1776,6 +1765,8 @@ class ControlModel:
             Label for the y-axis. Defaults to ``"Energy"`` when not provided.
         title : str | None
             Plot title. Defaults to ``"Hamiltonian eigenenergies"`` when not provided.
+        show : bool
+            Whether to call ``plt.show()``. Pass ``show=False`` to keep drawing on the figure.
         **plot_kwargs
             Extra kwargs forwarded to ``ax.plot`` for each energy branch.
 
@@ -1797,7 +1788,7 @@ class ControlModel:
         control_grid = self._control_pulse
         assert control_grid is not None
 
-        fig, ax = _figure_and_axes(fig, ax)
+        fig, ax = figure_and_axes(fig, ax)
 
         for level in range(energies.shape[1]):
             ax.plot(control_grid, energies[:, level], label=f"E{level}", **plot_kwargs)
@@ -1809,6 +1800,7 @@ class ControlModel:
         if legend:
             ax.legend(**(legend_kwargs or {}))
 
+        _show_if(show)
         return fig, ax
 
     def plot_metric_tensor(
@@ -1820,6 +1812,7 @@ class ControlModel:
         xlabel: str | None = None,
         ylabel: str | None = None,
         title: str | None = None,
+        show: bool = True,
         **plot_kwargs: Any,
     ) -> "tuple[Figure | SubFigure, Axes]":
         """
@@ -1831,8 +1824,9 @@ class ControlModel:
         Parameters
         ----------
         fig : Figure | SubFigure | None
-            Existing figure or subfigure. If ``ax`` is absent, a subplot is added to it; if neither is supplied,
-            a new figure and axes are created.
+            Existing figure or subfigure. If ``ax`` is absent, its single axis is used, or a subplot is added if it
+            has none (a figure with several axes needs ``ax``); if neither is supplied, a new figure and axes are
+            created.
         ax : Axes | None
             Existing axes to draw on. Its parent figure or subfigure is returned when supplied.
         legend : bool
@@ -1845,6 +1839,8 @@ class ControlModel:
             Label for the y-axis. Defaults to ``"G tensor"`` when not provided.
         title : str | None
             Plot title. Defaults to ``"G tensor"`` when not provided.
+        show : bool
+            Whether to call ``plt.show()``. Pass ``show=False`` to keep drawing on the figure.
         **plot_kwargs
             Extra kwargs forwarded to ``ax.plot``.
 
@@ -1869,7 +1865,7 @@ class ControlModel:
         if self._metric_tensor is None:
             raise ValidationError("Metric tensor can not be None.")
 
-        fig, ax = _figure_and_axes(fig, ax)
+        fig, ax = figure_and_axes(fig, ax)
         ax.plot(self._control_pulse, self._metric_tensor, label="G", **plot_kwargs)
 
         ax.set_xlabel(control_name if xlabel is None else xlabel)
@@ -1879,6 +1875,7 @@ class ControlModel:
         if legend:
             ax.legend(**(legend_kwargs or {}))
 
+        _show_if(show)
         return fig, ax
 
     def synthesize_pulse(self, duration: float) -> PulseControl:
@@ -2053,8 +2050,27 @@ class ControlModel:
         """
         Print a summary of the current control parameters and settings. This method provides a clear overview of the
         control parameters, their values, and any relevant settings for the optimization problem.
+
+        The status marks are emojis. If the encoding of ``sys.stdout`` cannot represent them (e.g. a Windows console
+        or redirected output with cp1252), they are printed as ``[OK]``, ``[--]`` and ``->`` instead.
         """
-        print(self._generate_summary())
+        print(self._printable_summary(self._generate_summary(), getattr(sys.stdout, "encoding", None)))
+
+    @classmethod
+    def _printable_summary(cls, summary: str, encoding: str | None) -> str:
+        """Return ``summary`` unchanged if ``encoding`` can encode it, otherwise with ASCII status marks."""
+        encoding = encoding or "utf-8"
+        try:
+            summary.encode(encoding)
+            return summary
+        except LookupError:
+            encoding = "ascii"
+        except UnicodeEncodeError:
+            pass
+        for mark, ascii_mark in cls._SUMMARY_ASCII_MARKS.items():
+            summary = summary.replace(mark, ascii_mark)
+        # Other characters the encoding lacks, e.g. in user parameter values, become "?"
+        return summary.encode(encoding, errors="replace").decode(encoding)
 
     def __str__(self) -> str:
         return (

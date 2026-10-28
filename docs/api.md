@@ -55,7 +55,11 @@ filtered_dynamics = Dynamics(model, times=times, pulse=filtered)
 
 In both cases the default initial and target states of `state_fidelity()` are the eigenstates of the Hamiltonian at
 `pulse_initial` and `pulse_final` of the model, so fidelities of different pulses are directly comparable. If the model
-has no control endpoints configured, the endpoints of the custom pulse are used instead.
+has no control endpoints configured, the endpoints of the custom pulse are used instead. A custom pulse that starts or
+ends further than 1% of the control range from them emits a `GeodesiQWarning`, because the fidelity then also measures
+the endpoint mismatch (e.g. a strongly filtered pulse). An index-based state that is degenerate with a neighbouring
+level (gap at most 1e-8 of the spectral bandwidth) emits a `NumericalStabilityWarning`: its eigenvector is arbitrary
+within the degenerate subspace, so pass the state explicitly.
 
 Between its samples, the pulse is interpolated with a cubic spline for the optimal pulse and linearly for a custom pulse,
 so that the piecewise-linear `discretized_pulse()` is simulated as the waveform it describes (a cubic spline through a
@@ -82,7 +86,9 @@ final_operator = accurate.time_evolution_operator(final_only=True)[0]
 construction and for each solver call. The methods override `store_states` and, when required, `store_final_state`
 to preserve their documented outputs. QuTiP checks option names and method-specific support when evolution is
 requested; rejected configurations raise `ValidationError`. Integration failures raise `SolverError`, chained from
-QuTiP's original exception; increasing `nsteps` can resolve an internal step-count limit.
+QuTiP's original exception; increasing `nsteps` can resolve an internal step-count limit. `state_fidelity()` and
+`time_evolution_operator(final_only=True)` output only the end of the pulse; because `nsteps` bounds the steps between
+two outputs, it is then multiplied by the number of sample intervals (`len(times) - 1`).
 
 Check convergence by tightening `atol` and `rtol` and reducing `max_step`. Choose `max_step` below half the width of
 the narrowest pulse feature; output sample times alone do not bound internal integration steps. Supported settings

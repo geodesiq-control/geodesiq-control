@@ -38,6 +38,21 @@ def test_decompose_reconstructs_sampled_hamiltonians() -> None:
     assert decomposition.relative_total_error <= 1e-12
 
 
+def test_truncation_errors_are_relative_to_the_frobenius_norms() -> None:
+    """The total error uses the Frobenius norm of all samples, computed without a second sample matrix (D-19)."""
+    times = np.linspace(0.0, 3.0, 21)
+    h_d, _, _ = _reference_components()
+    samples = np.array([_model_hamiltonian(float(t)) for t in times])
+
+    decomposition = decompose_hamiltonian(_model_hamiltonian, times=times, drift=h_d, rank=1)
+
+    discarded = np.linalg.norm(decomposition.singular_values[1:])
+    assert discarded > 0
+    assert decomposition.relative_residual_error == pytest.approx(
+        discarded / np.linalg.norm(samples - h_d), rel=1e-12)
+    assert decomposition.relative_total_error == pytest.approx(discarded / np.linalg.norm(samples), rel=1e-12)
+
+
 def test_decomposition_type_is_exported_and_times_accept_lists() -> None:
     # HamiltonianDecomposition is importable from the top level (P-09), and times is ArrayLike (P-08).
     import geodesiq

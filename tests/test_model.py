@@ -1,3 +1,5 @@
+import io
+import sys
 from typing import Any, cast
 
 import numpy as np
@@ -14,7 +16,7 @@ from geodesiq import (
     ValidationError,
 )
 from geodesiq.pulses import PulseControl
-from geodesiq.warnings import NumericalStabilityWarning
+from geodesiq.warnings import DiabaticEndpointWarning, NumericalStabilityWarning
 
 # ---------------------------------------------------------------------------
 # Helpers – simple 2×2 Landau-Zener model:  H = [[lam, delta], [delta, -lam]]
@@ -1344,6 +1346,20 @@ class TestControlSolMonotonicity:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("method", ["plot_eigenvalues", "plot_metric_tensor"])
+@pytest.mark.parametrize(("kwargs", "expected_calls"), [({}, 1), ({"show": False}, 0)])
+def test_controlmodel_plots_call_show_by_default(configured_ham, monkeypatch, method, kwargs, expected_calls):
+    """Like plot_pulse(), the ControlModel plots call plt.show() unless show=False (W2-102)."""
+    plt = _get_pyplot()
+    calls = []
+    monkeypatch.setattr(plt, "show", lambda: calls.append(1))
+
+    fig, _ = getattr(configured_ham, method)(**kwargs)
+
+    assert len(calls) == expected_calls
+    plt.close(fig)
+
+
 class TestPlotEigenvalues:
     def test_plot_eigenvalues_creates_figure_and_lines(self, configured_ham):
         plt = _get_pyplot()
@@ -1815,6 +1831,28 @@ class TestCoverageRestorations:
         captured = capsys.readouterr()
         assert "ControlModel Control Summary" in captured.out
 
+    def test_printable_summary_keeps_emojis_when_encodable(self, bare_ham):
+        summary = bare_ham._generate_summary()
+        assert bare_ham._printable_summary(summary, "utf-8") == summary
+        assert bare_ham._printable_summary(summary, None) == summary
+
+    def test_print_summary_falls_back_to_ascii_on_cp1252(self, bare_ham, monkeypatch):
+        # A Windows console or redirected output with cp1252 cannot encode the emojis; printing must not raise
+        buffer = io.BytesIO()
+        stream = io.TextIOWrapper(buffer, encoding="cp1252")
+        monkeypatch.setattr(sys, "stdout", stream)
+        bare_ham.print_summary()
+        stream.flush()
+        output = buffer.getvalue().decode("cp1252")
+        assert "[--] not set" in output
+        assert "Control name -> " in output
+        assert "❌" not in output
+
+    def test_printable_summary_unknown_encoding_falls_back_to_ascii(self, bare_ham):
+        output = bare_ham._printable_summary(bare_ham._generate_summary(), "no-such-codec")
+        assert output.isascii()
+        assert "[--] not set" in output
+
 
 class TestSynthesizePulse:
     def test_synthesize_pulse_returns_pulse_control_instance(self, configured_ham):
@@ -1951,6 +1989,18 @@ class TestDiabaticMetricPath:
         assert configured_ham._dia_list is None
         self._assert_flags_consistent(configured_ham)
 
+    def test_sweep_without_the_anticrossing_warns(self):
+        # Review K-09: z from 1 to 10 does not contain the LZ anticrossing at z = 0, so the gap minimum is the first
+        # grid point. The diabatic transfer is still solved, but a DiabaticEndpointWarning tells the user.
+        ham = ControlModel(H_d=np.array([[0.0, 1.0], [1.0, 0.0]]), H_c=np.array([[1.0, 0.0], [0.0, -1.0]]))
+        ham.set_control(control_name="z", pulse_initial=1.0, pulse_final=10.0, initial_state=0, final_state=1,
+                        alpha=2.0, beta=2.0, dia_alpha=2.0, dia_beta=2.0, num_steps=65)
+
+        with pytest.warns(DiabaticEndpointWarning, match="start of the control grid"):
+            ham.solve_problem(pulse_accuracy=30)
+
+        assert ham._flags["ode_solved"] is True
+
 
 # ---------------------------------------------------------------------------
 # Test mutability of the model with changing the parameters
@@ -1993,7 +2043,10 @@ class TestMutability:
         model.set_control(control_name="lam", pulse_initial=-2.0, pulse_final=2.0, initial_state=0, final_state=1,
                           alpha=2.0, beta=2.0, dia_alpha=-1.0, dia_beta=1.0, num_steps=257, )
 
-        model.solve_problem()
+        # dH/dlam = diag(2 lam, -2 lam) vanishes at lam = 0, a grid point, so the metric is zero there (also for a
+        # purely adiabatic transfer): the warning is physical, not caused by the diabatic blending (P-03).
+        with pytest.warns(NumericalStabilityWarning, match="zero or numerically singular near control value"):
+            model.solve_problem()
 
         x = model.control_pulse
         assert model._dia_list is not None

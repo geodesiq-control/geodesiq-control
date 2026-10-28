@@ -212,7 +212,12 @@ def decompose_hamiltonian(
 
     residuals = samples - H_d_array
 
-    matrix = np.column_stack([_hermitian_to_real_vector(H) for H in residuals])
+    # One column per sample, filled in place to avoid a second d**2 x N copy. The SVD stays on this matrix: the Gram
+    # matrix would square its condition number and lose the singular values below about 1e-8 of the largest, which
+    # the default rtol=1e-10 cutoff needs (D-19).
+    matrix = np.empty((d * d, len(times)), dtype=float)
+    for column, H in enumerate(residuals):
+        matrix[:, column] = _hermitian_to_real_vector(H)
 
     U, singular_values, Vh = np.linalg.svd(matrix, full_matrices=False)
 
@@ -236,8 +241,8 @@ def decompose_hamiltonian(
     discarded_norm = np.linalg.norm(singular_values[rank:])
     residual_norm = np.linalg.norm(singular_values)
 
-    full_matrix = np.column_stack([_hermitian_to_real_vector(H) for H in samples])
-    full_norm = np.linalg.norm(full_matrix)
+    # The real-vector map preserves the Frobenius norm, so the norm of all samples needs no second matrix.
+    full_norm = np.linalg.norm(samples)
 
     relative_residual_error = float(discarded_norm / residual_norm if residual_norm > 0 else 0.0)
     relative_total_error = float(discarded_norm / full_norm if full_norm > 0 else 0.0)

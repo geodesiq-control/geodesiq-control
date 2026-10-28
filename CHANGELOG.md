@@ -8,6 +8,22 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Added
 
+- Preferred manuscript citation in `CITATION.cff` and versioned software DOI references in the manuscript (K-33).
+  The DOI for the upcoming 0.4.0 archive is reserved; publication is pending.
+- `Dynamics` warns when the fidelity against index-based states is ill-defined or mixes in another effect (D-14):
+  a `NumericalStabilityWarning` when the selected endpoint eigenstate is degenerate with a neighbouring level (gap at
+  most 1e-8 of the spectral bandwidth), and a `GeodesiQWarning` when a custom pulse starts or ends more than 1% of the
+  control range away from the model's `pulse_initial`/`pulse_final`, at which the eigenstates are still taken.
+
+## [0.4.0] - 2026-10-28
+
+### Added
+
+- Zenodo DOI badge and citation links for the version 0.4.0 archive in the README and documentation.
+- `DiabaticEndpointWarning` (a `GeodesiQWarning`, exported from `geodesiq`) is emitted when a diabatic passage lies at
+  an end of the control grid. A gap minimum at an end of the sweep counts as an anticrossing, so a sweep that does not
+  contain the anticrossing (e.g. a two-level sweep from `z = 1` to `10` with `final_state != initial_state`) was
+  silently accepted and passed diabatically at that end; the transfer is still made, but now warns.
 - `dev/sync_figures.py` checks SHA-256 hashes between `dev/figures/` and `paper/Figures/`; `--sync` copies and verifies
   missing or changed figures while preserving paper-only files.
 - `Dynamics(..., options=...)` configures QuTiP solver settings for all propagation methods, including tolerances,
@@ -27,9 +43,37 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   docstring describing its attributes.
 - `PulseControl.fourier_spectrum(..., detrend=True)` subtracts the mean of each window before the transform, which
   removes the DC part that otherwise dominates the spectrum of a sweep. The default (`False`) is unchanged.
+- `PulseControl.plot_pulse()` takes `xlabel`, `ylabel` and `title`, like `Dynamics.plot_populations()`. The defaults
+  are unchanged (`"Time $t$"`, `"Control Pulse"`, no title).
 
 ### Changed
 
+- `Dynamics.state_fidelity()` resolves the initial and the target state independently, as `populations()` does, so
+  their kinds may be mixed: e.g. `state_fidelity(0, psi_target)` or `state_fidelity(final_state=rho)` (before, anything
+  but two omitted, two index or two explicit states raised `ValidationError`). The docstring now states the fidelity
+  for mixed states, `(Tr sqrt(sqrt(rho) sigma sqrt(rho)))**2`.
+- Plot methods given a `fig` that already has a single axis draw on that axis instead of adding an overlapping
+  `add_subplot(111)` on top of it; a figure with several axes raises `ValidationError` and needs `ax`. This applies to
+  `PulseControl.plot_pulse()`, `ControlModel.plot_eigenvalues()`, `ControlModel.plot_metric_tensor()` and
+  `Dynamics.plot_populations()`, which now share one helper.
+
+- `Dynamics.state_fidelity()` and `Dynamics.time_evolution_operator(final_only=True)` (and so
+  `average_gate_fidelity(final_only=True)`) output only the start and end of the pulse instead of every sample time,
+  which makes them several times faster for long pulses (about 9x for 1000 samples). QuTiP's `nsteps` bounds the steps
+  between two outputs, so for these runs it is multiplied by the number of sample intervals, keeping the former step
+  budget; this also applies to a user-supplied `nsteps`. Results agree with the former ones within the solver
+  tolerance: to about 1e-12 for the default `adams` method in the tested cases, but up to the tolerance level (e.g.
+  4e-7 with `method="dop853"`, 1e-5 for some propagators), and `final_only` now agrees with the last full propagator
+  only within that tolerance.
+- `Dynamics.populations(basis="adiabatic")` computes the eigenvectors at the pulse samples once per `Dynamics` object
+  (in one batched diagonalization) instead of re-evaluating and re-diagonalizing the Hamiltonian on every call.
+  `decompose_hamiltonian()` no longer builds a second `d**2 x N` matrix only for a norm, and fills its SVD matrix in
+  place. Neither changes results.
+- `ControlModel.plot_eigenvalues()`, `ControlModel.plot_metric_tensor()` and `Dynamics.plot_populations()` take a
+  `show` argument and call `plt.show()` by default, like `PulseControl.plot_pulse()`. Pass `show=False` to keep drawing
+  on the returned figure (previously these methods never called `plt.show()`).
+- The header of `PulseControl.export_pulse()` text files is now `times pulse` (TXT) or `times,pulse` (CSV), the same
+  names as the arrays in NPZ files (previously `t pulse` and `t,pulse`).
 - `PulseControl.filtered_pulse()` holds the first and last values before and after the pulse (`padding="hold"`, the
   new default), as an arbitrary waveform generator does, instead of SciPy's odd extension. Both ends are now treated
   alike (the odd extension moved the end of a steep pulse much more than its start), so filtered results change; pass
@@ -88,6 +132,9 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Fixed
 
+- `ControlModel.print_summary()` no longer raises `UnicodeEncodeError` when the output encoding cannot represent its
+  emoji status marks (e.g. a Windows console or redirected output with cp1252). The emojis are kept wherever they can
+  be printed; otherwise `[OK]`, `[--]` and `->` are printed instead.
 - `export_pulse()` appends the extension instead of replacing the part of the name after its last dot:
   `"pulse_tf1.5"` is written to `pulse_tf1.5.npz` (before, `pulse_tf1.npz`, so `pulse_tf2.5` and `pulse_tf2.7`
   collided). `file_extension` is case-insensitive, a non-string raises `ValidationError` instead of `AttributeError`,
@@ -193,6 +240,11 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   summed to 4), and states, `gate`, `target_gate` and `c_ops` of the wrong dimension raise `ValidationError` instead of
   a raw `TypeError` from QuTiP. Explicit states may be kets, bras or density matrices, as arrays or `Qobj` (also mixed,
   and with any tensor structure), and `c_ops` may be a tuple.
+- The "metric" stage of the benchmark runner (`benchmarks/run_benchmarks.py`) rebuilds the diabatic passage list in
+  every timed call, as `solve_problem()` does after a new eigenproblem. Before, only its first call did, so for diabatic
+  transfers (`adiabatic_vs_diabatic`) the list cost appeared in no stage but "total". Diabatic "metric" timings from
+  earlier runs are therefore not comparable. A smoke test (`tests/test_benchmarks.py`) runs the stage benchmarks on a
+  small model, so a renamed private stage or flag no longer breaks them silently.
 
 ## [0.3.0] - 2026-10-01
 

@@ -27,9 +27,9 @@ import sys
 import time
 import timeit
 import warnings
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
 
 import pandas as pd
 from filelock import FileLock
@@ -108,8 +108,12 @@ def benchmark_ham(ham: ControlModel, pulse_accuracy: int = 1000, n_repeat: int =
     full pipeline, in isolation.
 
     The model is solved once as a warm-up so all caches are populated.
-    Each stage is then timed through the public cache-invalidation and staged
-    solve APIs, keeping the benchmark independent of private implementation details.
+    Each stage is then timed by lowering its flag in ``ham._flags`` and calling
+    the private stage method (``_solve_eigenproblem``, ``_compute_metric_tensor``,
+    ``_solve_ode``). This mirrors ``solve_problem`` but depends on its private
+    implementation, so ``tests/test_benchmarks.py`` runs it on a small model to
+    catch renamed stages or flags. The metric stage includes the diabatic
+    passage list (``_solve_dia_list``), which ``_compute_metric_tensor`` builds.
 
     Parameters
     ----------
@@ -136,7 +140,7 @@ def benchmark_ham(ham: ControlModel, pulse_accuracy: int = 1000, n_repeat: int =
     config = ham._check_control_parameters()
 
     # ── eigenproblem stage ──────────────────────────────────────────────────
-    # Resetting eigenproblem_solved cascades metric_computed → ode_solved.
+    # Resetting eigenproblem_solved cascades dia_list_computed → metric_computed → ode_solved.
     def _bench_eigen() -> None:
         ham._flags["eigenproblem_solved"] = False
         ham._solve_eigenproblem(config)
@@ -146,9 +150,11 @@ def benchmark_ham(ham: ControlModel, pulse_accuracy: int = 1000, n_repeat: int =
 
     # ── metric tensor stage ─────────────────────────────────────────────────
     # After the last _bench_eigen call, eigenproblem_solved=True.
-    # Resetting metric_computed cascades only ode_solved.
+    # Resetting dia_list_computed cascades metric_computed → ode_solved, so every call rebuilds the diabatic passage
+    # list as well as the metric, as solve_problem() does after a new eigenproblem. Resetting only metric_computed
+    # would time the list in the first call alone.
     def _bench_metric() -> None:
-        ham._flags["metric_computed"] = False
+        ham._flags["dia_list_computed"] = False
         ham._compute_metric_tensor(config)
 
     n = _calibrate_n(_bench_metric)

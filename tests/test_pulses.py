@@ -89,6 +89,29 @@ def test_fourier_spectrum_detrend_removes_the_dc_part():
     np.testing.assert_allclose(detrended[peak, inside], raw[peak, inside], rtol=2e-2)
 
 
+@pytest.mark.parametrize(("frequency", "amplitude", "window_len"), [(2.0, 3.0, 100), (2.5, 0.7, 200), (8.0, 1.0, 50)])
+def test_fourier_spectrum_frequency_axis_and_sine_amplitude(frequency, amplitude, window_len):
+    """A sine of frequency f and amplitude A on a frequency bin peaks at f with magnitude A/2 (D-07, D-20 (v)).
+
+    The spectrum is one-sided with magnitude scaling, so the amplitude is split between +f and -f.
+    """
+    duration, samples = 10.0, 1001
+    t = np.linspace(0, duration, samples)
+    pc = PulseControl(pulse=amplitude * np.sin(2 * np.pi * frequency * t), duration=duration)
+
+    frequencies, times, magnitude = pc.fourier_spectrum(window_len=window_len, hop=10)
+
+    fs = (samples - 1) / duration
+    np.testing.assert_allclose(frequencies, np.arange(window_len // 2 + 1) * fs / window_len)
+    assert magnitude.shape == (frequencies.size, times.size)
+    # Windows that lie fully inside the pulse (the boundary ones also contain zero padding)
+    half = window_len / 2 / fs
+    inside = (times >= half) & (times <= duration - half)
+    assert np.all(frequencies[np.argmax(magnitude[:, inside], axis=0)] == pytest.approx(frequency))
+    peak = np.argmin(np.abs(frequencies - frequency))
+    np.testing.assert_allclose(magnitude[peak, inside], amplitude / 2, rtol=1e-6)
+
+
 def test_fourier_spectrum_rejects_a_non_boolean_detrend(default_pulse):
     with pytest.raises(ValidationError, match="detrend must be a boolean"):
         default_pulse.fourier_spectrum(window_len=50, detrend="constant")
@@ -166,6 +189,42 @@ def test_plot_pulse_on_provided_subfigure(default_pulse):
 
     assert out_fig is subfig
     assert ax in subfig.axes
+    plt.close(fig)
+
+
+def test_plot_pulse_labels_and_title(default_pulse):
+    """The axis labels and the title can be set, as in plot_populations() (D-16)."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = default_pulse.plot_pulse(xlabel="t (ns)", ylabel="Detuning", title="Pulse", show=False)
+
+    assert (ax.get_xlabel(), ax.get_ylabel(), ax.get_title()) == ("t (ns)", "Detuning", "Pulse")
+    _, default_ax = default_pulse.plot_pulse(show=False)
+    assert (default_ax.get_ylabel(), default_ax.get_title()) == ("Control Pulse", "")
+    plt.close("all")
+
+
+def test_plot_pulse_reuses_the_single_axis_of_a_provided_figure(default_pulse):
+    """A figure that already has one axis is drawn on it, not covered by a second, overlapping axis (D-16)."""
+    import matplotlib.pyplot as plt
+
+    fig, existing = plt.subplots()
+    out_fig, ax = default_pulse.plot_pulse(fig=fig, show=False)
+    default_pulse.plot_pulse(fig=fig, show=False)
+
+    assert out_fig is fig
+    assert ax is existing
+    assert fig.axes == [existing]
+    assert len(existing.lines) == 2
+    plt.close(fig)
+
+
+def test_plot_pulse_on_a_figure_with_several_axes_needs_ax(default_pulse):
+    import matplotlib.pyplot as plt
+
+    fig, _ = plt.subplots(1, 2)
+    with pytest.raises(ValidationError, match="pass the one to draw on as ax"):
+        default_pulse.plot_pulse(fig=fig, show=False)
     plt.close(fig)
 
 
@@ -468,8 +527,22 @@ def test_export_csv_has_header_and_comma_delimiter(default_pulse, tmp_path):
     output_path = default_pulse.export_pulse(tmp_path / "pulse", file_extension="csv")
 
     lines = output_path.read_text().splitlines()
-    assert lines[0] == "t,pulse"
+    assert lines[0] == "times,pulse"
     assert len(lines[1].split(",")) == 2
+
+
+@pytest.mark.parametrize("file_extension", ["npz", "txt", "csv"])
+def test_export_uses_the_same_column_names_in_every_format(default_pulse, tmp_path, file_extension: str):
+    """The text headers name the columns as the NPZ keys do (W2-108)."""
+    output_path = default_pulse.export_pulse(tmp_path / "pulse", file_extension=file_extension)
+
+    if file_extension == "npz":
+        with np.load(output_path) as data:
+            names = list(data.files)
+    else:
+        delimiter = "," if file_extension == "csv" else " "
+        names = output_path.read_text().splitlines()[0].split(delimiter)
+    assert names == ["times", "pulse"]
 
 
 def test_export_returns_path_and_does_not_print(default_pulse, tmp_path, capsys):
