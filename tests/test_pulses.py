@@ -80,7 +80,7 @@ def test_fourier_spectrum_detrend_removes_the_dc_part():
     frequencies, times, raw = pc.fourier_spectrum(window_len=window_len, hop=10)
     _, _, detrended = pc.fourier_spectrum(window_len=window_len, hop=10, detrend=True)
 
-    # Windows that lie fully inside the pulse (the boundary ones also contain zero padding)
+    # Windows that lie fully inside the pulse (the boundary ones also contain padding)
     half = window_len / 2 * duration / (samples - 1)
     inside = (times >= half) & (times <= duration - half)
     peak = np.argmin(np.abs(frequencies - 2.0))
@@ -91,9 +91,9 @@ def test_fourier_spectrum_detrend_removes_the_dc_part():
 
 @pytest.mark.parametrize(("frequency", "amplitude", "window_len"), [(2.0, 3.0, 100), (2.5, 0.7, 200), (8.0, 1.0, 50)])
 def test_fourier_spectrum_frequency_axis_and_sine_amplitude(frequency, amplitude, window_len):
-    """A sine of frequency f and amplitude A on a frequency bin peaks at f with magnitude A/2 (D-07, D-20 (v)).
+    """A sine of frequency f and amplitude A on a frequency bin peaks at f with magnitude A (D-07, D-20 (v)).
 
-    The spectrum is one-sided with magnitude scaling, so the amplitude is split between +f and -f.
+    The one-sided spectrum doubles the positive frequencies, so it gives the physical amplitude and not A/2.
     """
     duration, samples = 10.0, 1001
     t = np.linspace(0, duration, samples)
@@ -104,17 +104,95 @@ def test_fourier_spectrum_frequency_axis_and_sine_amplitude(frequency, amplitude
     fs = (samples - 1) / duration
     np.testing.assert_allclose(frequencies, np.arange(window_len // 2 + 1) * fs / window_len)
     assert magnitude.shape == (frequencies.size, times.size)
-    # Windows that lie fully inside the pulse (the boundary ones also contain zero padding)
+    # Windows that lie fully inside the pulse (the boundary ones also contain padding)
     half = window_len / 2 / fs
     inside = (times >= half) & (times <= duration - half)
     assert np.all(frequencies[np.argmax(magnitude[:, inside], axis=0)] == pytest.approx(frequency))
     peak = np.argmin(np.abs(frequencies - frequency))
-    np.testing.assert_allclose(magnitude[peak, inside], amplitude / 2, rtol=1e-6)
+    np.testing.assert_allclose(magnitude[peak, inside], amplitude, rtol=1e-6)
+
+
+def test_fourier_spectrum_keeps_the_dc_value_of_an_offset_sine():
+    """Only the positive frequencies are doubled: an offset c stays c at zero frequency, a sine of amplitude A is A."""
+    duration, samples, window_len = 10.0, 1001, 100
+    t = np.linspace(0, duration, samples)
+    pc = PulseControl(pulse=2.0 + 0.3 * np.cos(2 * np.pi * 2.0 * t), duration=duration)
+
+    frequencies, times, magnitude = pc.fourier_spectrum(window_len=window_len, hop=10, mfft=4 * window_len)
+
+    inside = (times >= 0.5) & (times <= duration - 0.5)
+    np.testing.assert_allclose(magnitude[0, inside], 2.0, rtol=1e-6)
+    np.testing.assert_allclose(magnitude[np.argmin(np.abs(frequencies - 2.0)), inside], 0.3, rtol=1e-6)
 
 
 def test_fourier_spectrum_rejects_a_non_boolean_detrend(default_pulse):
     with pytest.raises(ValidationError, match="detrend must be a boolean"):
         default_pulse.fourier_spectrum(window_len=50, detrend="constant")
+
+
+def test_fourier_spectrum_hold_padding_keeps_the_boundary_windows_flat():
+    """The default hold padding extends a constant pulse by itself; zero padding adds a jump to 0 (F-22)."""
+    duration, samples, window_len = 10.0, 1001, 100
+    pc = PulseControl(pulse=np.full(samples, 5.0), duration=duration)
+
+    _, times, held = pc.fourier_spectrum(window_len=window_len, hop=10)
+    _, _, zeros = pc.fourier_spectrum(window_len=window_len, hop=10, padding="zeros")
+    _, _, detrended = pc.fourier_spectrum(window_len=window_len, hop=10, detrend=True)
+
+    # Every window, also those that overhang the ends, sees the same constant as the central one
+    assert times[0] < 0 and times[-1] > duration
+    middle = held[:, [times.size // 2]]
+    np.testing.assert_allclose(held[0], 5.0, rtol=1e-12)
+    np.testing.assert_allclose(held, np.broadcast_to(middle, held.shape), rtol=0, atol=1e-12)
+    np.testing.assert_allclose(detrended, 0.0, atol=1e-12)
+    # The windows centred on the ends are half zeros: the DC part halves and higher frequencies appear
+    edge = np.argmin(np.abs(times))
+    assert zeros[0, edge] == pytest.approx(2.5, rel=5e-2)
+    assert np.max(zeros[2:, edge]) > 0.5
+
+
+@pytest.mark.parametrize("padding", ["zeros", "even", "odd"])
+def test_fourier_spectrum_passes_the_padding_to_scipy(padding):
+    from scipy import signal
+
+    duration, samples, window_len, hop = 10.0, 1001, 100, 10
+    t = np.linspace(0, duration, samples)
+    values = t**2 - 3 * t
+    pc = PulseControl(pulse=values, duration=duration)
+
+    _, _, magnitude = pc.fourier_spectrum(window_len=window_len, hop=hop, padding=padding)
+
+    sft = signal.ShortTimeFFT(
+        signal.windows.hann(window_len, sym=False), hop=hop, fs=100.0, fft_mode="onesided2X", scale_to="magnitude"
+    )
+    np.testing.assert_allclose(magnitude, np.abs(sft.stft(values, padding=padding)), rtol=0, atol=1e-12)
+
+
+def test_fourier_spectrum_mfft_interpolates_the_frequency_axis():
+    """A zero-padded FFT refines the frequency grid and keeps the values on the original bins."""
+    duration, samples, window_len, hop = 10.0, 1001, 100, 10
+    t = np.linspace(0, duration, samples)
+    pc = PulseControl(pulse=np.sin(2 * np.pi * 2.3 * t), duration=duration)
+
+    frequencies, times, magnitude = pc.fourier_spectrum(window_len=window_len, hop=hop)
+    fine_frequencies, fine_times, fine = pc.fourier_spectrum(window_len=window_len, hop=hop, mfft=4 * window_len)
+
+    assert fine_frequencies.size == 2 * window_len + 1
+    np.testing.assert_allclose(fine_frequencies[::4], frequencies)
+    np.testing.assert_array_equal(fine_times, times)
+    np.testing.assert_allclose(fine[::4], magnitude, rtol=0, atol=1e-12)
+
+
+@pytest.mark.parametrize("mfft", [49, 100.0, True, "256"])
+def test_fourier_spectrum_rejects_an_invalid_mfft(default_pulse, mfft):
+    with pytest.raises(ValidationError, match="mfft must be None or an integer >= window_len"):
+        default_pulse.fourier_spectrum(window_len=50, mfft=mfft)
+
+
+@pytest.mark.parametrize("padding", ["edge", "constant", None, 0])
+def test_fourier_spectrum_rejects_an_unknown_padding(default_pulse, padding):
+    with pytest.raises(ValidationError, match="padding must be one of"):
+        default_pulse.fourier_spectrum(window_len=50, padding=padding)
 
 
 # ------------------------------------------------------------

@@ -20,7 +20,6 @@ from .exceptions import (
 )
 from .pulses import PulseControl
 from .warnings import (
-    DiabaticEndpointWarning,
     ExperimentalFeatureWarning,
     GeodesiQWarning,
     NumericalStabilityWarning,
@@ -47,7 +46,6 @@ __all__ = [
     "NumericalStabilityWarning",
     "PerformanceWarning",
     "ExperimentalFeatureWarning",
-    "DiabaticEndpointWarning",
     "decompose_hamiltonian",
     "HamiltonianDecomposition",
     "__version__",

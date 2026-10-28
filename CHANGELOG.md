@@ -15,15 +15,37 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   most 1e-8 of the spectral bandwidth), and a `GeodesiQWarning` when a custom pulse starts or ends more than 1% of the
   control range away from the model's `pulse_initial`/`pulse_final`, at which the eigenstates are still taken.
 
+### Changed
+
+- Only interior gap minima are anticrossings for a diabatic transfer (A-13, C-01, K-09). A gap minimum at
+  `pulse_initial` or `pulse_final` used to count as well, so a gap that rises at the start of the sweep moved the
+  passage to `x = pulse_initial` (relabelling the initial state before any evolution) and the real anticrossing later
+  in the sweep was passed adiabatically. A sweep that does not bracket an anticrossing on the way to `final_state`
+  now raises `InvalidControlParameterError`; extend the sweep, or, for a deliberately truncated passage, set the new
+  `set_control(allow_endpoint_passages=True)` (also a writable `ControlModel.allow_endpoint_passages` property,
+  default `False`), which restores the former rule.
+
+### Fixed
+
+- Rounding errors of a flat gap no longer count as anticrossings (C-01). A diabatic passage was made at the first
+  sample-to-sample dip, e.g. where the gap is constant in exact arithmetic but its eigenvalues carry rounding noise,
+  instead of at the real anticrossing further along. A gap minimum now counts only if its prominence (the smaller rise
+  to the bounding maxima) exceeds 1e-12 of the largest spectral bandwidth, and the first such minimum along the sweep
+  is passed, not the deepest one, so a later anticrossing of the same pair never skips an earlier one. The extent of a
+  passage ignores the same rounding errors, so a flat gap bounds it where the flat part begins. Pulses of diabatic
+  transfers with a flat or noisy gap change accordingly; smooth spectra give identical results.
+- A negative matrix-element exponent (`beta` or `dia_beta` < 0) no longer fails on, or is dominated by, transitions
+  that dH/dx does not couple (matrix element at most 1e-8 of the largest one at that grid point), e.g. levels in
+  another symmetry sector (A-12). Such a transition now contributes nothing, instead of raising
+  `MetricComputationError` for an exact zero or adding a spurious ~1e16 for a rounding error, and a true level crossing
+  on a grid point is also accepted for `beta < 0`. For `beta = 0` it still contributes `|E_n - E_m|**(-alpha)`
+  (`0**0 = 1`), so that `(alpha, beta) = (0, 0)` keeps giving a linear ramp.
+
 ## [0.4.0] - 2026-10-28
 
 ### Added
 
 - Zenodo DOI badge and citation links for the version 0.4.0 archive in the README and documentation.
-- `DiabaticEndpointWarning` (a `GeodesiQWarning`, exported from `geodesiq`) is emitted when a diabatic passage lies at
-  an end of the control grid. A gap minimum at an end of the sweep counts as an anticrossing, so a sweep that does not
-  contain the anticrossing (e.g. a two-level sweep from `z = 1` to `10` with `final_state != initial_state`) was
-  silently accepted and passed diabatically at that end; the transfer is still made, but now warns.
 - `dev/sync_figures.py` checks SHA-256 hashes between `dev/figures/` and `paper/Figures/`; `--sync` copies and verifies
   missing or changed figures while preserving paper-only files.
 - `Dynamics(..., options=...)` configures QuTiP solver settings for all propagation methods, including tolerances,
@@ -43,6 +65,9 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   docstring describing its attributes.
 - `PulseControl.fourier_spectrum(..., detrend=True)` subtracts the mean of each window before the transform, which
   removes the DC part that otherwise dominates the spectrum of a sweep. The default (`False`) is unchanged.
+- `PulseControl.fourier_spectrum(..., mfft=...)` zero-pads each window to an FFT of length `mfft`, which samples the
+  spectrum on a finer frequency grid (the frequency resolution is still set by the window). The default (`None`) keeps
+  the FFT length equal to `window_len`.
 - `PulseControl.plot_pulse()` takes `xlabel`, `ylabel` and `title`, like `Dynamics.plot_populations()`. The defaults
   are unchanged (`"Time $t$"`, `"Control Pulse"`, no title).
 
@@ -82,6 +107,14 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   the magnitude response (-6 dB at `cutoff_freq`, effective order `2 * filter_order`), and a `GeodesiQWarning` reports
   when an endpoint moves by more than 1% of the pulse range, since `Dynamics` still measures fidelities against the
   eigenstates at the original endpoints.
+- `PulseControl.fourier_spectrum()` holds the first and last values in the windows that overhang the ends of the pulse
+  (`padding="hold"`, the new default), like `filtered_pulse()`, instead of SciPy's zero padding. Zero padding added
+  the jump from the end values to zero, which showed up as spurious peaks at the start and end of the spectrogram, so
+  the boundary windows change; pass `padding="zeros"` for the former behaviour (also `"even"`, `"odd"`).
+- `PulseControl.fourier_spectrum()` returns the physical amplitude spectrum: a sinusoid of amplitude `A` gives `A` at
+  its frequency (previously `A/2`, because the one-sided spectrum split it between `+f` and `-f`). All positive
+  frequencies below Nyquist are therefore twice as large as before; the zero-frequency row is unchanged. The docstring now also
+  states that the window-center times extend up to `window_len / 2` samples beyond the pulse.
 - Rename the normalized-time grid from `ControlModel.s` to `ControlModel.tau` (`tau = t / t_f`) to match the
   manuscript notation. Update callers to use `model.tau`; numerical results and defensive-copy behavior are unchanged.
 - The source distribution includes the test suite, so downstream packagers can run it (`pytest` from the unpacked

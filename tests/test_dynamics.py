@@ -18,8 +18,7 @@ from geodesiq.exceptions import (
 from geodesiq.warnings import GeodesiQWarning, NumericalStabilityWarning
 
 # The fixture models sweep lam from 1 to 3 with final_state=1, so their diabatic passage lies at the start of the grid
-# (no anticrossing inside the sweep). They only need a solved model, so the warning about it is not relevant here.
-pytestmark = pytest.mark.filterwarnings("ignore::geodesiq.DiabaticEndpointWarning")
+# (no anticrossing inside the sweep), which needs allow_endpoint_passages=True. They only need a solved model.
 
 # ------------------------------------------------------------
 # Real ControlModel() fixtures
@@ -35,7 +34,7 @@ def _build_solved_model(pulse_accuracy: int = 3) -> ControlModel:
     model = ControlModel(lz_hamiltonian)
     model.set_parameters(delta=1.0)
     model.set_control(control_name="lam", pulse_initial=1.0, pulse_final=3.0, initial_state=0, final_state=1, alpha=2.0,
-                      beta=2.0, dia_alpha=2.0, dia_beta=2.0, num_steps=33, )
+                      beta=2.0, dia_alpha=2.0, dia_beta=2.0, num_steps=33, allow_endpoint_passages=True, )
     model.solve_problem(pulse_accuracy=pulse_accuracy)
     return model
 
@@ -45,7 +44,7 @@ def _build_solved_affine_model(pulse_accuracy: int = 5) -> ControlModel:
     H_c = np.array([[1.0, 0.0], [0.0, -1.0]])
     model = ControlModel(H_d=H_d, H_c=H_c)
     model.set_control(pulse_initial=1.0, pulse_final=3.0, initial_state=0, final_state=1, alpha=2.0,
-                      beta=2.0, dia_alpha=2.0, dia_beta=2.0, num_steps=33, )
+                      beta=2.0, dia_alpha=2.0, dia_beta=2.0, num_steps=33, allow_endpoint_passages=True, )
     model.solve_problem(pulse_accuracy=pulse_accuracy)
     return model
 
@@ -401,7 +400,8 @@ class TestOptimalPulse:
         model = ControlModel(lz_hamiltonian)
         model.set_parameters(delta=1.0)
         model.set_control(control_name="lam", pulse_initial=1.0, pulse_final=3.0, initial_state=0, final_state=1,
-                          alpha=2.0, beta=2.0, dia_alpha=2.0, dia_beta=2.0, num_steps=33, )
+                          alpha=2.0, beta=2.0, dia_alpha=2.0, dia_beta=2.0, num_steps=33,
+                          allow_endpoint_passages=True, )
 
         dynamics = Dynamics(model, duration=2.0)
 

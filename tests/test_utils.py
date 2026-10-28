@@ -1,7 +1,6 @@
 import sys
 import tracemalloc
 import types
-import warnings
 
 import numpy as np
 import pytest
@@ -22,8 +21,7 @@ from geodesiq._utils import (
     traceless,
     uniform_grid_derivative,
 )
-from geodesiq.exceptions import ValidationError
-from geodesiq.warnings import DiabaticEndpointWarning
+from geodesiq.exceptions import InvalidControlParameterError, ValidationError
 
 # ---------------------------------------------------------------------------
 # build_dia_list()
@@ -91,23 +89,73 @@ class TestBuildDiaList:
         assert np.all(dia_list[self.x < -1.0, 1, 2] == 0)
 
     @pytest.mark.parametrize("x", [np.linspace(1.0, 10.0, 101), np.linspace(-10.0, -1.0, 101)])
-    def test_passage_at_an_end_of_the_grid_warns(self, x):
+    def test_passage_at_an_end_of_the_grid_needs_the_override(self, x):
         # Two-level sweep that does not contain the anticrossing at x = 0: the gap minimum lies at the start (x >= 1)
-        # or at the end (x <= -1) of the grid. The transfer is still made there, fully diabatic, but it warns.
+        # or at the end (x <= -1) of the grid. Only with allow_endpoint_passages is the transfer made there, fully
+        # diabatic.
         gap = 2.0 * np.sqrt(1.0 + x**2)
         energies = np.stack([-gap / 2, gap / 2], axis=1)
 
-        with pytest.warns(DiabaticEndpointWarning, match="pulse_initial and pulse_final enclose"):
-            dia_list = build_dia_list(energies, initial_state=0, final_state=1)
+        with pytest.raises(InvalidControlParameterError, match="allow_endpoint_passages=True"):
+            build_dia_list(energies, initial_state=0, final_state=1)
+
+        dia_list = build_dia_list(energies, initial_state=0, final_state=1, allow_endpoint_passages=True)
 
         assert np.all(dia_list.adiabatic_fraction[dia_list.adiabatic_fraction >= 0] == 0)
 
-    def test_interior_anticrossing_does_not_warn(self):
-        energies = three_level_energies(self.x, gap_01=np.full_like(self.x, 5.0))
+    def test_gap_rising_at_the_start_does_not_move_the_passage_there(self):
+        # Review C-01 (R1): the gap rises up to x = 0.5 and the anticrossing is at x = (1 + sqrt(5)) / 2. The passage
+        # used to be made at x = 0, and the real anticrossing was then passed adiabatically.
+        x = np.linspace(0.0, 2.5, 1025)
+        gap = 2.0 * np.sqrt((1.0 + x - x**2) ** 2 + 0.05**2)
+        energies = np.stack([-gap / 2, gap / 2], axis=1)
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", DiabaticEndpointWarning)
-            build_dia_list(energies, initial_state=1, final_state=2)
+        dia_list = build_dia_list(energies, initial_state=0, final_state=1)
+
+        passage = x[np.argmax(dia_list.occupied == 1)]
+        assert passage == pytest.approx((1.0 + np.sqrt(5.0)) / 2.0, abs=2 * (x[1] - x[0]))
+        assert dia_list.adiabatic_fraction[0, 1] == 1
+        # With the override, the start of the grid is again the (first) passage.
+        assert build_dia_list(energies, 0, 1, allow_endpoint_passages=True).occupied[0] == 1
+
+    @pytest.mark.parametrize("reverse", [False, True])
+    def test_first_anticrossing_is_passed_not_the_deepest(self, reverse):
+        # The same pair anticrosses at x = -1 (gap 0.24) and x = 1 (gap 0.11). The first one along the sweep is passed
+        # diabatically, the second one adiabatically, in either sweep direction (C-01: not the deepest minimum).
+        x = self.x[::-1] if reverse else self.x
+        gap = (x**2 - 1) ** 2 + 0.3 - 0.25 * (x + 2) / 4
+        energies = np.stack([-gap / 2, gap / 2], axis=1)
+
+        dia_list = build_dia_list(energies, initial_state=0, final_state=1)
+
+        first, second = (1.0, -1.0) if reverse else (-1.0, 1.0)
+        passage = x[np.flatnonzero(np.diff(dia_list.occupied)) + 1]
+        np.testing.assert_allclose(passage, [first], atol=0.02)
+        transition = dia_list.adiabatic_fraction[np.arange(x.size), 1 - dia_list.occupied]
+        assert np.all(transition[np.abs(x - first) < 0.1] == 0)
+        assert np.all(transition[np.abs(x - second) < 0.1] == 1)
+
+    def test_first_anticrossing_keeps_the_later_ones_available(self):
+        # Gap 0-1 anticrosses at x = -1.5 (shallow) and x = 0.5 (deep), gap 1-2 at x = -0.5 only. Passing the first 0-1
+        # anticrossing reaches the 1-2 one; passing the deepest 0-1 anticrossing at x = 0.5 would leave none for 1-2.
+        gap_01 = ((self.x + 1.5) * (self.x - 0.5)) ** 2 + 0.2 - 0.05 * (self.x + 1.5)
+        gap_12 = 0.5 + (self.x + 0.5) ** 2
+        energies = np.stack([np.zeros_like(self.x), gap_01, gap_01 + gap_12], axis=1)
+
+        dia_list = build_dia_list(energies, initial_state=0, final_state=2)
+
+        passages = self.x[np.flatnonzero(np.diff(dia_list.occupied)) + 1]
+        np.testing.assert_allclose(passages, [-1.5, -0.5], atol=0.02)
+
+    def test_rounding_dips_do_not_count_but_resolved_ones_do(self):
+        x = np.linspace(0.0, 3.0, 301)
+        noise = np.random.default_rng(1).normal(scale=4e-16, size=x.size)
+        gap = np.where(x < 1.0, 2.0, 2.0 - 1.9 * np.sin(np.pi * np.clip(x - 1.0, 0.0, 2.0) / 2.0) ** 2) + noise
+        energies = np.stack([-gap / 2, gap / 2], axis=1)
+
+        np.testing.assert_allclose(x[np.flatnonzero(np.diff(build_dia_list(energies, 0, 1).occupied)) + 1], [2.0])
+        # Without the tolerance, the first rounding dip is taken as the anticrossing.
+        assert x[np.argmax(build_dia_list(energies, 0, 1, gap_rtol=0.0).occupied == 1)] < 1.0
 
     def test_downward_transfer_crosses_the_first_anticrossing(self):
         energies = three_level_energies(self.x, gap_01=np.full_like(self.x, 5.0))

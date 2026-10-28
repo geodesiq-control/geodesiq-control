@@ -1,6 +1,6 @@
 import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import scipy as sp
@@ -26,6 +26,13 @@ class PulseControl:
 
     # Padding modes of filtered_pulse(): hold the end values, or a padtype of scipy.signal.sosfiltfilt.
     _FILTER_PADDINGS = ("hold", "odd", "even", "constant", None)
+    # Padding modes of fourier_spectrum(), mapped to the padding of scipy.signal.ShortTimeFFT.stft.
+    _SPECTRUM_PADDINGS: dict[str, Literal["zeros", "edge", "even", "odd"]] = {
+        "hold": "edge",
+        "zeros": "zeros",
+        "even": "even",
+        "odd": "odd",
+    }
     # filtered_pulse() warns when an endpoint moves by more than this fraction of the pulse range.
     _FILTER_ENDPOINT_RTOL = 1e-2
 
@@ -107,10 +114,20 @@ class PulseControl:
         return new_time, approx_sol
 
     def fourier_spectrum(
-        self, window_len: int = 256, hop: int = 32, detrend: bool = False
+        self,
+        window_len: int = 256,
+        hop: int = 32,
+        detrend: bool = False,
+        padding: str = "hold",
+        mfft: int | None = None,
     ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
         """
         Compute the Short-Time Fourier Transform (STFT) spectrum of the control pulse.
+
+        The magnitude is an amplitude spectrum in the units of the control: a sinusoid ``A * sin(2 * pi * f * t)``
+        inside a window gives ``A`` at frequency ``f``, and a constant ``c`` gives ``c`` at zero frequency. The positive
+        frequencies of the one-sided spectrum are doubled for this (``fft_mode="onesided2X"`` of
+        ``scipy.signal.ShortTimeFFT``, with ``scale_to="magnitude"``).
 
         Parameters
         ----------
@@ -123,15 +140,27 @@ class PulseControl:
             spectrum (``scipy.signal.ShortTimeFFT.stft_detrend`` with ``detr="constant"``). A geodesic pulse sweeps
             between two control values, so without it the zero-frequency row dominates the spectrum. Default is
             False.
+        padding : str, optional
+            How the pulse is extended beyond its ends for the windows that overhang them, whose centers lie up to
+            ``window_len / 2`` samples outside the pulse. ``"hold"`` (default) holds the first and last values, as an
+            arbitrary waveform generator does before and after the pulse. ``"zeros"`` pads with zeros, which was the
+            default up to version 0.3.0 and adds the jump from the end values to zero to the spectrum. ``"even"`` and
+            ``"odd"`` mirror the pulse (``padding`` of ``scipy.signal.ShortTimeFFT.stft``).
+        mfft : int | None, optional
+            Length of the FFT, at least ``window_len``. Each window is zero-padded to this length, which gives
+            ``mfft // 2 + 1`` frequency bins instead of ``window_len // 2 + 1``. This interpolates the spectrum on a
+            finer frequency grid; the frequency resolution is still set by the window duration. Default is None, i.e.
+            ``window_len``.
 
         Returns
         -------
         frequencies : np.ndarray
-            Frequencies corresponding to the STFT rows.
+            Non-negative frequencies of the STFT rows, in cycles per unit time (not angular frequencies).
         times : np.ndarray
-            Time array corresponding to the centers of each STFT time slice.
+            Centers of the STFT windows. They extend up to ``window_len / 2`` samples beyond both ends of the pulse,
+            because the first and last windows overhang them (see ``padding``).
         magnitude : np.ndarray
-            2D magnitude spectrum of the control pulse (shape: [frequencies, times]).
+            Amplitude spectrum of the control pulse, in the units of the control (shape: [frequencies, times]).
         """
         if not isinstance(window_len, (int, np.integer)) or isinstance(window_len, bool) or int(window_len) < 2:
             raise ValidationError("window_len must be an integer >= 2.")
@@ -146,6 +175,13 @@ class PulseControl:
             raise ValidationError("hop must not exceed window_len.")
         if not isinstance(detrend, (bool, np.bool_)):
             raise ValidationError("detrend must be a boolean.")
+        if not isinstance(padding, str) or padding not in self._SPECTRUM_PADDINGS:
+            raise ValidationError(f"padding must be one of {', '.join(map(repr, self._SPECTRUM_PADDINGS))}.")
+        stft_padding = self._SPECTRUM_PADDINGS[padding]
+        if mfft is not None:
+            if not isinstance(mfft, (int, np.integer)) or isinstance(mfft, bool) or int(mfft) < window_len:
+                raise ValidationError("mfft must be None or an integer >= window_len.")
+            mfft = int(mfft)
 
         dt = float(self._pulse_times[1] - self._pulse_times[0])
         if not np.isfinite(dt) or dt <= 0:
@@ -153,9 +189,12 @@ class PulseControl:
 
         fs = float(1.0 / dt)
         win = hann(window_len, sym=False)
-        sft = ShortTimeFFT(win, hop=hop, fs=fs, scale_to="magnitude")
+        sft = ShortTimeFFT(win, hop=hop, fs=fs, fft_mode="onesided2X", mfft=mfft, scale_to="magnitude")
 
-        stft_matrix = sft.stft_detrend(self._pulse, "constant") if detrend else sft.stft(self._pulse)
+        if detrend:
+            stft_matrix = sft.stft_detrend(self._pulse, "constant", padding=stft_padding)
+        else:
+            stft_matrix = sft.stft(self._pulse, padding=stft_padding)
 
         magnitude = np.abs(stft_matrix)
         frequencies = sft.f

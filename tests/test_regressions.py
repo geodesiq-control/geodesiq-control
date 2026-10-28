@@ -10,7 +10,7 @@ from scipy.integrate import romb, solve_ivp
 from scipy.interpolate import PchipInterpolator
 
 from geodesiq import ControlModel
-from geodesiq._utils import is_hermitian
+from geodesiq._utils import _gap_minima, is_hermitian
 from geodesiq.exceptions import (
     InvalidControlParameterError,
     MetricComputationError,
@@ -645,6 +645,138 @@ class TestTrueCrossings:
         near_crossing = np.abs(x + 0.5) < 0.1
         assert np.all(dia_list.dense()[near_crossing, 0, 1] == 1)
         assert np.all(dia_list.dense()[np.abs(x - 0.5) < 0.05, 1, 2] == 0)
+
+
+# ---------------------------------------------------------------------------
+# Diabatic passages at resolved interior anticrossings only (C-01)
+# ---------------------------------------------------------------------------
+SIGMA_Z = np.diag([1.0, -1.0])
+SIGMA_X = np.array([[0.0, 1.0], [1.0, 0.0]])
+GOLDEN = (1.0 + np.sqrt(5.0)) / 2.0
+
+
+def rising_gap_model(pulse_initial: float, pulse_final: float) -> ControlModel:
+    """Review reproduction R1: the gap rises on [0, 0.5], and the anticrossing is at x = (1 + sqrt(5)) / 2."""
+    model = ControlModel(lambda x: (1.0 + x - x * x) * SIGMA_Z + 0.05 * SIGMA_X,
+                         partial_H_func=lambda x: (1.0 - 2.0 * x) * SIGMA_Z)
+    model.set_control(control_name="x", pulse_initial=pulse_initial, pulse_final=pulse_final, initial_state=0,
+                      final_state=1, alpha=2.0, beta=2.0, dia_alpha=0.0, dia_beta=0.0)
+    return model
+
+
+def rotation(x: float) -> np.ndarray:
+    return np.array([[np.cos(x), -np.sin(x)], [np.sin(x), np.cos(x)]])
+
+
+def flat_noisy_gap_model(pulse_initial: float, pulse_final: float) -> ControlModel:
+    """
+    Review reproduction R14: in a basis rotating with x, the gap is constant for x < 1, so its samples differ only by
+    rounding errors, and the anticrossing is at x = 2.
+    """
+
+    def h(x: float) -> float:
+        return 1.0 if x < 1.0 else 2.0 - x
+
+    def hamiltonian(x: float) -> np.ndarray:
+        return rotation(x) @ (h(x) * SIGMA_Z + 0.05 * SIGMA_X) @ rotation(x).T
+
+    def partial(x: float) -> np.ndarray:
+        drift = h(x) * SIGMA_Z + 0.05 * SIGMA_X
+        d_rotation = np.array([[-np.sin(x), -np.cos(x)], [np.cos(x), -np.sin(x)]])
+        return (d_rotation @ drift @ rotation(x).T + rotation(x) @ drift @ d_rotation.T
+                + (0.0 if x < 1.0 else -1.0) * rotation(x) @ SIGMA_Z @ rotation(x).T)
+
+    model = ControlModel(hamiltonian, partial_H_func=partial)
+    model.set_control(control_name="x", pulse_initial=pulse_initial, pulse_final=pulse_final, initial_state=0,
+                      final_state=1, alpha=2.0, beta=2.0, dia_alpha=0.0, dia_beta=0.0)
+    return model
+
+
+def passage_points(model: ControlModel) -> np.ndarray:
+    model.solve_problem()
+    assert model._dia_list is not None
+    return model.control_pulse[np.flatnonzero(np.diff(model._dia_list.occupied)) + 1]
+
+
+class TestResolvedAnticrossings:
+    @pytest.mark.parametrize("sweep", [(0.0, 2.5), (2.5, 0.0)])
+    def test_rising_gap_is_passed_at_the_anticrossing(self, sweep):
+        # R1: the passage used to be made at x = 0, and the anticrossing was then passed with the adiabatic exponents.
+        model = rising_gap_model(*sweep)
+        np.testing.assert_allclose(passage_points(model), [GOLDEN], atol=0.01)
+
+        x = model.control_pulse
+        assert model._dia_list is not None
+        fraction = model._dia_list.adiabatic_fraction
+        assert np.all(fraction[np.abs(x - GOLDEN) < 0.1, 1 - model._dia_list.occupied[np.abs(x - GOLDEN) < 0.1]] == 0)
+
+    @pytest.mark.parametrize("sweep", [(0.0, 3.0), (3.0, 0.0)])
+    def test_rounding_dips_of_a_flat_gap_are_not_anticrossings(self, sweep):
+        model = flat_noisy_gap_model(*sweep)
+        x = model.control_pulse
+        gap = np.diff(model.eigenenergies, axis=1)[:, 0]
+        # The precondition: the flat part has local minima at the level of rounding errors.
+        flat = x < 0.95
+        assert np.ptp(gap[flat]) < 1e-13
+        assert np.any(_gap_minima(gap)[flat])
+
+        np.testing.assert_allclose(passage_points(model), [2.0], atol=0.01)
+        # The passage acts only within its anticrossing, which the flat gap bounds where it begins.
+        assert model._dia_list is not None
+        transitions = 1 - model._dia_list.occupied
+        np.testing.assert_array_equal(model._dia_list.adiabatic_fraction[flat, transitions[flat]], 1.0)
+
+
+# ---------------------------------------------------------------------------
+# Transitions that dH/dx does not couple (A-12)
+# ---------------------------------------------------------------------------
+def rotated(model: ControlModel) -> ControlModel:
+    """The same model in a rotated basis, where the uncoupled matrix elements are rounding errors, not exact zeros."""
+    rotation, _ = np.linalg.qr(np.random.default_rng(0).normal(size=(3, 3)))
+    assert model._H_d is not None and model._H_c is not None
+    return ControlModel(H_d=rotation @ model._H_d @ rotation.T, H_c=rotation @ model._H_c @ rotation.T)
+
+
+class TestUncoupledTransitions:
+    @pytest.mark.parametrize("basis", [lambda model: model, rotated])
+    def test_beta_zero_keeps_uncoupled_transitions(self, basis):
+        # 0**0 = 1: the uncoupled level 5 contributes 1/|E_2 - E_0|^alpha.
+        model = basis(lz_with_uncoupled_level(5.0, 0.0))
+        model.set_control(pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0, beta=0.0)
+        model.solve_problem()
+
+        gaps = np.abs(model.eigenenergies[:, 1:] - model.eigenenergies[:, :1])
+        np.testing.assert_allclose(metric_of(model), np.sum(gaps ** -2.0, axis=1), rtol=1e-10)
+
+    def test_zero_exponents_give_a_linear_ramp(self):
+        model = lz_with_uncoupled_level(5.0, 0.0)
+        model.set_control(pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=0.0, beta=0.0)
+        model.solve_problem()
+
+        np.testing.assert_array_equal(metric_of(model), 2.0)
+        np.testing.assert_allclose(model.control_sol, -1.0 + 2.0 * model.tau, atol=1e-10)
+
+    @pytest.mark.parametrize("basis", [lambda model: model, rotated])
+    def test_negative_beta_drops_uncoupled_transitions(self, basis):
+        # Before, an exact zero raised MetricComputationError (inf), and a rounding error gave a metric of ~1e16.
+        model = basis(lz_with_uncoupled_level(5.0, 0.0))
+        model.set_control(pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0, beta=-1.0)
+        model.solve_problem()
+
+        reference = ControlModel(H_d=LZ_BLOCK_D, H_c=LZ_BLOCK_C)
+        reference.set_control(pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0, beta=-1.0)
+        reference.solve_problem()
+        np.testing.assert_allclose(metric_of(model), metric_of(reference), rtol=1e-10)
+
+    def test_negative_beta_at_a_crossing_on_a_grid_point(self):
+        model = lz_with_uncoupled_level(-0.1, -1.0)
+        model.set_control(pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0, beta=-1.0)
+        model.solve_problem()
+
+        reference = ControlModel(H_d=LZ_BLOCK_D, H_c=LZ_BLOCK_C)
+        reference.set_control(pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0, beta=-1.0)
+        reference.solve_problem()
+        np.testing.assert_allclose(metric_of(model), metric_of(reference), rtol=1e-12)
 
 
 # ---------------------------------------------------------------------------

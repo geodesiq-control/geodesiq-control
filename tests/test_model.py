@@ -16,7 +16,7 @@ from geodesiq import (
     ValidationError,
 )
 from geodesiq.pulses import PulseControl
-from geodesiq.warnings import DiabaticEndpointWarning, NumericalStabilityWarning
+from geodesiq.warnings import NumericalStabilityWarning
 
 # ---------------------------------------------------------------------------
 # Helpers – simple 2×2 Landau-Zener model:  H = [[lam, delta], [delta, -lam]]
@@ -1989,17 +1989,39 @@ class TestDiabaticMetricPath:
         assert configured_ham._dia_list is None
         self._assert_flags_consistent(configured_ham)
 
-    def test_sweep_without_the_anticrossing_warns(self):
-        # Review K-09: z from 1 to 10 does not contain the LZ anticrossing at z = 0, so the gap minimum is the first
-        # grid point. The diabatic transfer is still solved, but a DiabaticEndpointWarning tells the user.
+    def test_sweep_without_the_anticrossing_needs_the_endpoint_override(self):
+        # Review K-09, A-13: z from 1 to 10 does not contain the LZ anticrossing at z = 0, so the gap minimum is the
+        # first grid point. That is not an anticrossing unless endpoint passages are allowed explicitly.
         ham = ControlModel(H_d=np.array([[0.0, 1.0], [1.0, 0.0]]), H_c=np.array([[1.0, 0.0], [0.0, -1.0]]))
         ham.set_control(control_name="z", pulse_initial=1.0, pulse_final=10.0, initial_state=0, final_state=1,
                         alpha=2.0, beta=2.0, dia_alpha=2.0, dia_beta=2.0, num_steps=65)
 
-        with pytest.warns(DiabaticEndpointWarning, match="start of the control grid"):
+        with pytest.raises(InvalidControlParameterError, match="bracket the anticrossing"):
             ham.solve_problem(pulse_accuracy=30)
 
+        ham.allow_endpoint_passages = True
+        ham.solve_problem(pulse_accuracy=30)
+
         assert ham._flags["ode_solved"] is True
+        assert ham._dia_list is not None and np.all(ham._dia_list.occupied == 1)
+
+    def test_endpoint_override_invalidates_only_from_the_diabatic_list(self):
+        ham = ControlModel(H_d=np.array([[0.0, 1.0], [1.0, 0.0]]), H_c=np.array([[1.0, 0.0], [0.0, -1.0]]))
+        ham.set_control(pulse_initial=-1.0, pulse_final=10.0, initial_state=0, final_state=1, alpha=2.0, beta=2.0,
+                        dia_alpha=2.0, dia_beta=2.0, num_steps=65)
+        ham.solve_problem(pulse_accuracy=30)
+
+        ham.set_control(allow_endpoint_passages=False)  # unchanged value
+        assert ham._flags["ode_solved"]
+        ham.set_control(allow_endpoint_passages=True)
+        assert ham._flags["eigenproblem_solved"] and not ham._flags["dia_list_computed"]
+        assert not ham._flags["metric_computed"] and not ham._flags["ode_solved"]
+        assert "allow_endpoint_passages=True" in str(ham)
+
+    def test_endpoint_override_must_be_boolean(self, configured_ham):
+        with pytest.raises(InvalidControlParameterError, match="must be a boolean"):
+            configured_ham.set_control(allow_endpoint_passages=cast(Any, 1))
+        assert configured_ham.allow_endpoint_passages is False
 
 
 # ---------------------------------------------------------------------------

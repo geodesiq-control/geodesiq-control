@@ -63,6 +63,7 @@ class _ControlParameters(_EigensystemParameters):
     beta: float
     dia_alpha: float | None
     dia_beta: float | None
+    allow_endpoint_passages: bool
 
 
 def _show_if(show: bool) -> None:
@@ -82,7 +83,8 @@ class ControlModel:
     """
 
     # All tolerances are relative, so the results do not depend on the units of the Hamiltonian.
-    # An energy gap below _GAP_RTOL * (spectral bandwidth) is treated as a degeneracy.
+    # An energy gap below _GAP_RTOL * (spectral bandwidth) is treated as a degeneracy, and a gap minimum shallower than
+    # that (rounding errors of a flat gap) is not an anticrossing.
     _GAP_RTOL = 1e-12
     # Two states are not coupled (and may cross truly) if their matrix element of dH/dx is at most _CROSSING_RTOL times
     # the largest one at that grid point.
@@ -198,12 +200,15 @@ class ControlModel:
         self._beta: float | None = None
         self._dia_alpha: float | None = None
         self._dia_beta: float | None = None
+        self._allow_endpoint_passages = False
         self._num_steps: int | None = None
 
         # Initialize energy gaps and matrix elements to None (to be computed in self.solve_problem())
         self._centered_energies: np.ndarray | None = None
         self._energy_offset: np.ndarray | None = None
         self._matrix_elements: np.ndarray | None = None
+        # Largest matrix element at each grid point, the reference for _CROSSING_RTOL.
+        self._coupling_scale: np.ndarray | None = None
         # Energy index changes of the states at true level crossings (see _utils.crossing_map).
         self._state_map: np.ndarray | None = None
         # Energy index of the occupied state along the grid, and the index it ends in.
@@ -548,6 +553,15 @@ class ControlModel:
         self.set_control(dia_beta=value)
 
     @property
+    def allow_endpoint_passages(self) -> bool:
+        """Whether a gap minimum at an end of the control grid counts as an anticrossing to pass diabatically."""
+        return self._allow_endpoint_passages
+
+    @allow_endpoint_passages.setter
+    def allow_endpoint_passages(self, value: bool) -> None:
+        self.set_control(allow_endpoint_passages=value)
+
+    @property
     def num_steps(self) -> int | None:
         """Number of points of the control-parameter grid."""
         return self._num_steps
@@ -661,6 +675,7 @@ class ControlModel:
         dia_alpha: float | None = None,
         dia_beta: float | None = None,
         num_steps: int | None = None,
+        allow_endpoint_passages: bool | None = None,
     ) -> None:
         """
         Set the control parameters for the optimization problem. This method allows you to specify the control
@@ -688,25 +703,35 @@ class ControlModel:
             tensor and the ODE for the control pulse. As long as it has never been provided, the transfer is adiabatic
             and ``final_state`` is the index in which the state followed from ``initial_state`` ends (also when
             ``initial_state`` changes later); once provided, it keeps its value. If it differs from that index, the
-            occupied state is followed along the sweep: each anticrossing with the neighbouring state towards
-            ``final_state`` is passed diabatically, until ``final_state`` is reached. All other anticrossings are passed
-            adiabatically, and only transitions from the occupied state contribute to the metric tensor.
+            occupied state is followed along the sweep: each anticrossing (interior minimum of the gap) with the
+            neighbouring state towards ``final_state`` is passed diabatically, until ``final_state`` is reached. All
+            other anticrossings are passed adiabatically, and only transitions from the occupied state contribute to the
+            metric tensor.
         alpha : float | None
             The exponent alpha used in the metric tensor computation. This parameter controls the weighting of the
              energy gaps in the metric tensor.
         beta : float | None
             The exponent beta used in the metric tensor computation. This parameter controls the weighting of the
-            matrix elements in the metric tensor.
+            matrix elements in the metric tensor. A transition that dH/dx does not couple contributes
+            ``|E_n - E_m|**(-alpha)`` for ``beta = 0`` (``0**0 = 1``), so that ``(alpha, beta) = (0, 0)`` gives a
+            linear ramp, and nothing for ``beta < 0``.
         dia_alpha : float | None
             The exponent alpha used in the diabatic passage contribution to the metric tensor. This parameter controls
              the weighting of the energy gaps in the diabatic passage contribution to the metric tensor.
         dia_beta : float | None
             The exponent beta used in the diabatic passage contribution to the metric tensor. This parameter controls
-             the weighting of the matrix elements in the diabatic passage contribution to the metric tensor.
+             the weighting of the matrix elements in the diabatic passage contribution to the metric tensor. Uncoupled
+             transitions are treated as for ``beta``.
         num_steps : int | None
             The number of steps to use in the discretization of the control pulse. This determines the resolution of
             the control pulse and the accuracy of the numerical solution. If omitted and no previous value exists,
             a default of ``2**10 + 1`` is used.
+        allow_endpoint_passages : bool | None
+            Whether a gap minimum at ``pulse_initial`` or ``pulse_final`` also counts as an anticrossing to pass
+            diabatically, for a deliberately truncated passage. A passage at the start relabels the initial state before
+            any evolution, so its transitions never enter the metric. Without it (the default, ``False``), a diabatic
+            transfer needs the sweep to bracket each anticrossing, and otherwise raises
+            ``InvalidControlParameterError``. ``None`` retains the current value.
         """
 
         # Build and validate the complete candidate configuration first.
@@ -745,6 +770,13 @@ class ControlModel:
 
         candidate_dia_beta = self._dia_beta if dia_beta is None else self._validate_exponent(dia_beta, "Diabatic beta")
 
+        if allow_endpoint_passages is None:
+            candidate_endpoint_passages = self._allow_endpoint_passages
+        elif isinstance(allow_endpoint_passages, (bool, np.bool_)):
+            candidate_endpoint_passages = bool(allow_endpoint_passages)
+        else:
+            raise InvalidControlParameterError("allow_endpoint_passages must be a boolean.")
+
         if num_steps is None:
             candidate_num_steps = self._num_steps if self._num_steps is not None else 2**10 + 1
         else:
@@ -774,8 +806,10 @@ class ControlModel:
         # Making final_state explicit turns an adiabatic transfer into a diabatic one if it differs from the index in
         # which the followed state ends (self.final_state), which a true level crossing can change.
         became_explicit = candidate_final_state_explicit and not self._final_state_explicit
-        states_changed = candidate_initial_state != self._initial_state or candidate_final_state != (
-            self.final_state if became_explicit else self._final_state
+        states_changed = (
+            candidate_initial_state != self._initial_state
+            or candidate_final_state != (self.final_state if became_explicit else self._final_state)
+            or candidate_endpoint_passages != self._allow_endpoint_passages
         )
 
         metric_changed = (
@@ -797,6 +831,7 @@ class ControlModel:
         self._beta = candidate_beta
         self._dia_alpha = candidate_dia_alpha
         self._dia_beta = candidate_dia_beta
+        self._allow_endpoint_passages = candidate_endpoint_passages
         self._num_steps = candidate_num_steps
 
         # Invalidate caches only after the successful commit.
@@ -965,6 +1000,8 @@ class ControlModel:
                 initial_state=config.initial_state,
                 final_state=config.final_state,
                 state_map=self._state_map,
+                allow_endpoint_passages=config.allow_endpoint_passages,
+                gap_rtol=self._GAP_RTOL,
             )
             self._occupied_states = self._dia_list.occupied
         self._resolved_final_state = int(self._occupied_states[-1])
@@ -1046,6 +1083,7 @@ class ControlModel:
         with limit_blas_threads(dimension):
             rotate_degenerate_subspaces(eigenvectors, partial_H, degenerate_clusters(energies, self._GAP_RTOL))
         self._matrix_elements = self._derivative_matrix_elements(eigenvectors, partial_H)
+        self._coupling_scale = np.max(self._matrix_elements, axis=(1, 2))
         chunk = max(1, self._MATRIX_ELEMENT_CHUNK_BYTES // (16 * dimension * dimension))
         with limit_blas_threads(dimension):
             self._state_map = crossing_map(eigenvectors, self._matrix_elements, self._CROSSING_RTOL, chunk)
@@ -1087,9 +1125,14 @@ class ControlModel:
         passing one entry per (point, transition) pair, with ``points`` holding the grid index of each entry and the two
         states of ``transition`` given as arrays.
 
+        A transition that dH/dx does not couple (matrix element at most ``_CROSSING_RTOL`` times the largest one at that
+        grid point) contributes ``1 / denominator**alpha`` for ``beta == 0`` (numpy's ``0**0 == 1``), so the weight
+        depends on the gap only, and (0, 0) gives a constant metric. For ``beta < 0`` it contributes zero instead of
+        diverging: such a transition cannot be driven.
+
         A vanishing gap raises ``MetricComputationError``, except at a true level crossing on a grid point: there the
         two states are degenerate at that point only, dH/dx does not couple them, and the contribution (zero on either
-        side of the crossing for ``beta > 0``) is set to zero.
+        side of the crossing for ``beta != 0``) is set to zero.
         """
         crossings = np.array([], dtype=int)
         positive_alpha = np.asarray(alpha) > 0
@@ -1139,6 +1182,13 @@ class ControlModel:
             ratio = np.asarray(numerator**beta / denominator**alpha, dtype=float)
         ratio[crossings] = 0.0
 
+        negative_beta = np.asarray(beta) < 0
+        if np.any(negative_beta):
+            if self._coupling_scale is None:
+                raise MetricComputationError("Matrix elements are unavailable for coupling detection.")
+            scale = self._coupling_scale if points is None else self._coupling_scale[points]
+            ratio[(numerator <= self._CROSSING_RTOL * scale) & negative_beta] = 0.0
+
         return ratio
 
     def _is_true_crossing(
@@ -1149,13 +1199,12 @@ class ControlModel:
 
         The pair is degenerate at that grid point only, not at its neighbours, and dH/dx does not couple it
         (``numerator`` at most ``_CROSSING_RTOL`` times the largest matrix element at that point). Its metric
-        contribution vanishes on both sides of the crossing only for ``beta > 0``.
+        contribution vanishes on both sides of the crossing only for ``beta != 0``.
         """
-        assert self._centered_energies is not None and self._matrix_elements is not None
+        assert self._centered_energies is not None and self._coupling_scale is not None
         energies = self._centered_energies
         n_points = energies.shape[0]
-        scale = np.max(self._matrix_elements[points], axis=(1, 2))
-        result = (numerator <= self._CROSSING_RTOL * scale) & (beta > 0)
+        result = (numerator <= self._CROSSING_RTOL * self._coupling_scale[points]) & (beta != 0)
         for offset in (-1, 1):
             neighbour = np.clip(points + offset, 0, n_points - 1)
             inside = neighbour != points
@@ -1993,6 +2042,7 @@ class ControlModel:
             beta=beta,
             dia_alpha=dia_alpha,
             dia_beta=dia_beta,
+            allow_endpoint_passages=self._allow_endpoint_passages,
         )
 
     def _generate_summary(self) -> str:
@@ -2039,6 +2089,7 @@ class ControlModel:
             f"Final state index → {self.final_state if self.final_state is not None else '❌ not set'}",
             f"(Alpha, Beta) → {alpha_beta}",
             f"(Diabatic Alpha, Diabatic Beta) → {diabatic_alpha_beta}",
+            f"Endpoint passages → {'allowed' if self.allow_endpoint_passages else 'not allowed'}",
             f"Eigenproblem solved → {'✅ yes' if self._flags['eigenproblem_solved'] else '❌ no'}",
             f"Metric computed → {'✅ yes' if self._flags['metric_computed'] else '❌ no'}",
             f"ODE solved → {'✅ yes' if self._flags['ode_solved'] else '❌ no'}",
@@ -2077,7 +2128,7 @@ class ControlModel:
             f"ControlModel(control_name={self.control_name}, pulse_initial={self.pulse_initial}, "
             f"pulse_final={self.pulse_final}, initial_state={self.initial_state}, final_state={self.final_state}, "
             f"alpha={self.alpha}, beta={self.beta}, dia_alpha={self.dia_alpha}, dia_beta={self.dia_beta}, "
-            f"num_steps={self.num_steps})"
+            f"num_steps={self.num_steps}, allow_endpoint_passages={self.allow_endpoint_passages})"
         )
 
     def __repr__(self) -> str:

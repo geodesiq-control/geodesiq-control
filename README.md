@@ -121,6 +121,13 @@ Top-level imports are intentionally kept small and explicit:
 
 `model.tau` returns the normalized time grid, `tau = t / t_f`, corresponding to `model.control_sol`.
 
+Diabatic transfers require resolved anticrossings inside the control sweep. For a deliberately truncated passage,
+`model.set_control(allow_endpoint_passages=True)` also accepts gap minima at the endpoints.
+Uncoupled transitions contribute nothing for negative matrix-element exponents; zero exponents retain `0**0 = 1`.
+
+`pulse.fourier_spectrum()` returns a one-sided amplitude spectrum and holds the pulse's endpoint values in boundary
+windows. Use `padding="zeros"` for zero padding and `mfft` to sample the frequency axis more finely.
+
 Use `Dynamics(..., options={"atol": 1e-10, "rtol": 1e-8, "nsteps": 10000})` to configure QuTiP propagation;
 `options=None` keeps its numerical defaults. The [user guide](https://geodesiq.readthedocs.io/en/latest/api/#dynamics-solver-accuracy)
 explains convergence checks, internal step limits and solver errors.

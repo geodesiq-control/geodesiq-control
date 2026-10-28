@@ -1,5 +1,4 @@
 import sys
-import warnings
 from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -12,7 +11,6 @@ import numpy as np
 from threadpoolctl import ThreadpoolController
 
 from .exceptions import InvalidControlParameterError, ValidationError
-from .warnings import DiabaticEndpointWarning
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
@@ -409,24 +407,47 @@ def follow_state(state_map: np.ndarray, state: int) -> np.ndarray:
     return occupied
 
 
-def _gap_minima(gap: np.ndarray) -> np.ndarray:
-    """Mask of the local minima of a sampled energy gap, including minima at the ends of the grid."""
+def _rise(side: np.ndarray, value: float) -> float:
+    """How far ``side`` (ordered away from a minimum of value ``value``) rises above it before it first drops below."""
+    lower = np.flatnonzero(side < value)
+    return float(np.max(side[: lower[0] if lower.size else side.size], initial=value) - value)
+
+
+def _gap_minima(gap: np.ndarray, tolerance: float = 0.0, endpoints: bool = False) -> np.ndarray:
+    """
+    Mask of the resolved local minima of a sampled energy gap, including those at the ends of the grid if ``endpoints``.
+
+    A minimum is resolved if its prominence, the smaller of its rises to the bounding maxima on either side (on the one
+    side of an end of the grid), exceeds ``tolerance``. Dips of a flat gap at the level of rounding errors are not.
+    """
     is_min = np.ones(gap.shape, dtype=bool)
     # Strictly below the previous sample and not above the next one, so a flat minimum is counted once.
     is_min[1:] &= gap[1:] < gap[:-1]
     is_min[:-1] &= gap[:-1] <= gap[1:]
+    if not endpoints:
+        is_min[[0, -1]] = False
+    for index in np.flatnonzero(is_min):
+        sides = [side for side in (gap[index - 1 :: -1] if index > 0 else gap[:0], gap[index + 1 :]) if side.size]
+        is_min[index] = min(_rise(side, gap[index]) for side in sides) > tolerance
     return is_min
 
 
-def _gap_basin(gap: np.ndarray, index: int) -> tuple[int, int]:
-    """Grid range around a minimum of ``gap`` that is bounded by the nearest local maxima on each side."""
-    left = index
-    while left > 0 and gap[left - 1] >= gap[left]:
-        left -= 1
-    right = index
-    while right < gap.size - 1 and gap[right + 1] >= gap[right]:
-        right += 1
-    return left, right
+def _gap_basin(gap: np.ndarray, index: int, tolerance: float = 0.0) -> tuple[int, int]:
+    """
+    Grid range around a minimum of ``gap`` that is bounded by the nearest local maxima on each side.
+
+    Steps down by at most ``tolerance`` (rounding errors) do not end the range, and a flat top bounds it where it
+    begins.
+    """
+    bounds = []
+    for direction, end in ((-1, 0), (1, gap.size - 1)):
+        edge = position = index
+        while position != end and gap[position + direction] >= gap[position] - tolerance:
+            position += direction
+            if gap[position] > gap[edge] + tolerance:
+                edge = position
+        bounds.append(edge)
+    return bounds[0], bounds[1]
 
 
 # A diabatic passage is fully diabatic over this fraction of the way (along the control grid) from the anticrossing
@@ -491,15 +512,22 @@ class DiabaticList:
 
 
 def build_dia_list(
-    energies: np.ndarray, initial_state: int, final_state: int, state_map: np.ndarray | None = None
+    energies: np.ndarray,
+    initial_state: int,
+    final_state: int,
+    state_map: np.ndarray | None = None,
+    allow_endpoint_passages: bool = False,
+    gap_rtol: float = 1e-12,
 ) -> DiabaticList:
     """
     Build the adiabatic/diabatic transition mask along the control grid.
 
     The occupied instantaneous eigenstate starts in ``initial_state`` and is followed along the grid, also through true
     level crossings given by ``state_map``, where it changes its energy index without a diabatic passage. At every
-    anticrossing (local minimum of the gap) between the occupied state ``k`` and its neighbour ``k + d``, with
-    ``d = sign(final_state - initial_state)``, the passage is diabatic and the occupied state becomes ``k + d``. All
+    anticrossing (resolved interior local minimum of the gap, see ``gap_rtol``) between the occupied state ``k`` and its
+    neighbour ``k + d``, with ``d = sign(final_state - initial_state)``, the passage is diabatic and the occupied state
+    becomes ``k + d``. The first such anticrossing along the sweep is passed, not the deepest one, so that a later
+    anticrossing of the same pair does not skip an earlier one. All
     other anticrossings, including those back away from ``final_state`` and all anticrossings after reaching it, are
     passed adiabatically. A diabatic passage only acts inside its anticrossing: between the closest maxima of the
     corresponding gap, and the exponents are blended smoothly into the adiabatic ones towards those maxima (see
@@ -516,6 +544,14 @@ def build_dia_list(
     state_map : np.ndarray | None
         True level crossings, as returned by ``crossing_map``. The gap minima of a true crossing are not anticrossings.
         ``None`` means that there are no true crossings.
+    allow_endpoint_passages : bool
+        Also pass diabatically where the gap has its minimum at an end of the grid, i.e. an anticrossing that the sweep
+        does not bracket. A passage at the start relabels the initial state before any evolution: its transitions never
+        enter the metric. By default only interior minima are anticrossings.
+    gap_rtol : float
+        A gap minimum is an anticrossing only if its prominence (the smaller rise to the bounding maxima) exceeds
+        ``gap_rtol`` times the largest spectral bandwidth on the grid. Shallower dips, e.g. rounding errors of a flat
+        gap, are ignored, also when the extent of a passage is determined.
 
     Returns
     -------
@@ -527,12 +563,6 @@ def build_dia_list(
     ------
     InvalidControlParameterError
         If ``final_state`` cannot be reached through anticrossings that lead towards it.
-
-    Warns
-    -----
-    DiabaticEndpointWarning
-        If a diabatic passage lies at an end of the grid, i.e. the gap between the two states has its minimum there and
-        the sweep contains no anticrossing of them. The passage is still made there.
     """
     energies = np.asarray(energies, dtype=float)
     if energies.ndim != 2 or energies.shape[0] < 2:
@@ -548,24 +578,31 @@ def build_dia_list(
         raise ValidationError("state_map must have the same shape as energies.")
 
     gaps = np.diff(energies, axis=1)  # gaps[:, j] = E_{j+1} - E_j
-    gap_minima = np.stack([_gap_minima(gaps[:, j]) for j in range(dim - 1)], axis=1) if dim > 1 else None
+    tolerance = gap_rtol * float(np.max(np.ptp(energies, axis=1)))
     step = 1 if final_state > initial_state else -1
 
     # The gap between two truly crossing states has its minimum at one of the two grid points around the crossing.
-    if gap_minima is not None:
-        for point in np.flatnonzero(np.any(state_map != np.arange(dim), axis=1)):
-            moved = state_map[point] != np.arange(dim)
-            crossing_gaps = moved[:-1] & moved[1:]
-            gap_minima[point - 1 : point + 1, crossing_gaps] = False
+    crossing_points = np.flatnonzero(np.any(state_map != np.arange(dim), axis=1))
+    minima_cache: dict[int, np.ndarray] = {}
+
+    def gap_minima(gap_index: int) -> np.ndarray:
+        # Computed only for the gaps that the occupied state meets.
+        if gap_index not in minima_cache:
+            minima = _gap_minima(gaps[:, gap_index], tolerance, allow_endpoint_passages)
+            for point in crossing_points:
+                moved = state_map[point] != np.arange(dim)
+                if moved[gap_index] and moved[gap_index + 1]:
+                    minima[point - 1 : point + 1] = False
+            minima_cache[gap_index] = minima
+        return minima_cache[gap_index]
 
     def overlaps(gap_index: int, index: int) -> bool:
         # The anticrossing of this gap overlaps with a passage at ``index``: its last minimum is behind ``index``,
         # no minimum lies ahead and ``index`` is still inside the anticrossing (no maximum in between).
-        assert gap_minima is not None
-        minima = np.flatnonzero(gap_minima[:, gap_index])
+        minima = np.flatnonzero(gap_minima(gap_index))
         if minima.size == 0 or minima[-1] >= index:
             return False
-        return _gap_basin(gaps[:, gap_index], int(minima[-1]))[1] >= index
+        return _gap_basin(gaps[:, gap_index], int(minima[-1]), tolerance)[1] >= index
 
     # Follow the occupied state along the grid. It changes at the minimum of each diabatic anticrossing.
     occupied = np.empty(n_points, dtype=int)
@@ -576,9 +613,8 @@ def build_dia_list(
             state = int(state_map[i, state])
         passed = False
         while state != final_state:
-            assert gap_minima is not None
             gap_index = min(state, state + step)
-            if not (gap_minima[i, gap_index] or (passed and overlaps(gap_index, i))):
+            if not (gap_minima(gap_index)[i] or (passed and overlaps(gap_index, i))):
                 break
             passages.append((i, state, state + step))
             state += step
@@ -586,24 +622,17 @@ def build_dia_list(
         occupied[i] = state
 
     if state != final_state:
+        hint = (
+            ""
+            if allow_endpoint_passages
+            else " Extend the sweep so that pulse_initial and pulse_final bracket the anticrossing, or, for a "
+            "deliberately truncated passage at an end of the sweep, set allow_endpoint_passages=True."
+        )
         raise InvalidControlParameterError(
             f"final_state={final_state} cannot be reached from initial_state={initial_state}: following the "
             f"anticrossings towards final_state, the sweep ends in state {state}. No anticrossing between states "
-            f"{state} and {state + step} follows."
+            f"{state} and {state + step} follows.{hint}"
         )
-
-    # A gap minimum at an end of the grid also counts as an anticrossing, so a sweep that stops before (or starts after)
-    # the actual anticrossing is accepted and passes it diabatically at that end. This is rarely intended.
-    for index, before, after in passages:
-        if index in (0, n_points - 1):
-            warnings.warn(
-                f"The diabatic passage from state {before} to state {after} lies at the "
-                f"{'start' if index == 0 else 'end'} of the control grid, where the gap between them has its minimum: "
-                "the sweep contains no anticrossing of these states. Check that pulse_initial and pulse_final enclose "
-                "the anticrossing.",
-                DiabaticEndpointWarning,
-                stacklevel=2,
-            )
 
     # Every transition from the occupied state is adiabatic unless it belongs to a diabatic anticrossing.
     fraction = np.ones((n_points, dim), dtype=float)
@@ -611,7 +640,7 @@ def build_dia_list(
 
     for index, before, after in passages:
         gap = gaps[:, min(before, after)]
-        left, right = _gap_basin(gap, index)
+        left, right = _gap_basin(gap, index, tolerance)
         window = np.arange(left, right + 1)
         adiabatic_fraction = 1.0 - _diabatic_weight(gap, index, left, right)
         # Inside the anticrossing the occupied state is one of the pair; the transition is to the other one.

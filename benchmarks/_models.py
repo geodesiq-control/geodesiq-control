@@ -127,7 +127,9 @@ def make_ham(dim: int = 2, num_steps: int = 2 ** 8 + 1, analytical_partial: bool
     ctrl: dict = dict(control_name="lam", pulse_initial=pulse_initial, pulse_final=pulse_final, initial_state=0,
                       alpha=alpha, beta=beta, num_steps=num_steps, )
     if not adiabatic:
-        ctrl.update(final_state=dim - 1, dia_alpha=1.0, dia_beta=1.0)
+        # For dim = 64, [pulse_initial, pulse_final] does not bracket every anticrossing on the way to dim - 1; the
+        # last passages are made at the end of the grid, as in the benchmarks before endpoint passages became opt-in.
+        ctrl.update(final_state=dim - 1, dia_alpha=1.0, dia_beta=1.0, allow_endpoint_passages=True)
 
     ham.set_control(**ctrl)
     return ham
