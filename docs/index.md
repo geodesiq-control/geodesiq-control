@@ -12,23 +12,23 @@ pip install geodesiq
 
 ## Example
 
-The two-level Landau-Zener problem $H[z(t)] = z(t)\,\sigma_z + x\,\sigma_x$ with control parameter $z(t)$:
+The two-level Landau–Zener problem $H(z(t)) = z(t)\,\sigma^z + \Delta\,\sigma^x$ with control parameter $z(t)$ and coupling $\Delta$:
 
 ```python
 import numpy as np
 from geodesiq import ControlModel, Dynamics
 
 
-def H_fun(x, z):
-    return np.array([[z, x], [x, -z]])
+def H_fun(delta, z):
+    return np.array([[z, delta], [delta, -z]])
 
 
-def H_partial(x, z):
+def H_partial(delta, z):
     return np.array([[1, 0], [0, -1]])
 
 
 model = ControlModel(H_fun, H_partial)
-model.set_parameters(x=1)
+model.set_parameters(delta=1)
 model.set_control(control_name="z", pulse_initial=-10, pulse_final=10, initial_state=0, alpha=2, beta=2)
 model.solve_problem()
 

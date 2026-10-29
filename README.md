@@ -40,8 +40,8 @@ pip install geodesiq
 
 # Example code
 
-Here is an example code based on the two-level Landau-Zener problem $H[z (t)]=z (t)\sigma_z+x \sigma_x$ with control
-parameter $z (t)$. To compute the optimal pulse, you define the Hamiltonian and, optionally, its partial derivative with
+Here is an example code based on the two-level Landau–Zener problem $H(z(t))=z(t)\sigma^z+\Delta\sigma^x$ with control
+parameter $z(t)$ and coupling $\Delta$. To compute the optimal pulse, you define the Hamiltonian and, optionally, its partial derivative with
 respect to the control parameter.
 
 ```python
@@ -50,11 +50,11 @@ from geodesiq import ControlModel, Dynamics
 
 
 # ----- Define the Hamiltonian and its derivative -----
-def H_fun(x, z):
-    return np.array([[z, x], [x, -z]])
+def H_fun(delta, z):
+    return np.array([[z, delta], [delta, -z]])
 
 
-def H_partial(x, z):
+def H_partial(delta, z):
     return np.array([[1, 0], [0, -1]])
 
 
@@ -63,11 +63,11 @@ model = ControlModel(H_fun, H_partial)
 # ----- Set system and control parameters -----
 alpha = 2
 beta = 2
-x = 1
+delta = 1
 z0 = -10
 zf = -z0
 
-model.set_parameters(x=x)
+model.set_parameters(delta=delta)
 model.set_control(control_name='z', pulse_initial=z0, pulse_final=zf, initial_state=0, alpha=alpha, beta=beta)
 
 # ----- Solve for optimal pulse -----
