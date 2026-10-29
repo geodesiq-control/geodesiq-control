@@ -1,4 +1,5 @@
 import io
+import itertools
 import sys
 from typing import Any, cast
 
@@ -361,6 +362,23 @@ class TestSetterValidation:
     def test_beta_rejects_non_number(self, bare_ham):
         with pytest.raises(InvalidControlParameterError, match="number"):
             bare_ham.beta = "two"
+
+    @pytest.mark.parametrize("value", ["two", True, np.nan, 0.5, 0, -np.inf])
+    def test_norm_rejects_invalid_values(self, bare_ham, value):
+        with pytest.raises(InvalidControlParameterError, match="Norm"):
+            bare_ham.norm = value
+        assert bare_ham.norm == 2.0
+
+    @pytest.mark.parametrize("value", [1, 2.0, 3, np.int64(4), np.inf])
+    def test_norm_accepts_valid_values(self, bare_ham, value):
+        bare_ham.norm = value
+        assert bare_ham.norm == float(value)
+        assert isinstance(bare_ham.norm, float)
+
+    def test_norm_none_keeps_value(self, bare_ham):
+        bare_ham.set_control(norm=1)
+        bare_ham.set_control(norm=None)
+        assert bare_ham.norm == 1.0
 
     def test_num_steps_rejects_non_positive(self, bare_ham):
         with pytest.raises(InvalidControlParameterError, match=">= 3"):
@@ -848,6 +866,19 @@ class TestFlagResets:
     def test_reassigning_same_beta_keeps_metric_flag(self, configured_ham):
         mark_done(configured_ham, "metric_computed")
         configured_ham.beta = 2.0
+        assert configured_ham._flags["metric_computed"] is True
+
+    def test_changing_norm_resets_metric_only(self, configured_ham):
+        mark_done(configured_ham, "ode_solved")
+        configured_ham.norm = 1
+        assert configured_ham._flags["eigenproblem_solved"] is True
+        assert configured_ham._flags["dia_list_computed"] is True
+        assert configured_ham._flags["metric_computed"] is False
+        assert configured_ham._flags["ode_solved"] is False
+
+    def test_reassigning_same_norm_keeps_metric_flag(self, configured_ham):
+        mark_done(configured_ham, "metric_computed")
+        configured_ham.norm = 2
         assert configured_ham._flags["metric_computed"] is True
 
     def test_setting_dia_exponents_resets_metric_flag(self, configured_ham):
@@ -2139,3 +2170,112 @@ class TestIndices:
                           final_state=final_state, alpha=2.0, beta=2.0, dia_alpha=1, dia_beta=2, )
 
         model.solve_problem()
+
+
+# ---------------------------------------------------------------------------
+# Test the norm that combines the transitions into the metric
+# ---------------------------------------------------------------------------
+
+
+class TestTransitionNorm:
+    # Three levels, both transitions from the ground state coupled by dH/dx = H_C.
+    H_D = np.array([[0.0, 1.0, 0.4], [1.0, 0.0, 0.5], [0.4, 0.5, 2.0]])
+    H_C = np.diag([1.0, -1.0, 0.3])
+
+    def _solved(self, norm: float) -> ControlModel:
+        model = ControlModel(H_d=self.H_D, H_c=self.H_C)
+        model.set_control(pulse_initial=-3.0, pulse_final=3.0, initial_state=0, alpha=4.0, beta=2.0, num_steps=129,
+                          norm=norm)
+        model.solve_problem()
+        return model
+
+    @staticmethod
+    def _metric(model: ControlModel) -> np.ndarray:
+        assert model._metric_tensor is not None
+        return model._metric_tensor
+
+    @staticmethod
+    def _contributions(model: ControlModel, alpha: float = 4.0, beta: float = 2.0) -> np.ndarray:
+        """The adiabatic contributions r_k of the two transitions from the occupied state, one column each."""
+        energies, elements = model._centered_energies, model._matrix_elements
+        occupied = model._occupied_states
+        assert energies is not None and elements is not None and occupied is not None
+        points = np.arange(energies.shape[0])
+        columns = []
+        for offset in (1, 2):
+            state = (occupied + offset) % 3
+            gap = np.abs(energies[points, state] - energies[points, occupied])
+            columns.append(elements[points, occupied, state] ** beta / gap ** alpha)
+        return np.stack(columns, axis=1)
+
+    def test_adiabatic_metric_is_the_squared_lp_norm_of_the_amplitudes(self):
+        metric = {norm: self._metric(self._solved(norm)) for norm in (1, 2, 4, np.inf)}
+        contributions = self._contributions(self._solved(2))
+
+        np.testing.assert_allclose(metric[2], contributions.sum(axis=1), rtol=1e-12)
+        np.testing.assert_allclose(metric[1], np.sqrt(contributions).sum(axis=1) ** 2, rtol=1e-12)
+        np.testing.assert_allclose(metric[4], np.sqrt((contributions ** 2).sum(axis=1)), rtol=1e-12)
+        np.testing.assert_allclose(metric[np.inf], contributions.max(axis=1), rtol=1e-12)
+
+    def test_larger_norms_give_smaller_metrics(self):
+        metric = [self._metric(self._solved(norm)) for norm in (1, 2, 4, np.inf)]
+
+        for larger, smaller in itertools.pairwise(metric):
+            assert np.all(smaller <= larger * (1 + 1e-12))
+        assert np.any(metric[0] > metric[1] * 1.01)
+
+    def test_norms_agree_for_a_single_transition(self, configured_affine_ham):
+        metrics = []
+        for norm in (1, 2, np.inf):
+            configured_affine_ham.norm = norm
+            configured_affine_ham.solve_problem()
+            metrics.append(self._metric(configured_affine_ham).copy())
+
+        np.testing.assert_allclose(metrics[0], metrics[1], rtol=1e-14)
+        np.testing.assert_allclose(metrics[2], metrics[1], rtol=1e-14)
+
+    def test_norm_changes_the_pulse(self):
+        pulses = [self._solved(norm).synthesize_pulse(1.0) for norm in (1, 2)]
+        times = np.linspace(0, 1, 11)
+        l1, l2 = (np.interp(times, pulse.times, pulse.pulse) for pulse in pulses)
+
+        assert not np.allclose(l1, l2)
+
+    def test_diabatic_metric_uses_the_norm(self):
+        def three_levels(lam, t):
+            return np.array([[lam, t, 0], [t, -lam, 1], [0, 1, 0]])
+
+        metric = []
+        for norm in (1, 2, np.inf):
+            model = ControlModel(three_levels)
+            model.set_parameters(t=1.0)
+            model.set_control(control_name="lam", pulse_initial=-2.0, pulse_final=2.0, initial_state=0, final_state=1,
+                              alpha=2.0, beta=2.0, dia_alpha=1.0, dia_beta=1.0, norm=norm, )
+            model.solve_problem()
+            assert model._dia_list is not None
+            metric.append(self._metric(model))
+
+        for larger, smaller in itertools.pairwise(metric):
+            assert np.all(smaller <= larger * (1 + 1e-12))
+        assert np.any(metric[0] > metric[1] * 1.01)
+
+    def test_large_norm_and_exponents_do_not_overflow(self):
+        model = ControlModel(H_d=1e-3 * self.H_D, H_c=1e-3 * self.H_C)
+        model.set_control(pulse_initial=-3e-3, pulse_final=3e-3, initial_state=0, alpha=40.0, beta=2.0,
+                          num_steps=129, norm=64)
+        config = model._check_control_parameters()
+        model._solve_eigenproblem(config)
+        model._compute_metric_tensor(config)
+
+        metric = self._metric(model)
+        contributions = self._contributions(model, alpha=40.0)
+        assert np.all(np.isfinite(metric))
+        assert np.max(contributions) > 1e100
+        assert np.all(metric >= contributions.max(axis=1) * (1 - 1e-12))
+        assert np.all(metric <= contributions.max(axis=1) * 2 ** (2 / 64) * (1 + 1e-12))
+
+    def test_summary_and_str_show_the_norm(self, configured_ham):
+        configured_ham.norm = np.inf
+
+        assert "norm=inf" in str(configured_ham)
+        assert "Transition norm → L^inf" in repr(configured_ham)

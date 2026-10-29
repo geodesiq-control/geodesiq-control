@@ -63,6 +63,7 @@ class _ControlParameters(_EigensystemParameters):
     beta: float
     dia_alpha: float | None
     dia_beta: float | None
+    norm: float
     allow_endpoint_passages: bool
 
 
@@ -200,6 +201,7 @@ class ControlModel:
         self._beta: float | None = None
         self._dia_alpha: float | None = None
         self._dia_beta: float | None = None
+        self._norm = 2.0
         self._allow_endpoint_passages = False
         self._num_steps: int | None = None
 
@@ -553,6 +555,15 @@ class ControlModel:
         self.set_control(dia_beta=value)
 
     @property
+    def norm(self) -> float:
+        """Order ``p`` of the norm that combines the transitions from the occupied state into the metric."""
+        return self._norm
+
+    @norm.setter
+    def norm(self, value: float) -> None:
+        self.set_control(norm=value)
+
+    @property
     def allow_endpoint_passages(self) -> bool:
         """Whether a gap minimum at an end of the control grid counts as an anticrossing to pass diabatically."""
         return self._allow_endpoint_passages
@@ -674,6 +685,7 @@ class ControlModel:
         beta: float | None = None,
         dia_alpha: float | None = None,
         dia_beta: float | None = None,
+        norm: float | None = None,
         num_steps: int | None = None,
         allow_endpoint_passages: bool | None = None,
     ) -> None:
@@ -722,6 +734,17 @@ class ControlModel:
             The exponent beta used in the diabatic passage contribution to the metric tensor. This parameter controls
              the weighting of the matrix elements in the diabatic passage contribution to the metric tensor. Uncoupled
              transitions are treated as for ``beta``.
+        norm : float | None
+            The order ``p >= 1`` (``np.inf`` allowed) of the norm that combines the transitions from the occupied
+            state at each grid point. With the contribution ``r_k = |dH_mk|**beta / |E_k - E_m|**alpha`` of transition
+            ``k``, the metric is ``G = (sum_k r_k**(p/2))**(2/p)``, i.e. ``sqrt(G)`` is the L^p norm of the
+            amplitudes ``sqrt(r_k)``. ``p = 2`` (the default) sums the contributions; ``p = 1`` sums their square
+            roots and, with ``(alpha, beta) = (4, 2)``, gives the multilevel FAQUAD condition, the sum of the
+            adiabaticity parameters of all transitions; ``p = np.inf`` keeps the largest contribution. All orders agree
+            when a single transition contributes. The default ``p = 2`` is the only order for which the metric stays a
+            sum over transitions, which for ``(alpha, beta) = (2, 2)`` is the quantum metric tensor and for ``(4, 2)``
+            the squared norm of the first-order adiabatic correction to the state (per unit speed squared); it also
+            keeps the metric smooth where the dominant transition changes. ``None`` retains the current value.
         num_steps : int | None
             The number of steps to use in the discretization of the control pulse. This determines the resolution of
             the control pulse and the accuracy of the numerical solution. If omitted and no previous value exists,
@@ -769,6 +792,8 @@ class ControlModel:
         )
 
         candidate_dia_beta = self._dia_beta if dia_beta is None else self._validate_exponent(dia_beta, "Diabatic beta")
+
+        candidate_norm = self._norm if norm is None else self._validate_norm(norm)
 
         if allow_endpoint_passages is None:
             candidate_endpoint_passages = self._allow_endpoint_passages
@@ -818,6 +843,7 @@ class ControlModel:
             or candidate_beta != self._beta
             or candidate_dia_alpha != self._dia_alpha
             or candidate_dia_beta != self._dia_beta
+            or candidate_norm != self._norm
         )
 
         # Everything is valid. Commit atomically.
@@ -831,6 +857,7 @@ class ControlModel:
         self._beta = candidate_beta
         self._dia_alpha = candidate_dia_alpha
         self._dia_beta = candidate_dia_beta
+        self._norm = candidate_norm
         self._allow_endpoint_passages = candidate_endpoint_passages
         self._num_steps = candidate_num_steps
 
@@ -1281,8 +1308,6 @@ class ControlModel:
         if config.dia_alpha is None or config.dia_beta is None:
             raise MissingControlParameterError("Diabatic metric exponents are required.")
 
-        num = self._centered_energies.shape[0]
-
         # Only transitions from the occupied state contribute. They are evaluated together, one entry per (point,
         # target state) pair; the adiabatic fraction blends the adiabatic and diabatic exponents.
         fraction = self._dia_list.adiabatic_fraction
@@ -1298,7 +1323,9 @@ class ControlModel:
             transition=(sources, targets),
             points=points,
         )
-        self._metric_tensor = np.bincount(points, weights=ratio, minlength=num)
+        contributions = np.zeros(fraction.shape, dtype=float)
+        contributions[points, targets] = ratio
+        self._metric_tensor = self._combine_transitions(contributions, config.norm)
 
     def _compute_G_adiabatic(self, config: _ControlParameters) -> None:
         """
@@ -1312,20 +1339,40 @@ class ControlModel:
 
         num, dim = self._centered_energies.shape
         occupied = self._occupied_states
-        metric = np.zeros(num, dtype=float)
+        contributions = np.zeros((num, dim - 1), dtype=float)
         points = np.arange(num)
         for offset in range(1, dim):
             # The states other than the occupied one, one per point and offset, in no particular order.
             state = (occupied + offset) % dim
             denominator = np.abs(self._centered_energies[points, state] - self._centered_energies[points, occupied])
-            metric += self._metric_ratio(
+            contributions[:, offset - 1] = self._metric_ratio(
                 self._matrix_elements[points, occupied, state],
                 denominator,
                 alpha=config.alpha,
                 beta=config.beta,
                 transition=(occupied, state),
             )
-        self._metric_tensor = metric
+        self._metric_tensor = self._combine_transitions(contributions, config.norm)
+
+    @staticmethod
+    def _combine_transitions(contributions: np.ndarray, norm: float) -> np.ndarray:
+        """
+        Combine the metric contributions ``r_k`` of the transitions (axis 1) at each grid point (axis 0).
+
+        Returns ``(sum_k r_k**(p/2))**(2/p)`` for ``p = norm``, so that ``sqrt(G)`` is the L^p norm of the amplitudes
+        ``sqrt(r_k)``: the sum for ``p = 2`` and the largest contribution for ``p = inf``. Zero entries (transitions
+        that do not contribute) leave the result unchanged. The contributions are scaled by their largest value at
+        each point, so that large orders and exponents do not overflow.
+        """
+        if norm == 2:
+            return contributions.sum(axis=1)
+        largest = contributions.max(axis=1, initial=0.0)
+        if np.isinf(norm):
+            return largest
+        scale = np.where(largest > 0, largest, 1.0)
+        with np.errstate(invalid="ignore", over="ignore"):
+            total = np.sum((contributions / scale[:, None]) ** (norm / 2), axis=1)
+            return scale * total ** (2 / norm)
 
     def _compute_numerical_partial_H(
         self, samples: np.ndarray | None = None, sample_scale: float | None = None
@@ -2042,6 +2089,7 @@ class ControlModel:
             beta=beta,
             dia_alpha=dia_alpha,
             dia_beta=dia_beta,
+            norm=self._norm,
             allow_endpoint_passages=self._allow_endpoint_passages,
         )
 
@@ -2089,6 +2137,7 @@ class ControlModel:
             f"Final state index → {self.final_state if self.final_state is not None else '❌ not set'}",
             f"(Alpha, Beta) → {alpha_beta}",
             f"(Diabatic Alpha, Diabatic Beta) → {diabatic_alpha_beta}",
+            f"Transition norm → L^{self.norm:g}",
             f"Endpoint passages → {'allowed' if self.allow_endpoint_passages else 'not allowed'}",
             f"Eigenproblem solved → {'✅ yes' if self._flags['eigenproblem_solved'] else '❌ no'}",
             f"Metric computed → {'✅ yes' if self._flags['metric_computed'] else '❌ no'}",
@@ -2128,7 +2177,7 @@ class ControlModel:
             f"ControlModel(control_name={self.control_name}, pulse_initial={self.pulse_initial}, "
             f"pulse_final={self.pulse_final}, initial_state={self.initial_state}, final_state={self.final_state}, "
             f"alpha={self.alpha}, beta={self.beta}, dia_alpha={self.dia_alpha}, dia_beta={self.dia_beta}, "
-            f"num_steps={self.num_steps}, allow_endpoint_passages={self.allow_endpoint_passages})"
+            f"norm={self.norm}, num_steps={self.num_steps}, allow_endpoint_passages={self.allow_endpoint_passages})"
         )
 
     def __repr__(self) -> str:
@@ -2189,6 +2238,19 @@ class ControlModel:
 
         if not np.isfinite(value):
             raise InvalidControlParameterError(f"{name} must be a finite number.")
+
+        return value
+
+    @staticmethod
+    def _validate_norm(value: Any) -> float:
+        if not isinstance(value, (int, float, np.integer, np.floating)) or isinstance(value, bool):
+            raise InvalidControlParameterError("Norm must be a number >= 1 or np.inf.")
+
+        value = float(value)
+
+        # NaN fails the comparison.
+        if not value >= 1:
+            raise InvalidControlParameterError("Norm must be a number >= 1 or np.inf.")
 
         return value
 

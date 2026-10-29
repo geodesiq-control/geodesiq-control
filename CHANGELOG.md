@@ -14,6 +14,13 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   a `NumericalStabilityWarning` when the selected endpoint eigenstate is degenerate with a neighbouring level (gap at
   most 1e-8 of the spectral bandwidth), and a `GeodesiQWarning` when a custom pulse starts or ends more than 1% of the
   control range away from the model's `pulse_initial`/`pulse_final`, at which the eigenstates are still taken.
+- `set_control(norm=p)` (also a writable `ControlModel.norm` property) chooses how the transitions from the occupied
+  state are combined into the metric, adiabatic and diabatic alike: with the contribution
+  `r_k = |dH_mk|**beta / |E_k - E_m|**alpha` of each transition, `G = (sum_k r_k**(p/2))**(2/p)`, so that `sqrt(G)`
+  is the L^p norm of the amplitudes `sqrt(r_k)`. `p = 2` (the default) is the previous sum and leaves all results
+  unchanged; `p = 1` with `(alpha, beta) = (4, 2)` gives the multilevel FAQUAD condition (sum of the adiabaticity
+  parameters of all transitions), and `p = np.inf` keeps the largest contribution. Any `p >= 1` is accepted; the
+  orders agree when only one transition contributes.
 
 ### Changed
 
