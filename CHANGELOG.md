@@ -8,6 +8,15 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Added
 
+- The example notebooks run in the browser without installation, on a JupyterLite site (xeus-python kernel with
+  WebAssembly builds of NumPy, SciPy, QuTiP and Matplotlib) published to GitHub Pages from `main`. CI builds the site
+  on every push and runs the notebooks in headless Chromium (all of them on pull requests into `main`). The build is
+  in `jupyterlite/`.
+- `examples/many_body.ipynb` no longer requires QuSpin or parameterrun: without QuSpin it builds the same
+  reflection-even Hamiltonian with NumPy (equal to QuSpin's to round-off), and without parameterrun it runs the
+  sweep sequentially.
+- `examples/landau_zener.ipynb` covers all code of the package overview in the manuscript: the callable model with
+  `partial_H_func`, `discretized_pulse()`, `fourier_spectrum()`, `export_pulse()` and `Dynamics` with a filtered pulse.
 - Preferred manuscript citation in `CITATION.cff` and versioned software DOI references in the manuscript (K-33).
   The DOI for the upcoming 0.4.0 archive is reserved; publication is pending.
 - `Dynamics` warns when the fidelity against index-based states is ill-defined or mixes in another effect (D-14):

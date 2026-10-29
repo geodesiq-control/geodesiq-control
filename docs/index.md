@@ -52,8 +52,10 @@ If the Hamiltonian is affine in the control, `H(z) = H_d + z H_c`, pass the matr
   contracts.
 - The API reference documents every public class and function.
 - The [`examples/`](https://github.com/geodesiq-control/geodesiq-control/tree/main/examples) notebooks cover the
-  Landau-Zener, double-quantum-dot, many-body and four-level diabatic–adiabatic problems. They additionally need
-  `pip install jupyterlab tqdm joblib parameterrun quspin`.
+  Landau-Zener, double-quantum-dot, many-body and four-level diabatic–adiabatic problems. They can be
+  [run in the browser](https://geodesiq-control.github.io/geodesiq-control/lab/index.html?path=landau_zener.ipynb)
+  without installing anything; locally they additionally need
+  `pip install jupyterlab tqdm joblib parameterrun quspin` (`parameterrun` and `quspin` are optional).
 
 ## Citing geodesiq
 

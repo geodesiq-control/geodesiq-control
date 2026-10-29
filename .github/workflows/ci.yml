@@ -153,6 +153,84 @@ jobs:
           MPLBACKEND: Agg
         run: uv run --no-sync jupyter execute examples/landau_zener.ipynb
 
+  jupyterlite:
+    name: JupyterLite site
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
+        with:
+          enable-cache: true
+
+      # jupyterlite-xeus solves the emscripten-wasm32 kernel environment with micromamba (only the binary is needed).
+      - name: Install micromamba
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          init-shell: none
+          post-cleanup: none
+
+      - name: Put micromamba on the PATH
+        run: |
+          echo "$HOME/micromamba-bin" >> "$GITHUB_PATH"
+          "$HOME/micromamba-bin/micromamba" --version
+
+      - name: Build site
+        run: bash jupyterlite/build.sh
+
+      - name: Install Chromium for Playwright
+        run: uv run --no-project --with playwright==1.64.1 playwright install --with-deps chromium
+
+      # The smoke test and the fast examples on every push; on the dev -> main PR also the slow ones (several minutes).
+      - name: Run notebooks in the browser
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          notebooks="smoke_test.ipynb landau_zener.ipynb four_level.ipynb"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            notebooks="$notebooks dqd_model.ipynb many_body.ipynb"
+          fi
+          uv run --no-project --with playwright==1.64.1 \
+            python jupyterlite/run_notebooks.py --screenshots jupyterlite-screenshots $notebooks
+
+      - name: Upload screenshots
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: jupyterlite-screenshots
+          path: jupyterlite-screenshots
+
+      - name: Upload site for GitHub Pages
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: jupyterlite/_output
+
+  deploy-jupyterlite:
+    name: Deploy JupyterLite site
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: jupyterlite
+    runs-on: ubuntu-latest
+
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
+
   compatibility-tests:
     name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
     if: github.event_name == 'pull_request'
@@ -230,7 +308,8 @@ jobs:
   pr-gate:
     name: PR gate
     if: always() && github.event_name == 'pull_request'
-    needs: [ validate-pr-source, quality, coverage, docs, example-notebooks, compatibility-tests, build-package ]
+    needs: [ validate-pr-source, quality, coverage, docs, example-notebooks, jupyterlite, compatibility-tests,
+             build-package ]
     runs-on: ubuntu-latest
 
     steps:
@@ -241,11 +320,12 @@ jobs:
           COVERAGE_RESULT: ${{ needs.coverage.result }}
           DOCS_RESULT: ${{ needs.docs.result }}
           NOTEBOOK_RESULT: ${{ needs.example-notebooks.result }}
+          JUPYTERLITE_RESULT: ${{ needs.jupyterlite.result }}
           TEST_RESULT: ${{ needs.compatibility-tests.result }}
           BUILD_RESULT: ${{ needs.build-package.result }}
         run: |
           for result in "$SOURCE_RESULT" "$QUALITY_RESULT" "$COVERAGE_RESULT" "$DOCS_RESULT" "$NOTEBOOK_RESULT" \
-                        "$TEST_RESULT" "$BUILD_RESULT"; do
+                        "$JUPYTERLITE_RESULT" "$TEST_RESULT" "$BUILD_RESULT"; do
             if [ "$result" != "success" ]; then
               echo "A required PR job did not succeed: $result"
               exit 1

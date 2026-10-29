@@ -1,0 +1,20 @@
+# Kernel environment of the JupyterLite site (xeus-python). Compiled packages come from emscripten-forge (WebAssembly
+# builds), pure-Python ones (threadpoolctl, tqdm, ipywidgets) from conda-forge noarch. geodesiq itself is installed
+# from this repository through pip: it is pure Python, and pip does not resolve dependencies here, so they are all
+# listed above it. QuSpin and parameterrun have no WebAssembly builds; examples/many_body.ipynb falls back without them.
+name: geodesiq-lite
+channels:
+  - https://prefix.dev/emscripten-forge-4x
+  - https://prefix.dev/conda-forge
+dependencies:
+  - xeus-python
+  - numpy>=1.23
+  - scipy>=1.15
+  - qutip>=5.0.4
+  - matplotlib>=3.9
+  - threadpoolctl>=3.1
+  - tqdm
+  - ipywidgets  # Progress bars of tqdm.auto.
+  - joblib  # Used by examples/dqd_model.ipynb.
+  - pip:
+      - ..
