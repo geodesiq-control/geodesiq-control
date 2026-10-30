@@ -98,6 +98,7 @@ dev = [
     { include-group = "docs" },
     { include-group = "examples" },
     { include-group = "notebooks" },
+    "cmocean>=4.0.3",  # Colour maps of the manuscript figures (dev/manuscript_figures.ipynb).
     "jupyterlab-code-formatter>=3.1.0",
     "jupyterlab-lsp>=5.3.0",
     "line-profiler>=5.0.2",
