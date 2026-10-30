@@ -33,6 +33,9 @@ class Dynamics:
     # A selected endpoint eigenstate whose gap to a neighbouring level is below this fraction of the spectral
     # bandwidth is treated as degenerate, and a warning is emitted.
     _DEGENERACY_RTOL = 1e-8
+    # A callable model whose estimated propagator error from interpolating the decomposed Hamiltonian exceeds this
+    # (dimensionless) value triggers a warning.
+    _INTERPOLATION_TOL = 1e-3
 
     def __init__(
         self,
@@ -43,6 +46,7 @@ class Dynamics:
         pulse: ArrayLike | None = None,
         hbar: float = 1.0,
         order: int | None = None,
+        exact_hamiltonian: bool = False,
         options: dict[str, Any] | None = None,
     ) -> None:
         """
@@ -80,6 +84,12 @@ class Dynamics:
             (``duration``), which is densely sampled and smooth, and ``1`` for a custom pulse (``times``/``pulse``), so
             that e.g. the piecewise-linear ``discretized_pulse()`` is simulated as the pulse it describes. A cubic
             spline through a few samples can deviate strongly between them and overshoot the sampled range.
+        exact_hamiltonian : bool
+            Only for callable models. If False (default), the Hamiltonian is sampled at the pulse samples, decomposed
+            into constant operators with sampled coefficients (``decompose_hamiltonian``), and the coefficients are
+            interpolated as set by ``order``. If True, ``H_func`` is evaluated at the interpolated pulse at every
+            solver step instead: exact for any pulse, but much slower. Affine models always propagate the exact
+            H(x(t)).
         options : dict[str, Any] | None
             QuTiP solver options shared by all evolution methods, including ``atol``, ``rtol``, ``nsteps``,
             ``max_step`` and ``method``. None keeps QuTiP's numerical defaults. The dictionary is deep-copied;
@@ -94,6 +104,12 @@ class Dynamics:
         ``max_step`` to less than half the narrowest pulse feature; sample times alone do not bound internal steps.
         QuTiP's default state normalization can hide norm drift; use ``normalize_output=False`` to inspect it.
         Propagated operators are not normalized. Solver options do not control pulse interpolation or SVD truncation.
+
+        For a callable model without ``exact_hamiltonian``, the decomposed coefficients are interpolated entry-wise in
+        H, not through the pulse, so between samples the propagated Hamiltonian only approximates H(x(t)) when H is
+        nonlinear in the control (exact with ``order=0``). The error falls with the number of samples: for the densely
+        sampled optimal pulse it is negligible, but a few samples of a custom pulse can matter.
+        ``interpolation_error`` estimates the resulting propagator error.
 
         Raises
         ------
@@ -112,6 +128,8 @@ class Dynamics:
         GeodesiQWarning
             If a custom pulse starts or ends further than 1% of the control range from the model's ``pulse_initial``
             or ``pulse_final``. The fidelity against index-based states then also measures this endpoint mismatch.
+        NumericalStabilityWarning
+            If ``interpolation_error`` exceeds 1e-3 (callable models without ``exact_hamiltonian``).
         """
 
         if not isinstance(model, ControlModel):
@@ -137,6 +155,9 @@ class Dynamics:
             raise ValidationError("order must be None, 0 (hold), 1 (linear) or 3 (cubic spline).")
         custom_pulse = times is not None or pulse is not None
         self._order: int = (1 if custom_pulse else 3) if order is None else int(order)
+
+        if not isinstance(exact_hamiltonian, (bool, np.bool_)):
+            raise ValidationError("exact_hamiltonian must be a bool.")
 
         self._pulse_times: NDArray[np.float64]
         self._pulse: NDArray[np.float64]
@@ -192,6 +213,7 @@ class Dynamics:
             self._hamiltonian(float(self._pulse[0]))  # Fixes the dimension of callable models
         self._hamiltonian_dimension: int | None = model.hamiltonian_dimension
 
+        self._interpolation_error: float = 0.0
         if model.affine_hamiltonian:
             H_d = model.H_d
             H_c = model.H_c
@@ -204,10 +226,31 @@ class Dynamics:
                 tlist=self._pulse_times,
                 order=self._order,
             )
+        elif exact_hamiltonian:
+            # H(x(t)) at every solver step: exact for any pulse, but slower than the decomposition (D-11).
+            self._qevo = qt.QobjEvo(self._get_ham)
         else:
+            # Sample H at the pulse values themselves: the hold (order=0) coefficient evaluated exactly at a sample
+            # time can round to the previous sample, which would shift H over a whole interval (D-11).
+            control_at = dict(zip(self._pulse_times.tolist(), self._pulse.tolist(), strict=True))
             with self._blas_threads():
-                decomposition = decompose_hamiltonian(self._get_ham, self._pulse_times, drift="mean", rtol=1e-10)
+                decomposition = decompose_hamiltonian(
+                    lambda t: self._evaluate_hamiltonian(control_at[t]) / self._hbar,
+                    self._pulse_times,
+                    drift="mean",
+                    rtol=1e-10,
+                )
             self._qevo = decomposition.qobjevo(order=self._order)
+            if self._order != 0:
+                self._interpolation_error = self._estimate_interpolation_error()
+                if self._interpolation_error > self._INTERPOLATION_TOL:
+                    warnings.warn(
+                        "Between the pulse samples, the interpolated Hamiltonian deviates from H(x(t)); the estimated "
+                        f"propagator error is {self._interpolation_error:.2g}. Sample the pulse more finely, or pass "
+                        "exact_hamiltonian=True.",
+                        NumericalStabilityWarning,
+                        stacklevel=2,
+                    )
 
         # Eigenvectors of H at every pulse sample, computed on the first adiabatic populations() call (D-19).
         self._adiabatic_eigenvectors: NDArray[np.complex128] | None = None
@@ -272,6 +315,16 @@ class Dynamics:
     def duration(self) -> float:
         """Total duration of the pulse."""
         return self._duration
+
+    @property
+    def interpolation_error(self) -> float:
+        """
+        Estimated propagator error from interpolating the decomposed Hamiltonian of a callable model between the pulse
+        samples: ``sum_k dt_k ||H_interp - H(x(t))||_F / hbar`` at the interval midpoints, which estimates the bound
+        ``||U - U_exact|| <= int ||H_interp - H(x(t))|| dt / hbar``. Zero for affine models, ``order=0`` and
+        ``exact_hamiltonian=True``, which propagate H(x(t)) itself.
+        """
+        return self._interpolation_error
 
     def _blas_threads(self) -> Any:
         """Context limiting BLAS/LAPACK to one thread for small Hilbert spaces (see ``limit_blas_threads``)."""
@@ -343,10 +396,17 @@ class Dynamics:
             )
         return eigenstates[state_index]
 
+    def _estimate_interpolation_error(self) -> float:
+        """Estimate ``interpolation_error`` from H(x(t)) and the propagated Hamiltonian at the interval midpoints."""
+        midpoints = 0.5 * (self._pulse_times[1:] + self._pulse_times[:-1])
+        with self._blas_threads():
+            errors = [np.linalg.norm(self._qevo(t).full() - self._get_ham(t).full()) for t in midpoints]
+        return float(np.dot(errors, np.diff(self._pulse_times)))
+
     def _get_ham(self, t: float) -> qt.Qobj:
         """
-        Construct the Hamiltonian H(x(t))/hbar as a QuTiP Qobj, with the pulse interpolated between its samples in the
-        same way as in the propagation (see ``order``).
+        Construct the exact Hamiltonian H(x(t))/hbar as a QuTiP Qobj, with the pulse interpolated between its samples
+        as set by ``order``. Callable models propagate it only with ``exact_hamiltonian=True``.
         """
         control_val_t = float(np.real(self._pulse_coefficient(t)))
 

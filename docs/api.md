@@ -71,6 +71,20 @@ times, ramps = pulse.discretized_pulse(linear_steps=5)
 awg = Dynamics(model, times=times, pulse=ramps, order=0)  # sample-and-hold
 ```
 
+An affine model propagates `H_d + x(t) H_c` with the interpolated pulse, which is exact. A callable model samples H at
+the pulse samples and decomposes it into constant operators with sampled coefficients (`decompose_hamiltonian`). The
+coefficients are interpolated like the pulse, that is entry-wise in H, so between samples the propagated Hamiltonian
+only approximates H(x(t)) when H is nonlinear in the control (`order=0` is exact). For the densely sampled optimal
+pulse this error is negligible; for a few samples of a custom pulse it can matter. `Dynamics.interpolation_error`
+estimates the resulting propagator error, and a `NumericalStabilityWarning` is emitted when it exceeds 1e-3. Then
+sample the pulse more finely, or pass `exact_hamiltonian=True`, which evaluates H(x(t)) at every solver step: exact,
+but slower to propagate (by a factor of about 10 to 100 in our tests), although it skips the decomposition.
+
+```python
+times, ramps = pulse.discretized_pulse(linear_steps=50)
+exact = Dynamics(model, times=times, pulse=ramps, exact_hamiltonian=True)
+```
+
 ## Dynamics solver accuracy
 
 Pass `options` to the constructor to configure QuTiP propagation for state fidelity, populations and evolution

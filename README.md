@@ -142,6 +142,9 @@ windows. Use `padding="zeros"` for zero padding and `mfft` to sample the frequen
 Use `Dynamics(..., options={"atol": 1e-10, "rtol": 1e-8, "nsteps": 10000})` to configure QuTiP propagation;
 `options=None` keeps its numerical defaults. The [user guide](https://geodesiq.readthedocs.io/en/latest/api/#dynamics-solver-accuracy)
 explains convergence checks, internal step limits and solver errors.
+For a callable Hamiltonian that is nonlinear in the control and a custom pulse with few samples,
+`Dynamics(..., exact_hamiltonian=True)` evaluates `H(x(t))` at every solver step instead of interpolating its
+decomposition; `Dynamics.interpolation_error` estimates the difference, and a warning is emitted when it matters.
 
 The user guide and the full API reference are available at [geodesiq.readthedocs.io](https://geodesiq.readthedocs.io).
 

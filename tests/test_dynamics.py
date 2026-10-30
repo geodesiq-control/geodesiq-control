@@ -1235,30 +1235,75 @@ class TestCallableHamiltonianDynamics:
     def _nonlinear_hamiltonian(cls, lam: float) -> np.ndarray:
         return lam * cls.SZ + (1.0 + 0.3 * lam**2) * cls.SX
 
-    def test_converges_to_the_exact_hamiltonian_of_the_pulse(self):
-        """Against H(x(t)) evaluated exactly, the error falls as the square of the sample spacing."""
-        model = ControlModel(self._nonlinear_hamiltonian)
+    @classmethod
+    def _nonlinear_model(cls) -> ControlModel:
+        model = ControlModel(cls._nonlinear_hamiltonian)
         model.set_control(control_name="lam", pulse_initial=-2.0, pulse_final=2.0, initial_state=0, alpha=2.0,
                           beta=2.0)
+        return model
+
+    def _exact_propagator(self, times: np.ndarray, pulse: np.ndarray) -> np.ndarray:
+        """Reference: the order=1 pulse (linear interpolation) inserted into the nonlinear H, solved directly."""
+        exact_hamiltonian = qt.QobjEvo(
+            lambda t: qt.Qobj(self._nonlinear_hamiltonian(np.interp(t, times, pulse))))
+        return qt.sesolve(exact_hamiltonian, qt.qeye(2), [times[0], times[-1]],
+                          options={**self.TIGHT, "max_step": 0.01}).states[-1].full()
+
+    def test_converges_to_the_exact_hamiltonian_of_the_pulse(self):
+        """Against H(x(t)) evaluated exactly, the error falls as the square of the sample spacing, stays below the
+        interpolation_error estimate, and coarse grids warn."""
+        model = self._nonlinear_model()
         duration = 5.0
         errors = []
         for samples in (11, 41, 161):
             times = np.linspace(0.0, duration, samples)
             pulse = -2.0 + 4.0 * (times / duration) ** 2
-            propagator = Dynamics(model, times=times, pulse=pulse, options=self.TIGHT).time_evolution_operator(
-                final_only=True)[0].full()
-
-            # Exact reference: the order=1 pulse (linear interpolation) inserted into the nonlinear H.
-            exact_hamiltonian = qt.QobjEvo(
-                lambda t, times=times, pulse=pulse: qt.Qobj(self._nonlinear_hamiltonian(np.interp(t, times, pulse))))
-            reference = qt.sesolve(exact_hamiltonian, qt.qeye(2), [0.0, duration],
-                                   options={**self.TIGHT, "max_step": 0.01}).states[-1].full()
-            errors.append(np.max(np.abs(propagator - reference)))
+            if samples < 161:
+                with pytest.warns(NumericalStabilityWarning, match="exact_hamiltonian=True"):
+                    dynamics = Dynamics(model, times=times, pulse=pulse, options=self.TIGHT)
+            else:
+                dynamics = Dynamics(model, times=times, pulse=pulse, options=self.TIGHT)
+            propagator = dynamics.time_evolution_operator(final_only=True)[0].full()
+            errors.append(np.linalg.norm(propagator - self._exact_propagator(times, pulse), 2))
+            assert errors[-1] <= dynamics.interpolation_error
 
         assert errors[-1] < 5e-4
         # Four times more samples reduce the error about 16-fold (second order); allow some slack.
         assert errors[1] < errors[0] / 10
         assert errors[2] < errors[1] / 10
+
+    def test_exact_hamiltonian_matches_the_reference_on_a_coarse_grid(self):
+        """exact_hamiltonian=True propagates H(x(t)) itself, so 11 samples need no warning and are exact."""
+        times = np.linspace(0.0, 5.0, 11)
+        pulse = -2.0 + 4.0 * (times / 5.0) ** 2
+        dynamics = Dynamics(self._nonlinear_model(), times=times, pulse=pulse, exact_hamiltonian=True,
+                            options=self.TIGHT)
+        propagator = dynamics.time_evolution_operator(final_only=True)[0].full()
+
+        assert dynamics.interpolation_error == 0.0
+        np.testing.assert_allclose(propagator, self._exact_propagator(times, pulse), atol=1e-7)
+
+    def test_hold_samples_the_hamiltonian_at_the_pulse_values(self):
+        """With order=0, H is held at H(pulse[k]) on every interval, exactly. On this grid QuTiP's hold coefficient,
+        evaluated at the sample times 13 and 26, returns the previous sample, which used to shift those intervals."""
+        times = np.linspace(0.0, 5.0, 50)
+        pulse = -2.0 + 4.0 * (times / 5.0) ** 2
+        dynamics = Dynamics(self._nonlinear_model(), times=times, pulse=pulse, order=0, options=self.TIGHT)
+        propagator = dynamics.time_evolution_operator(final_only=True)[0].full()
+
+        reference = np.eye(2, dtype=complex)
+        for k in range(len(times) - 1):
+            energies, vectors = np.linalg.eigh(self._nonlinear_hamiltonian(pulse[k]))
+            reference = (vectors * np.exp(-1j * energies * (times[k + 1] - times[k]))) @ vectors.conj().T @ reference
+
+        assert dynamics.interpolation_error == 0.0
+        # The solver steps across the jumps; the shifted intervals gave an error of about 3e-2.
+        np.testing.assert_allclose(propagator, reference, atol=1e-6)
+
+    def test_exact_hamiltonian_must_be_a_bool(self):
+        times = np.linspace(0.0, 5.0, 11)
+        with pytest.raises(ValidationError, match="exact_hamiltonian"):
+            Dynamics(self._nonlinear_model(), times=times, pulse=np.zeros(11), exact_hamiltonian=cast(Any, 1))
 
     def test_callable_and_affine_models_give_the_same_dynamics(self):
         """The same Landau-Zener problem as a callable and as an affine model gives the same pulse and evolution."""

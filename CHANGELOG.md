@@ -30,6 +30,12 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   unchanged; `p = 1` with `(alpha, beta) = (4, 2)` gives the multilevel FAQUAD condition (sum of the adiabaticity
   parameters of all transitions), and `p = np.inf` keeps the largest contribution. Any `p >= 1` is accepted; the
   orders agree when only one transition contributes.
+- `Dynamics(exact_hamiltonian=True)` propagates a callable model with `H_func` evaluated at the interpolated pulse at
+  every solver step, instead of the SVD decomposition whose coefficients are interpolated entry-wise in H (D-11). It is
+  exact for any pulse but slower to propagate. The new `Dynamics.interpolation_error` estimates the propagator error
+  of the decomposition between the pulse samples (`sum_k dt_k ||H_interp - H(x(t))||_F / hbar` at the interval
+  midpoints), and a `NumericalStabilityWarning` is emitted when it exceeds 1e-3, e.g. for a callable model nonlinear
+  in the control driven by a custom pulse with few samples. The densely sampled optimal pulse is unaffected.
 
 ### Changed
 
@@ -43,6 +49,10 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Fixed
 
+- `Dynamics` with a callable model and `order=0` (sample-and-hold) held the wrong Hamiltonian on some intervals
+  (D-11). The decomposition sampled H through the hold coefficient at the sample times, where rounding can return the
+  previous sample, so H(pulse[k-1]) was held over [t_k, t_k+1) (e.g. at 2 of 50 uniform samples, a propagator error of
+  about 3e-2). H is now sampled at the pulse values themselves; the linear and cubic interpolations were not affected.
 - Rounding errors of a flat gap no longer count as anticrossings (C-01). A diabatic passage was made at the first
   sample-to-sample dip, e.g. where the gap is constant in exact arithmetic but its eigenvalues carry rounding noise,
   instead of at the real anticrossing further along. A gap minimum now counts only if its prominence (the smaller rise
