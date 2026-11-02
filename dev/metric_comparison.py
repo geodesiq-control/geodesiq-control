@@ -12,21 +12,17 @@ Systems (built from the examples):
 Metrics: linear ramp (0, 0), quantum metric (2, 2), FAQUAD (4, 2), and FAQUAD with the L^1 (multilevel FAQUAD) and
 L^inf norms over the transitions.
 
-Figure 1: spectrum, local slowdown (x_f - x_0) dtau/dx = (x_f - x_0) sqrt(G) / a_tilde, and pulse x(tau), for one gap.
-Figure 2: against the minimum gap of the occupied state, the slowdown at the minimum gap and the shortest duration with
-1 - F <= EPS.
+Used by metric_appendix_data.py, which takes the models, the local slowdown (x_f - x_0) dtau/dx =
+(x_f - x_0) sqrt(G) / a_tilde and the cached duration scan from here.
 
-Run from dev/:  python metric_comparison.py [--rescan]
-The duration scan is cached in data/metric_comparison_scan.npz.
+Run from dev/:  python metric_comparison.py
+scans the shortest duration with 1 - F <= EPS for every system, gap and metric into data/metric_comparison_scan.npz.
 """
 
-import sys
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 from joblib import Parallel, delayed
-from matplotlib.ticker import NullFormatter
 
 import geodesiq as gq
 
@@ -42,13 +38,6 @@ METRICS = {
     "FAQUAD (4, 2)": dict(alpha=4, beta=2, norm=2),
     r"FAQUAD $p=1$": dict(alpha=4, beta=2, norm=1),
     r"FAQUAD $p=\infty$": dict(alpha=4, beta=2, norm=np.inf),
-}
-STYLES = {
-    "linear (0, 0)": dict(color="0.55", ls=":"),
-    "QMT (2, 2)": dict(color="C0", ls="-"),
-    "FAQUAD (4, 2)": dict(color="C3", ls="-"),
-    r"FAQUAD $p=1$": dict(color="C1", ls="--"),
-    r"FAQUAD $p=\infty$": dict(color="C2", ls="-."),
 }
 
 
@@ -107,50 +96,10 @@ def ising(hz, L=6, hx=1.0):
 
 
 SYSTEMS = [
-    dict(
-        name="Landau–Zener",
-        build=landau_zener,
-        x0=-10,
-        xf=10,
-        state=0,
-        knob=r"$\Delta$",
-        values=[0.1, 0.2, 0.5, 1.0, 2.0],
-        ref=0.5,
-        xlabel="$z$",
-    ),
-    dict(
-        name="Level through a band",
-        build=level_through_band,
-        x0=-6,
-        xf=6,
-        state=4,
-        knob="$g$",
-        values=[0.03, 0.06, 0.12, 0.25, 0.5],
-        ref=0.12,
-        xlabel="$x$",
-    ),
-    dict(
-        name="DQD (5 levels)",
-        build=dqd,
-        x0=15,
-        xf=0,
-        state=0,
-        knob=r"$\delta E_x$",
-        values=[0.01, 0.03, 0.1, 0.3],
-        ref=0.03,
-        xlabel=r"$\varepsilon$",
-    ),
-    dict(
-        name="Ising chain ($L=6$)",
-        build=ising,
-        x0=0,
-        xf=1,
-        state=0,
-        knob="$h_z$",
-        values=[0.2, 0.5, 0.8, 0.9, 0.95],
-        ref=0.8,
-        xlabel=r"$\lambda$",
-    ),
+    dict(build=landau_zener, x0=-10, xf=10, state=0, values=[0.1, 0.2, 0.5, 1.0, 2.0]),  # Delta
+    dict(build=level_through_band, x0=-6, xf=6, state=4, values=[0.03, 0.06, 0.12, 0.25, 0.5]),  # g
+    dict(build=dqd, x0=15, xf=0, state=0, values=[0.01, 0.03, 0.1, 0.3]),  # delta E_x
+    dict(build=ising, x0=0, xf=1, state=0, values=[0.2, 0.5, 0.8, 0.9, 0.95]),  # h_z
 ]
 
 
@@ -224,88 +173,5 @@ def load_scan():
     return dict(zip(data["keys"].tolist(), data["values"], strict=True))
 
 
-# ----- Figures --------------------------------------------------------------------------------------------------------
-plt.rcParams.update(
-    {
-        "font.size": 8,
-        "axes.labelsize": 9,
-        "xtick.labelsize": 8,
-        "ytick.labelsize": 8,
-        "legend.fontsize": 8,
-        "lines.linewidth": 1.25,
-        "axes.linewidth": 0.6,
-        "grid.linewidth": 0.5,
-        "grid.alpha": 0.4,
-        "mathtext.fontset": "stix",
-    }
-)
-
-
-def figure_profiles():
-    fig, axes = plt.subplots(len(SYSTEMS), 3, figsize=(7.5, 2.0 * len(SYSTEMS)), layout="constrained")
-    for row, system in zip(axes, SYSTEMS, strict=True):
-        models = {m: make_model(system, system["ref"], m) for m in METRICS}
-        reference = models["QMT (2, 2)"]
-        x, E = reference.control_pulse, reference.eigenenergies
-        gap, x_gap = min_gap(reference, system["state"])
-
-        ax = row[0]
-        ax.plot(x, E, color="0.7", lw=0.8)
-        ax.plot(x, E[:, system["state"]], color="k", lw=1.25)
-        if E.shape[1] > 12:  # Ising: show the low-lying part only
-            lo, hi = E[:, 0].min(), E[:, min(8, E.shape[1] - 1)].max()
-            ax.set_ylim(lo - 0.05 * (hi - lo), hi)
-        ax.set_xlabel(system["xlabel"])
-        ax.set_ylabel("$E$")
-        ax.set_title(f"{system['name']}, {system['knob']}$={system['ref']}$\nmin gap {gap:.3g}", fontsize=8)
-
-        for m, model in models.items():
-            row[1].plot(x, slowdown(model, system), label=m, **STYLES[m])
-            row[2].plot(model.tau, model.control_sol, label=m, **STYLES[m])
-        for ax in row[1:2]:
-            ax.axvline(x_gap, color="0.8", lw=0.8, zorder=0)
-        row[1].set_yscale("log")
-        row[1].set_xlabel(system["xlabel"])
-        row[1].set_ylabel(r"$(x_f-x_0)\,\mathrm{d}\tau/\mathrm{d}x$")
-        row[2].set_xlabel(r"$\tau = t/t_f$")
-        row[2].set_ylabel(system["xlabel"])
-        for ax in row:
-            ax.grid(True)
-    handles, labels = axes[0, 2].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="outside lower center", ncols=len(METRICS), frameon=False)
-    return fig
-
-
-def figure_gap_scan(table):
-    fig, axes = plt.subplots(2, len(SYSTEMS), figsize=(7.5, 4.2), layout="constrained")
-    for col, (s, system) in enumerate(enumerate(SYSTEMS)):
-        gaps, peaks = [], {m: [] for m in METRICS}
-        for v in system["values"]:
-            for m in METRICS:
-                model = make_model(system, v, m)
-                peaks[m].append(slowdown(model, system).max())
-            gaps.append(min_gap(model, system["state"])[0])
-        gaps = np.array(gaps)
-        for m in METRICS:
-            axes[0, col].plot(gaps, peaks[m], marker="o", ms=3, label=m, **STYLES[m])
-            T = np.array([table[f"{s}|{v}|{m}"] for v in system["values"]])
-            axes[1, col].plot(gaps, T, marker="o", ms=3, label=m, **STYLES[m])
-        axes[0, col].set_title(system["name"], fontsize=8)
-        for ax in axes[:, col]:
-            ax.set_xscale("log")
-            ax.set_yscale("log")
-            ax.xaxis.set_minor_formatter(NullFormatter())
-            ax.grid(True, which="both")
-        axes[1, col].set_xlabel(r"min gap $\Delta E_\mathrm{min}$")
-    axes[0, 0].set_ylabel("max slowdown")
-    axes[1, 0].set_ylabel(rf"$t_f$ for $1-\mathcal{{F}}\leq {EPS:g}$")
-    handles, labels = axes[0, 0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="outside lower center", ncols=len(METRICS), frameon=False)
-    return fig
-
-
 if __name__ == "__main__":
-    out = HERE / "figures"
-    figure_profiles().savefig(out / "metric_comparison_profiles.png", dpi=200)
-    table = scan_durations() if "--rescan" in sys.argv or not CACHE.exists() else load_scan()
-    figure_gap_scan(table).savefig(out / "metric_comparison_gap_scan.png", dpi=200)
+    scan_durations()

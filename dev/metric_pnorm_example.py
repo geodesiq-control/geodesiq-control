@@ -17,34 +17,24 @@ gives every crossing the same time and pays a factor ~N in the cluster.
 The fidelity is computed exactly as the product of single-qubit fidelities under the same pulse; the metric uses the
 full register (2^(N+1) levels).
 
-Run from dev/:  python metric_pnorm_example.py
+Used by metric_appendix_data.py and metric_pnorm_fine.py.
 """
 
 import warnings
 from functools import reduce
-from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
-from joblib import Parallel, delayed
-from matplotlib.ticker import NullFormatter
 
 import geodesiq as gq
 
 warnings.simplefilter("ignore", gq.GeodesiQWarning)
 
-HERE = Path(__file__).parent
 RABI, OMEGA_B, SPREAD = 0.2, 10.0, 0.05
 X0, XF = -10.0, 20.0
 N_CLUSTER = 8
-CLUSTER_SIZES = [1, 2, 4, 6, 8]
-DURATIONS = np.geomspace(30, 3e3, 17)
-FIXED_DURATION = 300.0
 PULSE_ACCURACY = 20001
 OPTIONS = dict(atol=1e-12, rtol=1e-10, nsteps=10**4)
 NORMS = {"$p=1$": 1, "$p=2$": 2, r"$p=\infty$": np.inf}
-COLORS = {"$p=1$": "C1", "$p=2$": "C0", r"$p=\infty$": "C2"}
-LINESTYLES = {"$p=1$": "--", "$p=2$": "-", r"$p=\infty$": "-."}
 
 SX = np.array([[0.0, 1.0], [1.0, 0.0]])
 SZ = np.diag([1.0, -1.0])
@@ -93,59 +83,3 @@ def run(n_cluster, p, durations):
     omegas = frequencies(n_cluster)
     model = make_model(omegas, alpha=2, beta=2, norm=NORMS[p])
     return model.control_pulse, slowdown(model), infidelities(omegas, model, durations)
-
-
-plt.rcParams.update(
-    {
-        "font.size": 8,
-        "axes.labelsize": 9,
-        "xtick.labelsize": 8,
-        "ytick.labelsize": 8,
-        "legend.fontsize": 8,
-        "lines.linewidth": 1.25,
-        "axes.linewidth": 0.6,
-        "grid.linewidth": 0.5,
-        "grid.alpha": 0.4,
-        "mathtext.fontset": "stix",
-    }
-)
-
-
-def figure():
-    # The 2^(N+1)-level models keep ~2 GB of matrix elements for N = 8: few workers at a time
-    main = dict(zip(NORMS, Parallel(n_jobs=3)(delayed(run)(N_CLUSTER, p, DURATIONS) for p in NORMS), strict=True))
-    scan = Parallel(n_jobs=3)(delayed(run)(n, p, [FIXED_DURATION]) for p in NORMS for n in CLUSTER_SIZES)
-    scan = np.array([s[2][0] for s in scan]).reshape(len(NORMS), len(CLUSTER_SIZES))
-
-    fig, axes = plt.subplots(2, 2, figsize=(7.0, 5.2), layout="constrained")
-    (ax_E, ax_v), (ax_F, ax_N) = axes
-
-    # Single-flip excitation energies of the register ground state: one gap per qubit
-    x = main["$p=2$"][0]
-    for w in frequencies(N_CLUSTER):
-        ax_E.plot(x, np.sqrt((w - x) ** 2 + RABI**2), color="C3" if w == OMEGA_B else "0.5", lw=0.8)
-    ax_E.set(ylim=(0, 3), xlabel="drive frequency $x$", ylabel=r"$E_k - E_0$")
-    ax_E.set_title(f"{N_CLUSTER} crowded qubits (grey) + 1 isolated qubit (red)", fontsize=8)
-
-    for p, (x, v, F) in main.items():
-        ax_v.plot(x, v, color=COLORS[p], ls=LINESTYLES[p], label=f"QMT (2, 2), {p}")
-        ax_F.plot(DURATIONS, F, color=COLORS[p], ls=LINESTYLES[p])
-    for i, p in enumerate(NORMS):
-        ax_N.plot(CLUSTER_SIZES, scan[i], marker="o", ms=3, color=COLORS[p], ls=LINESTYLES[p])
-    ax_v.set(yscale="log", xlabel="drive frequency $x$", ylabel=r"$(x_f-x_0)\,\mathrm{d}\tau/\mathrm{d}x$")
-    ax_v.set_title(f"Local slowdown, $N={N_CLUSTER}$", fontsize=8)
-    ax_F.set(xscale="log", yscale="log", xlabel=r"$t_f$", ylabel=r"$1-\mathcal{F}$")
-    ax_F.set_title(f"$N={N_CLUSTER}$", fontsize=8)
-    ax_N.set(yscale="log", xlabel="crowded qubits $N$", ylabel=r"$1-\mathcal{F}$")
-    ax_N.set_xticks(CLUSTER_SIZES)
-    ax_N.xaxis.set_minor_formatter(NullFormatter())
-    ax_N.set_title(f"$t_f = {FIXED_DURATION:g}$", fontsize=8)
-    for ax in axes.flat:
-        ax.grid(True)
-    handles, labels = ax_v.get_legend_handles_labels()
-    fig.legend(handles, labels, loc="outside lower center", ncols=len(NORMS), frameon=False)
-    return fig
-
-
-if __name__ == "__main__":
-    figure().savefig(HERE / "figures" / "metric_pnorm_example.png", dpi=200)
