@@ -17,8 +17,9 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   sweep sequentially.
 - `examples/landau_zener.ipynb` covers all code of the package overview in the manuscript: the callable model with
   `partial_H_func`, `discretized_pulse()`, `fourier_spectrum()`, `export_pulse()` and `Dynamics` with a filtered pulse.
-- Preferred manuscript citation in `CITATION.cff` and versioned software DOI references in the manuscript (K-33).
-  The DOI for the upcoming 0.4.0 archive is reserved; publication is pending.
+- Preferred manuscript citation in `CITATION.cff` and the software version in the manuscript (K-33).
+- `.zenodo.json` with the metadata for the Zenodo GitHub integration, which archives each GitHub release with its
+  own DOI. The reserved DOI 10.5281/zenodo.23729703 is no longer used.
 - `Dynamics` warns when the fidelity against index-based states is ill-defined or mixes in another effect (D-14):
   a `NumericalStabilityWarning` when the selected endpoint eigenstate is degenerate with a neighbouring level (gap at
   most 1e-8 of the spectral bandwidth), and a `GeodesiQWarning` when a custom pulse starts or ends more than 1% of the
@@ -71,7 +72,6 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Added
 
-- Zenodo DOI badge and citation links for the version 0.4.0 archive in the README and documentation.
 - `dev/sync_figures.py` checks SHA-256 hashes between `dev/figures/` and `paper/Figures/`; `--sync` copies and verifies
   missing or changed figures while preserving paper-only files.
 - `Dynamics(..., options=...)` configures QuTiP solver settings for all propagation methods, including tolerances,

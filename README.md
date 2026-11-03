@@ -12,7 +12,6 @@
 
 [![Build Status](https://github.com/geodesiq-control/geodesiq-control/actions/workflows/ci.yml/badge.svg)](https://github.com/geodesiq-control/geodesiq-control/actions/workflows/ci.yml)
 [![Documentation Status](https://readthedocs.org/projects/geodesiq/badge/?version=latest)](https://geodesiq.readthedocs.io/en/latest/)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23729703.svg)](https://doi.org/10.5281/zenodo.23729703)
 [![Maintainability](https://qlty.sh/gh/geodesiq-control/projects/geodesiq-control/maintainability.svg)](https://qlty.sh/gh/geodesiq-control/projects/geodesiq-control)
 [![Coverage Status](https://coveralls.io/repos/github/geodesiq-control/geodesiq-control/badge.svg?branch=dev)](https://coveralls.io/github/geodesiq-control/geodesiq-control?branch=dev)
 [![PyPI - License](https://img.shields.io/pypi/l/geodesiq)](https://opensource.org/license/lgpl-2-1)
@@ -153,7 +152,7 @@ The user guide and the full API reference are available at [geodesiq.readthedocs
 If you use `geodesiq` in your research, please cite it. The citation metadata is in
 [`CITATION.cff`](https://github.com/geodesiq-control/geodesiq-control/blob/main/CITATION.cff), and GitHub's
 "Cite this repository" button exports it as BibTeX or APA.
-The DOI reserved for the upcoming version 0.4.0 archive is [doi:10.5281/zenodo.23729703](https://doi.org/10.5281/zenodo.23729703); publication is pending.
+Each release is archived on Zenodo with its own DOI.
 
 ## Development
 
