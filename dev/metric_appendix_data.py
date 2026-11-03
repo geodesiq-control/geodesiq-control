@@ -22,12 +22,12 @@ for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
 import warnings  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-import numpy as np  # noqa: E402
-
-import geodesiq as gq  # noqa: E402
 import metric_comparison as mc  # noqa: E402
 import metric_pnorm_example as ex  # noqa: E402
 import metric_pnorm_fine as fine  # noqa: E402
+import numpy as np  # noqa: E402
+
+import geodesiq as gq  # noqa: E402
 
 warnings.simplefilter("ignore", gq.GeodesiQWarning)
 
