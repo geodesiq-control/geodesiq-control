@@ -20,10 +20,9 @@ keywords:
   - optimal control
   - geodesic
   - quantum computing
-# Reserved DOI for the upcoming 0.4.0 archive; publication is pending.
 doi: "10.5281/zenodo.23729703"
 preferred-citation:
-  type: unpublished
+  type: arXiv
   title: "geodesiq: a Python package for geometric diabatic–adiabatic optimal state transfer"
   authors:
     - family-names: "Fernandez-Fernandez"
