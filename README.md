@@ -16,6 +16,7 @@
 [![Coverage Status](https://coveralls.io/repos/github/geodesiq-control/geodesiq-control/badge.svg?branch=dev)](https://coveralls.io/github/geodesiq-control/geodesiq-control?branch=dev)
 [![PyPI - License](https://img.shields.io/pypi/l/geodesiq)](https://opensource.org/license/lgpl-2-1)
 [![PyPI Downloads](https://api.pepy.tech/badge/geodesiq/month?left_text=downloads%20%7C%20pip)](https://pypi.org/project/geodesiq/)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23985948.svg)](https://doi.org/10.5281/zenodo.23985948)
 [![Try it in your browser](https://jupyterlite.rtfd.io/en/latest/_static/badge.svg)](https://geodesiq-control.github.io/geodesiq-control/lab/index.html?path=landau_zener.ipynb)
 
 ---
@@ -152,7 +153,8 @@ The user guide and the full API reference are available at [geodesiq.readthedocs
 If you use `geodesiq` in your research, please cite it. The citation metadata is in
 [`CITATION.cff`](https://github.com/geodesiq-control/geodesiq-control/blob/main/CITATION.cff), and GitHub's
 "Cite this repository" button exports it as BibTeX or APA.
-Each release is archived on Zenodo with its own DOI.
+Each release is archived on Zenodo with its own DOI; the concept DOI
+[10.5281/zenodo.23985948](https://doi.org/10.5281/zenodo.23985948) always resolves to the latest version.
 
 ## Development
 

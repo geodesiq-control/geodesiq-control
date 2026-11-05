@@ -11,6 +11,7 @@ authors:
   - family-names: "Ventura Meinersen"
     given-names: "Christian"
 version: 0.4.0
+doi: 10.5281/zenodo.23985948
 date-released: "2026-11-05"
 license: LGPL-2.1-only
 repository-code: "https://github.com/geodesiq-control/geodesiq-control"

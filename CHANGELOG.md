@@ -6,6 +6,11 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ## [Unreleased]
 
+### Added
+
+- Zenodo concept DOI [10.5281/zenodo.23985948](https://doi.org/10.5281/zenodo.23985948) in `CITATION.cff`, the
+  README (badge and citation section) and the documentation.
+
 ## [0.4.0] - 2026-11-05
 
 ### Added
