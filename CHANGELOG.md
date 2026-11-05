@@ -6,6 +6,8 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-05
+
 ### Added
 
 - The example notebooks run in the browser without installation, on a JupyterLite site (xeus-python kernel with
@@ -37,41 +39,6 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   of the decomposition between the pulse samples (`sum_k dt_k ||H_interp - H(x(t))||_F / hbar` at the interval
   midpoints), and a `NumericalStabilityWarning` is emitted when it exceeds 1e-3, e.g. for a callable model nonlinear
   in the control driven by a custom pulse with few samples. The densely sampled optimal pulse is unaffected.
-
-### Changed
-
-- Only interior gap minima are anticrossings for a diabatic transfer (A-13, C-01, K-09). A gap minimum at
-  `pulse_initial` or `pulse_final` used to count as well, so a gap that rises at the start of the sweep moved the
-  passage to `x = pulse_initial` (relabelling the initial state before any evolution) and the real anticrossing later
-  in the sweep was passed adiabatically. A sweep that does not bracket an anticrossing on the way to `final_state`
-  now raises `InvalidControlParameterError`; extend the sweep, or, for a deliberately truncated passage, set the new
-  `set_control(allow_endpoint_passages=True)` (also a writable `ControlModel.allow_endpoint_passages` property,
-  default `False`), which restores the former rule.
-
-### Fixed
-
-- `Dynamics` with a callable model and `order=0` (sample-and-hold) held the wrong Hamiltonian on some intervals
-  (D-11). The decomposition sampled H through the hold coefficient at the sample times, where rounding can return the
-  previous sample, so H(pulse[k-1]) was held over [t_k, t_k+1) (e.g. at 2 of 50 uniform samples, a propagator error of
-  about 3e-2). H is now sampled at the pulse values themselves; the linear and cubic interpolations were not affected.
-- Rounding errors of a flat gap no longer count as anticrossings (C-01). A diabatic passage was made at the first
-  sample-to-sample dip, e.g. where the gap is constant in exact arithmetic but its eigenvalues carry rounding noise,
-  instead of at the real anticrossing further along. A gap minimum now counts only if its prominence (the smaller rise
-  to the bounding maxima) exceeds 1e-12 of the largest spectral bandwidth, and the first such minimum along the sweep
-  is passed, not the deepest one, so a later anticrossing of the same pair never skips an earlier one. The extent of a
-  passage ignores the same rounding errors, so a flat gap bounds it where the flat part begins. Pulses of diabatic
-  transfers with a flat or noisy gap change accordingly; smooth spectra give identical results.
-- A negative matrix-element exponent (`beta` or `dia_beta` < 0) no longer fails on, or is dominated by, transitions
-  that dH/dx does not couple (matrix element at most 1e-8 of the largest one at that grid point), e.g. levels in
-  another symmetry sector (A-12). Such a transition now contributes nothing, instead of raising
-  `MetricComputationError` for an exact zero or adding a spurious ~1e16 for a rounding error, and a true level crossing
-  on a grid point is also accepted for `beta < 0`. For `beta = 0` it still contributes `|E_n - E_m|**(-alpha)`
-  (`0**0 = 1`), so that `(alpha, beta) = (0, 0)` keeps giving a linear ramp.
-
-## [0.4.0] - 2026-10-28
-
-### Added
-
 - `dev/sync_figures.py` checks SHA-256 hashes between `dev/figures/` and `paper/Figures/`; `--sync` copies and verifies
   missing or changed figures while preserving paper-only files.
 - `Dynamics(..., options=...)` configures QuTiP solver settings for all propagation methods, including tolerances,
@@ -99,6 +66,13 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Changed
 
+- Only interior gap minima are anticrossings for a diabatic transfer (A-13, C-01, K-09). A gap minimum at
+  `pulse_initial` or `pulse_final` used to count as well, so a gap that rises at the start of the sweep moved the
+  passage to `x = pulse_initial` (relabelling the initial state before any evolution) and the real anticrossing later
+  in the sweep was passed adiabatically. A sweep that does not bracket an anticrossing on the way to `final_state`
+  now raises `InvalidControlParameterError`; extend the sweep, or, for a deliberately truncated passage, set the new
+  `set_control(allow_endpoint_passages=True)` (also a writable `ControlModel.allow_endpoint_passages` property,
+  default `False`), which restores the former rule.
 - `Dynamics.state_fidelity()` resolves the initial and the target state independently, as `populations()` does, so
   their kinds may be mixed: e.g. `state_fidelity(0, psi_target)` or `state_fidelity(final_state=rho)` (before, anything
   but two omitted, two index or two explicit states raised `ValidationError`). The docstring now states the fidelity
@@ -191,6 +165,23 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Fixed
 
+- `Dynamics` with a callable model and `order=0` (sample-and-hold) held the wrong Hamiltonian on some intervals
+  (D-11). The decomposition sampled H through the hold coefficient at the sample times, where rounding can return the
+  previous sample, so H(pulse[k-1]) was held over [t_k, t_k+1) (e.g. at 2 of 50 uniform samples, a propagator error of
+  about 3e-2). H is now sampled at the pulse values themselves; the linear and cubic interpolations were not affected.
+- Rounding errors of a flat gap no longer count as anticrossings (C-01). A diabatic passage was made at the first
+  sample-to-sample dip, e.g. where the gap is constant in exact arithmetic but its eigenvalues carry rounding noise,
+  instead of at the real anticrossing further along. A gap minimum now counts only if its prominence (the smaller rise
+  to the bounding maxima) exceeds 1e-12 of the largest spectral bandwidth, and the first such minimum along the sweep
+  is passed, not the deepest one, so a later anticrossing of the same pair never skips an earlier one. The extent of a
+  passage ignores the same rounding errors, so a flat gap bounds it where the flat part begins. Pulses of diabatic
+  transfers with a flat or noisy gap change accordingly; smooth spectra give identical results.
+- A negative matrix-element exponent (`beta` or `dia_beta` < 0) no longer fails on, or is dominated by, transitions
+  that dH/dx does not couple (matrix element at most 1e-8 of the largest one at that grid point), e.g. levels in
+  another symmetry sector (A-12). Such a transition now contributes nothing, instead of raising
+  `MetricComputationError` for an exact zero or adding a spurious ~1e16 for a rounding error, and a true level crossing
+  on a grid point is also accepted for `beta < 0`. For `beta = 0` it still contributes `|E_n - E_m|**(-alpha)`
+  (`0**0 = 1`), so that `(alpha, beta) = (0, 0)` keeps giving a linear ramp.
 - `ControlModel.print_summary()` no longer raises `UnicodeEncodeError` when the output encoding cannot represent its
   emoji status marks (e.g. a Windows console or redirected output with cp1252). The emojis are kept wherever they can
   be printed; otherwise `[OK]`, `[--]` and `->` are printed instead.
