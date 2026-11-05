@@ -111,8 +111,8 @@ class HamiltonianDecomposition:
         """
         H = self.H_d.copy()
 
-        for H_control, coefficient in zip(self.H_controls, self.coefficients, strict=False):
-            H += coefficient[index] * H_control
+        for k, H_control in enumerate(self.H_controls):
+            H += self.coefficients[k, index] * H_control
 
         return H
 
