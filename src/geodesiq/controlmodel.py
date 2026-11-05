@@ -1097,12 +1097,17 @@ class ControlModel:
         self._centered_energies = energies
         self._energy_offset = energy_offset
 
+        # The identity part of dH/dx does not change the eigenstates, but it adds to the diagonal matrix elements and
+        # would inflate the coupling scale (the largest matrix element) used to detect true crossings. It is removed
+        # here; the numerical derivative is already traceless.
         if self._affine_hamiltonian:
             assert self._H_c is not None
-            partial_H = self._H_c
+            partial_H = traceless(self._H_c)
         elif partial_H is None:
-            partial_H = stack_samples(
-                lambda value: self._call_partial_hamiltonian(**self._evaluation_kwargs(value)), self._control_pulse
+            partial_H = traceless(
+                stack_samples(
+                    lambda value: self._call_partial_hamiltonian(**self._evaluation_kwargs(value)), self._control_pulse
+                )
             )
 
         # States are followed through true level crossings by eigenvector overlap. At a crossing on a grid point the

@@ -81,7 +81,6 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   `add_subplot(111)` on top of it; a figure with several axes raises `ValidationError` and needs `ax`. This applies to
   `PulseControl.plot_pulse()`, `ControlModel.plot_eigenvalues()`, `ControlModel.plot_metric_tensor()` and
   `Dynamics.plot_populations()`, which now share one helper.
-
 - `Dynamics.state_fidelity()` and `Dynamics.time_evolution_operator(final_only=True)` (and so
   `average_gate_fidelity(final_only=True)`) output only the start and end of the pulse instead of every sample time,
   which makes them several times faster for long pulses (about 9x for 1000 samples). QuTiP's `nsteps` bounds the steps
@@ -140,7 +139,6 @@ The format is based on Keep a Changelog and the project follows Semantic Version
   fidelity from 0.969 to 0.935; on a coarse step it overshot the sampled range. The optimal pulse (`duration`) keeps the
   cubic spline, so its results are unchanged. The Hamiltonian evaluated between samples now uses the same
   interpolation as the propagation (it was always linear before).
-
 - The diabatic transition list now depends on the control value. For `initial_state != final_state` the occupied
   instantaneous eigenstate is followed along the sweep: anticrossings with the neighbouring state towards
   `final_state` are passed diabatically (`dia_alpha`, `dia_beta`) until `final_state` is reached, and all other
@@ -165,6 +163,20 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ### Fixed
 
+- An identity part of dH/dx (for example `H_c + c * I`, which leaves the eigenstates unchanged) no longer changes the
+  result. It added to the largest matrix element, the scale against which true level crossings are detected, so a
+  narrow anticrossing could be followed as a crossing and change the occupied state, the default `final_state` and the
+  metric. The derivative is now made traceless first, as the numerical one already was.
+- A transfer whose occupied state is carried past `final_state` by a true level crossing now continues towards
+  `final_state`. The direction was fixed at the start, so such a transfer was rejected or failed with an `IndexError`.
+- `PulseControl` and custom-pulse `Dynamics` reject complex samples with a non-finite imaginary part instead of
+  dropping it.
+- The `"hold"` padding of `PulseControl.filtered_pulse()` holds the end values until the slowest digital pole of the
+  filter has decayed by 1e-12. The analog estimate held far too few samples near the Nyquist frequency (9 instead of
+  about 4400 for order 1 at 0.499 fs), which changed the filtered pulse and broke its reversal symmetry. A
+  `cutoff_freq` so low that more than ten million samples would be held at each end raises `ValidationError` instead
+  of exhausting memory.
+- `CITATION.cff`: the preferred citation has the valid CFF type `article` instead of `arXiv`.
 - `Dynamics` with a callable model and `order=0` (sample-and-hold) held the wrong Hamiltonian on some intervals
   (D-11). The decomposition sampled H through the hold coefficient at the sample times, where rounding can return the
   previous sample, so H(pulse[k-1]) was held over [t_k, t_k+1) (e.g. at 2 of 50 uniform samples, a propagator error of

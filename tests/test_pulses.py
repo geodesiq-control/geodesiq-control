@@ -517,6 +517,28 @@ class TestFilterEndpointsAndResponse:
         np.testing.assert_allclose(filtered, signal.sosfiltfilt(sos, held)[hold:-hold], rtol=0, atol=1e-10)
         np.testing.assert_array_equal(odd, signal.sosfiltfilt(sos, values))
 
+    @IGNORE_MOVED_ENDPOINTS
+    def test_hold_padding_converges_near_nyquist(self):
+        # Review: the analog decay estimate held 9 samples for order 1 at 0.499 fs, but the digital pole (about -0.994)
+        # needs about 4400 to decay to 1e-12. The leftover transient broke the reversal symmetry.
+        import scipy.signal as signal
+
+        s = np.arange(201.0) - 100.0  # dt = 1; the pulse is odd about the centre
+        pulse = PulseControl(pulse=np.sin(s / 7.0) + s / 50.0, duration=200.0)
+        sos = signal.butter(1, 0.499, fs=1.0, output="sos")
+        hold = 100_000
+        held = np.concatenate((np.full(hold, pulse.pulse[0]), pulse.pulse, np.full(hold, pulse.pulse[-1])))
+
+        _, filtered = pulse.filtered_pulse(cutoff_freq=0.499, filter_order=1)
+
+        np.testing.assert_allclose(filtered, signal.sosfiltfilt(sos, held)[hold:-hold], rtol=0, atol=1e-10)
+        np.testing.assert_allclose(filtered, -filtered[::-1], atol=1e-10)
+
+    def test_hold_padding_rejects_a_cutoff_that_needs_too_many_samples(self, default_pulse):
+        # Review: the held samples grow without bound as cutoff_freq goes to zero (about 1e13 here).
+        with pytest.raises(ValidationError, match="too low for hold padding"):
+            default_pulse.filtered_pulse(cutoff_freq=1e-12)
+
     def test_a_pulse_that_is_flat_at_its_ends_keeps_its_endpoints(self):
         t = np.linspace(0.0, 10.0, 1001)
         pulse = PulseControl(pulse=np.tanh(4.0 * (t - 5.0)), duration=10.0)

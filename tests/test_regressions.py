@@ -625,6 +625,19 @@ class TestTrueCrossings:
         assert np.all(model._occupied_states == 0)
         assert model.final_state == 0
 
+    @pytest.mark.filterwarnings("ignore::geodesiq.warnings.NumericalStabilityWarning")
+    @pytest.mark.parametrize("shift", [0.0, 1e4])
+    def test_identity_part_of_the_derivative_does_not_make_an_anticrossing_a_crossing(self, shift: float):
+        # Review: the coupling scale included the identity part of dH/dx, so x * 1e4 * I (same eigenstates) made the
+        # unresolved anticrossing count as a true crossing and changed the followed state and the final state.
+        model = ControlModel(H_d=np.array([[0.0, 1e-7], [1e-7, 0.0]]), H_c=LZ_BLOCK_C + shift * np.eye(2))
+        model.set_control(pulse_initial=-1.0, pulse_final=1.1, initial_state=0, alpha=2.0, beta=2.0, num_steps=33)
+        model.solve_problem()
+
+        assert model._occupied_states is not None
+        assert np.all(model._occupied_states == 0)
+        assert model.final_state == 0
+
     def test_diabatic_transfer_through_a_crossing(self):
         # Level a = x anticrosses c = 0.5 at x = 0.5 (coupling 0.05) and crosses the uncoupled level b = -0.5 at
         # x = -0.5. From a (state 0), the crossing is followed and only the anticrossing is passed diabatically.

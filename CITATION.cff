@@ -21,7 +21,7 @@ keywords:
   - geodesic
   - quantum computing
 preferred-citation:
-  type: arXiv
+  type: article
   title: "geodesiq: a Python package for geometric diabatic–adiabatic optimal state transfer"
   authors:
     - family-names: "Fernandez-Fernandez"

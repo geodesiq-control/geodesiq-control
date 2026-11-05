@@ -26,6 +26,8 @@ class PulseControl:
 
     # Padding modes of filtered_pulse(): hold the end values, or a padtype of scipy.signal.sosfiltfilt.
     _FILTER_PADDINGS = ("hold", "odd", "even", "constant", None)
+    # Largest number of samples held at each end by the "hold" padding of filtered_pulse() (80 MB in float64).
+    _MAX_HOLD_SAMPLES = 10**7
     # Padding modes of fourier_spectrum(), mapped to the padding of scipy.signal.ShortTimeFFT.stft.
     _SPECTRUM_PADDINGS: dict[str, Literal["zeros", "edge", "even", "odd"]] = {
         "hold": "edge",
@@ -247,7 +249,8 @@ class PulseControl:
             integer, if ``padding`` or ``causal`` is invalid, or if the pulse is too short for a zero-phase filter
             without hold padding: ``sosfiltfilt`` pads ``3 * (2 * n + 1)`` samples at each end, with ``n`` the number
             of second-order sections (``3`` less for an odd order, e.g. 12 for order 3 and 15 for order 4), and needs
-            more samples than that.
+            more samples than that. Also raised if, with hold padding, ``cutoff_freq`` is so low that the filter needs
+            more than ten million held samples at each end to settle.
 
         Warns
         -----
@@ -286,10 +289,18 @@ class PulseControl:
             initial = sp.signal.sosfilt_zi(sos) * self._pulse[0]
             filtered_pulse, _ = sp.signal.sosfilt(sos, self._pulse, zi=initial)
         elif padding == "hold":
-            # Hold the end values until the impulse response has decayed by 1e-12. Its slowest pole decays at the rate
-            # 2 pi f_c sin(pi / (2 N)) of the analog Butterworth prototype.
-            decay_time = np.log(1e12) / (2 * np.pi * cutoff_freq * np.sin(np.pi / (2 * filter_order)))
-            hold = int(np.ceil(decay_time / dt))
+            # Hold the end values until the impulse response has decayed by 1e-12, set by the digital pole of largest
+            # modulus. The analog estimate is not used: the bilinear transform moves the poles towards -1 near Nyquist.
+            poles = np.concatenate([np.roots(section[3:]) for section in sos])
+            radius = float(np.max(np.abs(poles)))
+            hold = np.inf if radius >= 1 else np.ceil(np.log(1e12) / -np.log(radius))
+            if hold > self._MAX_HOLD_SAMPLES:
+                raise ValidationError(
+                    f"cutoff_freq={cutoff_freq:.5g} is too low for hold padding: the filter needs more than "
+                    f"{self._MAX_HOLD_SAMPLES} held samples at each end to settle. Use a larger cutoff_freq or "
+                    "another padding."
+                )
+            hold = int(hold)
             held = np.concatenate((np.full(hold, self._pulse[0]), self._pulse, np.full(hold, self._pulse[-1])))
             filtered_pulse = sp.signal.sosfiltfilt(sos, held, padtype="constant")[hold:-hold]
         else:

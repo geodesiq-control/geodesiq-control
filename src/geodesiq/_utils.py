@@ -237,6 +237,9 @@ def real_samples(values: np.ndarray, name: str, rtol: float = REAL_RTOL) -> np.n
     """
     if not np.iscomplexobj(values):
         return values
+    # A NaN comparison is False, so non-finite imaginary parts would otherwise pass and be dropped.
+    if not np.all(np.isfinite(values.imag)):
+        raise ValidationError(f"{name} must contain real-valued samples.")
     scale = max(float(np.max(np.abs(values.real), initial=0.0)), np.finfo(float).tiny)
     if np.max(np.abs(values.imag), initial=0.0) > rtol * scale:
         raise ValidationError(f"{name} must contain real-valued samples.")
@@ -579,8 +582,6 @@ def build_dia_list(
 
     gaps = np.diff(energies, axis=1)  # gaps[:, j] = E_{j+1} - E_j
     tolerance = gap_rtol * float(np.max(np.ptp(energies, axis=1)))
-    step = 1 if final_state > initial_state else -1
-
     # The gap between two truly crossing states has its minimum at one of the two grid points around the crossing.
     crossing_points = np.flatnonzero(np.any(state_map != np.arange(dim), axis=1))
     minima_cache: dict[int, np.ndarray] = {}
@@ -613,6 +614,8 @@ def build_dia_list(
             state = int(state_map[i, state])
         passed = False
         while state != final_state:
+            # A true crossing can carry the occupied state past final_state, so the direction is taken from it.
+            step = 1 if final_state > state else -1
             gap_index = min(state, state + step)
             if not (gap_minima(gap_index)[i] or (passed and overlaps(gap_index, i))):
                 break
@@ -622,6 +625,7 @@ def build_dia_list(
         occupied[i] = state
 
     if state != final_state:
+        step = 1 if final_state > state else -1
         hint = (
             ""
             if allow_endpoint_passages

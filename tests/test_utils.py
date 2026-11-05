@@ -16,6 +16,7 @@ from geodesiq._utils import (
     finite_difference_weights,
     follow_state,
     limit_blas_threads,
+    real_samples,
     rotate_degenerate_subspaces,
     stack_samples,
     traceless,
@@ -259,6 +260,24 @@ class TestBuildDiaList:
         assert np.all(dia_list.dense()[np.abs(x) < 0.2, 0, 1] == 1)
         assert dia_list.occupied[-1] == 2
 
+    def test_true_crossing_past_the_final_state_reverses_the_direction(self):
+        # Review: a steep level crosses both other levels between two grid points (state 0 -> 2), past final_state=1.
+        # The transfer then continues downwards at the 1-2 anticrossing at x = 1; the direction used to stay upwards
+        # and indexed a gap beyond the top level.
+        x = self.x
+        energies = np.stack([np.zeros_like(x), np.ones_like(x), 1.5 + (x - 1.0) ** 2 / 10], axis=1)
+        state_map = np.tile(np.arange(3), (x.size, 1))
+        crossing = np.flatnonzero(x > -1.0)[0]
+        state_map[crossing] = [2, 0, 1]
+
+        dia_list = build_dia_list(energies, initial_state=0, final_state=1, state_map=state_map)
+
+        passage = np.flatnonzero(dia_list.occupied == 1)[0]
+        assert np.all(dia_list.occupied[:crossing] == 0)
+        assert np.all(dia_list.occupied[crossing:passage] == 2)
+        assert x[passage] == pytest.approx(1.0, abs=x[1] - x[0])
+        assert np.all(dia_list.occupied[passage:] == 1)
+
     def test_state_map_must_match_the_energies(self):
         energies = three_level_energies(self.x, gap_01=np.full_like(self.x, 5.0))
         with pytest.raises(ValidationError, match="state_map"):
@@ -388,6 +407,20 @@ class TestStackSamples:
     def test_inconsistent_shapes_raise(self):
         with pytest.raises(ValidationError, match="same shape"):
             stack_samples(lambda x: np.eye(2 if x < 1 else 3), np.arange(3.0))
+
+
+class TestRealSamples:
+    @pytest.mark.parametrize("imaginary", [np.nan, np.inf])
+    def test_non_finite_imaginary_part_is_rejected(self, imaginary: float):
+        # Review: NaN > tolerance is False, so the NaN imaginary part was dropped silently.
+        with pytest.raises(ValidationError, match="real-valued"):
+            real_samples(np.array([1.0, complex(1.0, imaginary)]), "pulse")
+
+    def test_negligible_imaginary_part_is_dropped(self):
+        samples = real_samples(np.array([1.0 + 1e-20j, 2.0]), "pulse")
+
+        assert not np.iscomplexobj(samples)
+        np.testing.assert_array_equal(samples, [1.0, 2.0])
 
 
 class TestTraceless:
