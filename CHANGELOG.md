@@ -12,7 +12,7 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 - The example notebooks run in the browser without installation, on a JupyterLite site (xeus-python kernel with
   WebAssembly builds of NumPy, SciPy, QuTiP and Matplotlib) published to GitHub Pages from `main`. CI builds the site
-  on every push and runs the notebooks in headless Chromium (all of them on pull requests into `main`). The build is
+  on every push and runs the smoke test and the fast notebooks in headless Chromium. The build is
   in `jupyterlite/`.
 - `examples/many_body.ipynb` no longer requires QuSpin or parameterrun: without QuSpin it builds the same
   reflection-even Hamiltonian with NumPy (equal to QuSpin's to round-off), and without parameterrun it runs the

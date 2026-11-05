@@ -187,17 +187,13 @@ jobs:
       - name: Install Chromium for Playwright
         run: uv run --no-project --with playwright==1.64.1 playwright install --with-deps chromium
 
-      # The smoke test and the fast examples on every push; on the dev -> main PR also the slow ones (several minutes).
+      # The smoke test and the fast examples. dqd_model and many_body are too slow for CI in the browser; run them
+      # locally with jupyterlite/run_notebooks.py.
       - name: Run notebooks in the browser
-        env:
-          EVENT_NAME: ${{ github.event_name }}
         run: |
-          notebooks="smoke_test.ipynb landau_zener.ipynb four_level.ipynb"
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            notebooks="$notebooks dqd_model.ipynb many_body.ipynb"
-          fi
           uv run --no-project --with playwright==1.64.1 \
-            python jupyterlite/run_notebooks.py --screenshots jupyterlite-screenshots $notebooks
+            python jupyterlite/run_notebooks.py --screenshots jupyterlite-screenshots \
+            smoke_test.ipynb landau_zener.ipynb four_level.ipynb
 
       - name: Upload screenshots
         if: failure()

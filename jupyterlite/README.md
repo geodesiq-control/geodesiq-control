@@ -2,7 +2,7 @@
 
 Static site that runs the notebooks of `examples/` in the browser (JupyterLite with the xeus-python kernel and
 WebAssembly builds from emscripten-forge), with nothing installed on the user's side. CI builds it on every push, runs
-the notebooks in headless Chromium, and deploys it to GitHub Pages from `main`:
+the fast notebooks in headless Chromium, and deploys it to GitHub Pages from `main`:
 <https://geodesiq-control.github.io/geodesiq-control/>.
 
 Links to a single notebook:
