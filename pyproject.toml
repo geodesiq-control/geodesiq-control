@@ -74,6 +74,11 @@ docs = [
     "mkdocstrings[python]>=0.26",
     "ruff>=0.15.20",  # Used by mkdocstrings to format the signatures in the API reference.
 ]
+examples = [  # Executes examples/landau_zener.ipynb in CI.
+    "ipykernel==6.29.5",  # Same pin as the notebooks group.
+    "nbclient>=0.10",
+    "tqdm>=4.68.2",
+]
 notebooks = [
     "ipykernel==6.29.5", # Pinned because newer releases have caused ipywidgets regressions.
     "ipympl>=0.10.0",
@@ -91,7 +96,9 @@ dev = [
     { include-group = "build" },
     { include-group = "bench" },
     { include-group = "docs" },
+    { include-group = "examples" },
     { include-group = "notebooks" },
+    "cmocean>=4.0.3",  # Colour maps of the manuscript figures (dev/manuscript_figures.ipynb).
     "jupyterlab-code-formatter>=3.1.0",
     "jupyterlab-lsp>=5.3.0",
     "line-profiler>=5.0.2",
@@ -108,26 +115,16 @@ pattern = '__version__ = "(?P<version>[^"]+)"'
 [tool.hatch.build.targets.wheel]
 packages = ["src/geodesiq"]
 
+# An allow-list: everything else (dev/, docs/, examples/, benchmarks/, ...) stays out of the sdist. The tests are
+# shipped so that downstream packagers can run them; test_bump_version.py skips itself without dev/.
 [tool.hatch.build.targets.sdist]
 include = [
     "/src",
+    "/tests",
     "/README.md",
     "/LICENSE",
     "/CHANGELOG.md",
     "/CITATION.cff",
-]
-
-exclude = [
-    "/.github",
-    "/.idea",
-    "/.vscode",
-    "/benchmarks",
-    "/dev",
-    "/docs",
-    "/examples",
-    "/images",
-    "/tests",
-    "/dist",
 ]
 
 [tool.uv]
@@ -137,6 +134,7 @@ default-groups = ["dev"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --cov=geodesiq --cov-report=term-missing --cov-fail-under=90"
+# Unexpected GeodesiQWarnings fail the tests: see pytest_configure in tests/conftest.py.
 
 [tool.ruff]
 target-version = "py310"
@@ -144,16 +142,18 @@ line-length = 120
 src = ["src"]
 
 [tool.ruff.lint]
-select = ["E", "F", "B", "I"]
+select = ["E", "F", "B", "I", "UP"]
 
 [tool.ruff.lint.per-file-ignores]
 "*.ipynb" = ["E703"]
 
 [tool.ruff.format]
+# Only src/ is formatted; keeps editor format-on-save off the other directories
+exclude = ["tests/**", "dev/**", "examples/**", "benchmarks/**"]
 quote-style = "double"
 indent-style = "space"
 line-ending = "auto"
 
 [tool.ty.environment]
-root = ["./src"]
+root = ["./src", ".", "./benchmarks"]
 

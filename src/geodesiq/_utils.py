@@ -1,14 +1,20 @@
-from collections.abc import Iterator, Mapping, Sequence
+import sys
+from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from fractions import Fraction
-from functools import lru_cache
+from functools import cache
 from math import factorial
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from threadpoolctl import ThreadpoolController
 
-from .exceptions import ValidationError
+from .exceptions import InvalidControlParameterError, ValidationError
+
+if TYPE_CHECKING:
+    from matplotlib.axes import Axes
+    from matplotlib.figure import Figure, SubFigure
 
 
 class Flags:
@@ -30,7 +36,7 @@ class Flags:
     >>> flags["hessian"]   # False  (grandparent is down)
     """
 
-    def __init__(self, _verbose: bool = False):
+    def __init__(self, _verbose: bool = False) -> None:
         self._values: dict[str, bool] = {}
         self._parents: dict[str, list[str]] = {}
         self._children: dict[str, list[str]] = {}
@@ -68,6 +74,8 @@ class Flags:
             If *name* is already registered or any parent does not exist.
         ValueError
             If both *parent* and *parents* are given.
+        ValidationError
+            If *value* is ``True`` while a parent is ``False``.
         """
         if name in self._values:
             raise KeyError(f"Flag '{name}' is already registered.")
@@ -83,6 +91,8 @@ class Flags:
         for parent_name in normalized_parents:
             if parent_name not in self._values:
                 raise KeyError(f"Parent flag '{parent_name}' does not exist.")
+        if value:
+            self._check_parents_up(name, normalized_parents)
 
         self._values[name] = value
         self._parents[name] = normalized_parents
@@ -113,6 +123,9 @@ class Flags:
     def set(self, name: str, value: bool) -> None:
         """Set the stored value of a flag.
 
+        A flag can only be set to ``True`` while all its parents are ``True``, so that a flag never claims a result
+        whose inputs are missing. Setting it to ``False`` also sets all its descendants to ``False``.
+
         Parameters
         ----------
         name:
@@ -124,10 +137,14 @@ class Flags:
         ------
         KeyError
             If *name* is not registered.
+        ValidationError
+            If *value* is ``True`` while a parent is ``False``.
         """
         self._check_exists(name)
         if not isinstance(value, bool):
             raise TypeError("Flag values must be booleans.")
+        if value:
+            self._check_parents_up(name, self._parents[name])
         self._values[name] = value
 
         for child in self._children[name]:
@@ -172,43 +189,470 @@ class Flags:
         if name not in self._values:
             raise KeyError(f"Flag '{name}' is not registered.")
 
+    def _check_parents_up(self, name: str, parents: list[str]) -> None:
+        down = [parent for parent in parents if not self._values[parent]]
+        if down:
+            raise ValidationError(f"Flag '{name}' cannot be True while its parent flag(s) {down} are False.")
 
-# Relative tolerance for Hermiticity checks, measured against the Frobenius norm of the matrix.
+
+# Relative tolerance for Hermiticity checks, measured against the Frobenius norm of the traceless part of the matrix.
 HERMITIAN_RTOL = 1e-8
+# Allowance for the rounding of matrices with a large trace, in units of eps * ||A||_F.
+_HERMITIAN_ROUNDOFF_FACTOR = 100.0
 
 
 def is_hermitian(matrix: np.ndarray, rtol: float = HERMITIAN_RTOL) -> bool:
     """
     Check Hermiticity relative to the scale of the matrix, so the result does not depend on the energy units.
 
-    The matrix is Hermitian if ``||A - A^dagger||_F <= rtol * ||A||_F``. The zero matrix is Hermitian.
+    The matrix is Hermitian if ``||A - A^dagger||_F <= rtol * ||A_0||_F + 100 * eps * ||A||_F``, where
+    ``A_0 = A - tr(A)/d * I`` is its traceless part. Measuring against ``||A_0||`` keeps a large identity offset (which
+    does not affect the physics) from hiding a non-Hermitian part, e.g. ``1e8 * I + [[0, 1], [0.5, 0]]``. The second
+    term allows for the rounding errors of such an offset. The zero matrix is Hermitian.
     """
     array = np.asarray(matrix)
-    return bool(np.linalg.norm(array - array.conj().T) <= rtol * np.linalg.norm(array))
+    dimension = array.shape[0]
+    traceless = array - np.trace(array) / dimension * np.eye(dimension)
+    tolerance = rtol * np.linalg.norm(traceless) + _HERMITIAN_ROUNDOFF_FACTOR * np.finfo(float).eps * np.linalg.norm(
+        array
+    )
+    return bool(np.linalg.norm(array - array.conj().T) <= tolerance)
 
 
-def build_diab(initial_state: int, final_state: int, dim: int) -> np.ndarray:
-    """Build the adiabatic/diabatic transition mask with validated indices."""
-    if not isinstance(dim, int) or isinstance(dim, bool) or dim < 1:
-        raise ValidationError("dim must be a positive integer.")
+# Relative tolerance for dropping the imaginary part of real-valued samples, measured against the largest real part.
+REAL_RTOL = 1e-10
+
+
+def real_samples(values: np.ndarray, name: str, rtol: float = REAL_RTOL) -> np.ndarray:
+    """
+    Return the real part of complex samples whose imaginary part is negligible, relative to their scale.
+
+    The samples are accepted if ``max|Im| <= rtol * max(max|Re|, tiny)``, so the check does not depend on the units of
+    the samples. Real input is returned unchanged.
+
+    Raises
+    ------
+    ValidationError
+        If the imaginary part is not negligible.
+    """
+    if not np.iscomplexobj(values):
+        return values
+    # A NaN comparison is False, so non-finite imaginary parts would otherwise pass and be dropped.
+    if not np.all(np.isfinite(values.imag)):
+        raise ValidationError(f"{name} must contain real-valued samples.")
+    scale = max(float(np.max(np.abs(values.real), initial=0.0)), np.finfo(float).tiny)
+    if np.max(np.abs(values.imag), initial=0.0) > rtol * scale:
+        raise ValidationError(f"{name} must contain real-valued samples.")
+    return values.real
+
+
+def stack_samples(function: Callable[[float], Any], points: np.ndarray) -> np.ndarray:
+    """
+    Evaluate ``function`` at every point and stack the results along a new first axis, like ``np.stack``.
+
+    The results are written into one preallocated array, so the list of samples and the stacked copy of
+    ``np.stack`` do not both exist. The dtype is at least ``float`` and is widened (e.g. to complex) if a later sample
+    requires it.
+    """
+    first = np.asarray(function(points[0]))
+    stacked = np.empty((len(points), *first.shape), dtype=np.result_type(first.dtype, float))
+    stacked[0] = first
+    for index in range(1, len(points)):
+        sample = np.asarray(function(points[index]))
+        if sample.shape != first.shape:
+            raise ValidationError(
+                f"All samples must have the same shape: expected {first.shape}, got {sample.shape} at point {index}."
+            )
+        if not np.can_cast(sample.dtype, stacked.dtype, casting="safe"):
+            stacked = stacked.astype(np.result_type(stacked.dtype, sample.dtype))
+        stacked[index] = sample
+    return stacked
+
+
+def traceless(matrices: np.ndarray) -> np.ndarray:
+    """
+    Remove the trace part ``tr(H)/d * I`` from a Hermitian matrix or a stack of them (last two axes).
+
+    The trace of a Hermitian matrix is real, so its rounding-level imaginary part is dropped.
+    """
+    array = np.asarray(matrices)
+    dimension = array.shape[-1]
+    offset = np.trace(array, axis1=-2, axis2=-1).real / dimension
+    return array - offset[..., None, None] * np.eye(dimension)
+
+
+def degenerate_clusters(energies: np.ndarray, rtol: float) -> list[tuple[int, int, int]]:
+    """
+    Groups of degenerate eigenstates, as ``(grid index, first state, last state)`` with ``last > first``.
+
+    Two neighbouring levels are degenerate if their gap is at most ``rtol`` times the spectral bandwidth at that point.
+    ``energies`` are sorted in increasing order along the last axis, with shape (n_points, dim).
+    """
+    tolerance = rtol * np.ptp(energies, axis=1)
+    degenerate = np.diff(energies, axis=1) <= tolerance[:, None]
+    clusters = []
+    for point in np.flatnonzero(np.any(degenerate, axis=1)):
+        edges = np.diff(np.concatenate(([0], degenerate[point].astype(np.int8), [0])))
+        starts, stops = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+        clusters.extend((int(point), int(start), int(stop)) for start, stop in zip(starts, stops, strict=True))
+    return clusters
+
+
+def rotate_degenerate_subspaces(eigenvectors: np.ndarray, partial_H: np.ndarray, clusters: list) -> None:
+    """
+    Choose the eigenvectors of each degenerate subspace so that they diagonalize dH/dx within it (in place).
+
+    ``eigh`` returns an arbitrary basis of a degenerate subspace. At a level crossing, the basis that diagonalizes
+    dH/dx is the limit of the eigenvectors on either side, so the states continue smoothly through the crossing, and
+    the matrix element of dH/dx between two crossing states that are not coupled vanishes.
+
+    Parameters
+    ----------
+    eigenvectors : np.ndarray
+        Eigenvectors as columns, with shape (n_points, dim, dim).
+    partial_H : np.ndarray
+        dH/dx, one matrix (affine model) or one per grid point.
+    clusters : list
+        Degenerate subspaces from ``degenerate_clusters``.
+    """
+    for point, first, last in clusters:
+        vectors = eigenvectors[point, :, first : last + 1]
+        derivative = partial_H if partial_H.ndim == 2 else partial_H[point]
+        _, rotation = np.linalg.eigh(vectors.conj().T @ derivative @ vectors)
+        eigenvectors[point, :, first : last + 1] = vectors @ rotation
+
+
+def _permutation_cycles(permutation: np.ndarray) -> list[np.ndarray]:
+    """Cycles of length > 1 of a permutation of ``range(len(permutation))``."""
+    visited = np.zeros(permutation.size, dtype=bool)
+    cycles = []
+    for start in range(permutation.size):
+        cycle = []
+        index = start
+        while not visited[index]:
+            visited[index] = True
+            cycle.append(index)
+            index = int(permutation[index])
+        if len(cycle) > 1:
+            cycles.append(np.array(cycle))
+    return cycles
+
+
+def _uncoupled(matrix_elements: np.ndarray, states: np.ndarray, rtol: float) -> bool:
+    """Whether dH/dx does not couple any two of ``states``, relative to its largest matrix element at that point."""
+    block = matrix_elements[np.ix_(states, states)]
+    off_diagonal = block[~np.eye(states.size, dtype=bool)]
+    return bool(np.all(off_diagonal <= rtol * np.max(matrix_elements)))
+
+
+def crossing_map(eigenvectors: np.ndarray, matrix_elements: np.ndarray, rtol: float, chunk: int) -> np.ndarray:
+    """
+    Follow the eigenstates through true (symmetry-protected) level crossings between neighbouring grid points.
+
+    States are indexed in increasing energy at every grid point. At a true crossing, two states that dH/dx does not
+    couple exchange their energy order, so the index of each one changes. Between two grid points, the eigenvectors
+    are matched by their overlap ``|<m(i-1)|n(i)>|^2``. A change of index is accepted only if dH/dx does not couple the
+    states involved (all matrix elements between them at most ``rtol`` times the largest one, at both points);
+    otherwise it is an anticrossing that the grid does not resolve, and the states keep their energy order.
+
+    Parameters
+    ----------
+    eigenvectors : np.ndarray
+        Eigenvectors as columns, sorted by increasing energy, with shape (n_points, dim, dim).
+    matrix_elements : np.ndarray
+        ``|<m|dH/dx|n>|`` at every grid point, with shape (n_points, dim, dim).
+    rtol : float
+        Relative tolerance below which two states count as uncoupled.
+    chunk : int
+        Number of grid points whose overlaps are computed together.
+
+    Returns
+    -------
+    np.ndarray
+        Integer array with shape (n_points, dim). Entry ``[i, m]`` is the index at grid point ``i`` of the state with
+        index ``m`` at grid point ``i - 1``. Row 0, and every row without a crossing, is ``range(dim)``.
+    """
+    from scipy.optimize import linear_sum_assignment
+
+    n_points, dimension = eigenvectors.shape[:2]
+    state_map = np.tile(np.arange(dimension), (n_points, 1))
+    # A state whose overlap with itself at the previous point exceeds 1/2 has the largest overlap with itself, so its
+    # index cannot have changed. The full overlap matrix is only needed where this fails for some state.
+    candidates = []
+    for start in range(1, n_points, chunk):
+        block = slice(start, min(start + chunk, n_points))
+        previous = eigenvectors[block.start - 1 : block.stop - 1]
+        same = np.abs(np.einsum("pij,pij->pj", previous.conj(), eigenvectors[block])) ** 2
+        candidates.extend(start + np.flatnonzero(np.any(same <= 0.5, axis=1)))
+
+    for point in candidates:
+        overlap = np.abs(eigenvectors[point - 1].conj().T @ eigenvectors[point]) ** 2
+        _, permutation = linear_sum_assignment(overlap, maximize=True)
+        for cycle in _permutation_cycles(permutation):
+            if _uncoupled(matrix_elements[point - 1], cycle, rtol) and _uncoupled(
+                matrix_elements[point], permutation[cycle], rtol
+            ):
+                state_map[point, cycle] = permutation[cycle]
+    return state_map
+
+
+def follow_state(state_map: np.ndarray, state: int) -> np.ndarray:
+    """
+    Energy index of the state that starts with index ``state``, at every grid point of a ``crossing_map``.
+
+    Without true crossings, it is ``state`` everywhere.
+    """
+    occupied = np.empty(state_map.shape[0], dtype=int)
+    for point in range(state_map.shape[0]):
+        if point > 0:
+            state = int(state_map[point, state])
+        occupied[point] = state
+    return occupied
+
+
+def _rise(side: np.ndarray, value: float) -> float:
+    """How far ``side`` (ordered away from a minimum of value ``value``) rises above it before it first drops below."""
+    lower = np.flatnonzero(side < value)
+    return float(np.max(side[: lower[0] if lower.size else side.size], initial=value) - value)
+
+
+def _gap_minima(gap: np.ndarray, tolerance: float = 0.0, endpoints: bool = False) -> np.ndarray:
+    """
+    Mask of the resolved local minima of a sampled energy gap, including those at the ends of the grid if ``endpoints``.
+
+    A minimum is resolved if its prominence, the smaller of its rises to the bounding maxima on either side (on the one
+    side of an end of the grid), exceeds ``tolerance``. Dips of a flat gap at the level of rounding errors are not.
+    """
+    is_min = np.ones(gap.shape, dtype=bool)
+    # Strictly below the previous sample and not above the next one, so a flat minimum is counted once.
+    is_min[1:] &= gap[1:] < gap[:-1]
+    is_min[:-1] &= gap[:-1] <= gap[1:]
+    if not endpoints:
+        is_min[[0, -1]] = False
+    for index in np.flatnonzero(is_min):
+        sides = [side for side in (gap[index - 1 :: -1] if index > 0 else gap[:0], gap[index + 1 :]) if side.size]
+        is_min[index] = min(_rise(side, gap[index]) for side in sides) > tolerance
+    return is_min
+
+
+def _gap_basin(gap: np.ndarray, index: int, tolerance: float = 0.0) -> tuple[int, int]:
+    """
+    Grid range around a minimum of ``gap`` that is bounded by the nearest local maxima on each side.
+
+    Steps down by at most ``tolerance`` (rounding errors) do not end the range, and a flat top bounds it where it
+    begins.
+    """
+    bounds = []
+    for direction, end in ((-1, 0), (1, gap.size - 1)):
+        edge = position = index
+        while position != end and gap[position + direction] >= gap[position] - tolerance:
+            position += direction
+            if gap[position] > gap[edge] + tolerance:
+                edge = position
+        bounds.append(edge)
+    return bounds[0], bounds[1]
+
+
+# A diabatic passage is fully diabatic over this fraction of the way (along the control grid) from the anticrossing
+# minimum to the bounding gap maximum. From there to the maximum the exponents are blended smoothly into the adiabatic
+# ones.
+DIABATIC_BLEND_START = 0.5
+
+
+def _diabatic_weight(gap: np.ndarray, index: int, left: int, right: int) -> np.ndarray:
+    """
+    Diabatic weight on ``gap[left:right + 1]`` around the anticrossing at ``index``.
+
+    The weight is 1 near the anticrossing and decreases smoothly (C1 smoothstep along the grid) to 0 at the bounding
+    gap maxima. Edges at the ends of the grid are not maxima of the gap, so the weight is not reduced towards them.
+    """
+    weight = np.ones(right - left + 1)
+    for edge in (left, right):
+        if edge in (0, gap.size - 1) or edge == index:
+            continue
+        lo, hi = min(edge, index), max(edge, index)
+        distance = np.abs(np.arange(lo, hi + 1) - index) / abs(edge - index)
+        t = np.clip((distance - DIABATIC_BLEND_START) / (1.0 - DIABATIC_BLEND_START), 0.0, 1.0)
+        side = weight[lo - left : hi - left + 1]
+        np.minimum(side, 1.0 - t * t * (3.0 - 2.0 * t), out=side)
+    return weight
+
+
+@dataclass(frozen=True)
+class DiabaticList:
+    """
+    Adiabatic fraction of the transitions out of the occupied eigenstate along the control grid.
+
+    Only these transitions enter the metric, so the list stores one row per grid point instead of a full
+    (n_points, dim, dim) matrix.
+
+    Attributes
+    ----------
+    occupied : np.ndarray
+        Index of the occupied instantaneous eigenstate at each grid point, with shape (n_points,).
+    adiabatic_fraction : np.ndarray
+        Shape (n_points, dim). Entry ``[i, n]`` is ``1`` if the transition from ``occupied[i]`` to state ``n`` is
+        adiabatic at grid point ``i``, ``0`` if it is diabatic, and a value in between where the two are blended. The
+        entry of the occupied state itself is ``-1``.
+    """
+
+    occupied: np.ndarray
+    adiabatic_fraction: np.ndarray
+
+    def dense(self) -> np.ndarray:
+        """
+        Expand to the full transition matrix with shape (n_points, dim, dim), e.g. for plotting.
+
+        Entry ``[i, m, n]`` is the adiabatic fraction of the transition between ``m`` and ``n`` if one of them is the
+        occupied state, and ``-1`` otherwise (including the diagonal).
+        """
+        n_points, dim = self.adiabatic_fraction.shape
+        points = np.arange(n_points)
+        matrix = -np.ones((n_points, dim, dim), dtype=float)
+        matrix[points, self.occupied, :] = self.adiabatic_fraction
+        matrix[points, :, self.occupied] = self.adiabatic_fraction
+        return matrix
+
+
+def build_dia_list(
+    energies: np.ndarray,
+    initial_state: int,
+    final_state: int,
+    state_map: np.ndarray | None = None,
+    allow_endpoint_passages: bool = False,
+    gap_rtol: float = 1e-12,
+) -> DiabaticList:
+    """
+    Build the adiabatic/diabatic transition mask along the control grid.
+
+    The occupied instantaneous eigenstate starts in ``initial_state`` and is followed along the grid, also through true
+    level crossings given by ``state_map``, where it changes its energy index without a diabatic passage. At every
+    anticrossing (resolved interior local minimum of the gap, see ``gap_rtol``) between the occupied state ``k`` and its
+    neighbour ``k + d``, with ``d = sign(final_state - initial_state)``, the passage is diabatic and the occupied state
+    becomes ``k + d``. The first such anticrossing along the sweep is passed, not the deepest one, so that a later
+    anticrossing of the same pair does not skip an earlier one. All
+    other anticrossings, including those back away from ``final_state`` and all anticrossings after reaching it, are
+    passed adiabatically. A diabatic passage only acts inside its anticrossing: between the closest maxima of the
+    corresponding gap, and the exponents are blended smoothly into the adiabatic ones towards those maxima (see
+    ``DIABATIC_BLEND_START``). Overlapping anticrossings, as in a fan of levels crossing at one point, are passed
+    together: if the next gap has no minimum ahead but the grid point of a passage is still inside its last
+    anticrossing, that anticrossing is passed at the same point.
+
+    Parameters
+    ----------
+    energies : np.ndarray
+        Eigenenergies sorted in increasing order, with shape (n_points, dim), sampled in the sweep direction.
+    initial_state, final_state : int
+        Indices of the instantaneous eigenstates at the start and at the end of the sweep.
+    state_map : np.ndarray | None
+        True level crossings, as returned by ``crossing_map``. The gap minima of a true crossing are not anticrossings.
+        ``None`` means that there are no true crossings.
+    allow_endpoint_passages : bool
+        Also pass diabatically where the gap has its minimum at an end of the grid, i.e. an anticrossing that the sweep
+        does not bracket. A passage at the start relabels the initial state before any evolution: its transitions never
+        enter the metric. By default only interior minima are anticrossings.
+    gap_rtol : float
+        A gap minimum is an anticrossing only if its prominence (the smaller rise to the bounding maxima) exceeds
+        ``gap_rtol`` times the largest spectral bandwidth on the grid. Shallower dips, e.g. rounding errors of a flat
+        gap, are ignored, also when the extent of a passage is determined.
+
+    Returns
+    -------
+    DiabaticList
+        The occupied state at each grid point and the adiabatic fraction of the transitions out of it, with shapes
+        (n_points,) and (n_points, dim). ``DiabaticList.dense()`` expands it to a (n_points, dim, dim) matrix.
+
+    Raises
+    ------
+    InvalidControlParameterError
+        If ``final_state`` cannot be reached through anticrossings that lead towards it.
+    """
+    energies = np.asarray(energies, dtype=float)
+    if energies.ndim != 2 or energies.shape[0] < 2:
+        raise ValidationError("energies must have shape (n_points, dim) with at least two points.")
+    n_points, dim = energies.shape
     for label, state in (("initial_state", initial_state), ("final_state", final_state)):
-        if not isinstance(state, int) or isinstance(state, bool) or not 0 <= state < dim:
+        if not isinstance(state, (int, np.integer)) or isinstance(state, bool) or not 0 <= state < dim:
             raise ValidationError(f"{label} must be an integer in [0, {dim - 1}].")
-    diad_list = -1 * np.eye(dim, dtype=int)  # Diagonal entries are -1 by default
 
-    min_state = min(initial_state, final_state)
-    max_state = max(initial_state, final_state)
+    if state_map is None:
+        state_map = np.tile(np.arange(dim), (n_points, 1))
+    elif state_map.shape != energies.shape:
+        raise ValidationError("state_map must have the same shape as energies.")
 
-    for i in range(dim):
-        for j in range(i + 1, dim):
-            if min_state <= i <= max_state and min_state <= j <= max_state:
-                diad_list[i, j] = 0
-                diad_list[j, i] = 0
-            else:
-                diad_list[i, j] = 1
-                diad_list[j, i] = 1
+    gaps = np.diff(energies, axis=1)  # gaps[:, j] = E_{j+1} - E_j
+    tolerance = gap_rtol * float(np.max(np.ptp(energies, axis=1)))
+    # The gap between two truly crossing states has its minimum at one of the two grid points around the crossing.
+    crossing_points = np.flatnonzero(np.any(state_map != np.arange(dim), axis=1))
+    minima_cache: dict[int, np.ndarray] = {}
 
-    return diad_list
+    def gap_minima(gap_index: int) -> np.ndarray:
+        # Computed only for the gaps that the occupied state meets.
+        if gap_index not in minima_cache:
+            minima = _gap_minima(gaps[:, gap_index], tolerance, allow_endpoint_passages)
+            for point in crossing_points:
+                moved = state_map[point] != np.arange(dim)
+                if moved[gap_index] and moved[gap_index + 1]:
+                    minima[point - 1 : point + 1] = False
+            minima_cache[gap_index] = minima
+        return minima_cache[gap_index]
+
+    def overlaps(gap_index: int, index: int) -> bool:
+        # The anticrossing of this gap overlaps with a passage at ``index``: its last minimum is behind ``index``,
+        # no minimum lies ahead and ``index`` is still inside the anticrossing (no maximum in between).
+        minima = np.flatnonzero(gap_minima(gap_index))
+        if minima.size == 0 or minima[-1] >= index:
+            return False
+        return _gap_basin(gaps[:, gap_index], int(minima[-1]), tolerance)[1] >= index
+
+    # Follow the occupied state along the grid. It changes at the minimum of each diabatic anticrossing.
+    occupied = np.empty(n_points, dtype=int)
+    passages: list[tuple[int, int, int]] = []  # (grid index, state before, state after)
+    state = initial_state
+    for i in range(n_points):
+        if i > 0:
+            state = int(state_map[i, state])
+        passed = False
+        while state != final_state:
+            # A true crossing can carry the occupied state past final_state, so the direction is taken from it.
+            step = 1 if final_state > state else -1
+            gap_index = min(state, state + step)
+            if not (gap_minima(gap_index)[i] or (passed and overlaps(gap_index, i))):
+                break
+            passages.append((i, state, state + step))
+            state += step
+            passed = True
+        occupied[i] = state
+
+    if state != final_state:
+        step = 1 if final_state > state else -1
+        hint = (
+            ""
+            if allow_endpoint_passages
+            else " Extend the sweep so that pulse_initial and pulse_final bracket the anticrossing, or, for a "
+            "deliberately truncated passage at an end of the sweep, set allow_endpoint_passages=True."
+        )
+        raise InvalidControlParameterError(
+            f"final_state={final_state} cannot be reached from initial_state={initial_state}: following the "
+            f"anticrossings towards final_state, the sweep ends in state {state}. No anticrossing between states "
+            f"{state} and {state + step} follows.{hint}"
+        )
+
+    # Every transition from the occupied state is adiabatic unless it belongs to a diabatic anticrossing.
+    fraction = np.ones((n_points, dim), dtype=float)
+    fraction[np.arange(n_points), occupied] = -1
+
+    for index, before, after in passages:
+        gap = gaps[:, min(before, after)]
+        left, right = _gap_basin(gap, index, tolerance)
+        window = np.arange(left, right + 1)
+        adiabatic_fraction = 1.0 - _diabatic_weight(gap, index, left, right)
+        # Inside the anticrossing the occupied state is one of the pair; the transition is to the other one.
+        for source, target in ((before, after), (after, before)):
+            on_source = occupied[window] == source
+            fraction[window[on_source], target] = adiabatic_fraction[on_source]
+
+    return DiabaticList(occupied=occupied, adiabatic_fraction=fraction)
 
 
 # -----------------------------------
@@ -253,6 +697,41 @@ def validate_state_index(index: int, dimension: int, name: str) -> int:
 
 
 # -----------------------------------
+# Plotting
+# -----------------------------------
+def figure_and_axes(fig: "Figure | SubFigure | None", ax: "Axes | None") -> "tuple[Figure | SubFigure, Axes]":
+    """
+    Return the figure and axis to plot on, creating whichever is missing.
+
+    A given ``ax`` takes precedence and its parent figure is returned. A given ``fig`` without axes gets a new one; a
+    figure that already has a single axis is drawn on that axis (instead of stacking an overlapping one on top), and a
+    figure with several axes needs ``ax`` to choose one. Any other type of ``fig`` or ``ax`` raises ``ValidationError``,
+    instead of a silent ``None`` result (e.g. for a figure passed positionally as ``ax``).
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.axes import Axes
+    from matplotlib.figure import Figure, SubFigure
+
+    if ax is not None:
+        if not isinstance(ax, Axes):
+            raise ValidationError(f"ax must be a matplotlib Axes or None, got {type(ax).__name__}.")
+        fig = ax.figure
+    elif fig is None:
+        fig, ax = plt.subplots()
+    elif isinstance(fig, (Figure, SubFigure)):
+        if not fig.axes:
+            ax = fig.add_subplot(111)
+        elif len(fig.axes) == 1:
+            ax = fig.axes[0]
+        else:
+            raise ValidationError(f"fig has {len(fig.axes)} axes; pass the one to draw on as ax.")
+    else:
+        raise ValidationError(f"fig must be a matplotlib Figure, SubFigure or None, got {type(fig).__name__}.")
+    assert fig is not None
+    return fig, ax
+
+
+# -----------------------------------
 # Linear algebra threading
 # -----------------------------------
 # Largest matrix dimension for which batched dense linear algebra runs single-threaded. Many small, independent
@@ -261,15 +740,31 @@ def validate_state_index(index: int, dimension: int, name: str) -> int:
 SMALL_MATRIX_DIMENSION = 256
 
 
-@lru_cache(maxsize=1)
+# The controller and the number of imported modules when it was created.
+_controller_cache: dict[str, Any] = {"controller": None, "modules": -1}
+
+
 def _threadpool_controller() -> ThreadpoolController:
-    # Inspecting the loaded BLAS libraries is slow, so it is done once and reused.
-    return ThreadpoolController()
+    # Inspecting the loaded BLAS libraries takes about 10 ms, so the controller is reused. It is re-created when modules
+    # have been imported since, because an import (e.g. torch) can load another BLAS library, which a controller created
+    # earlier would not limit. Counting sys.modules costs about a microsecond.
+    modules = len(sys.modules)
+    if _controller_cache["controller"] is None or _controller_cache["modules"] != modules:
+        _controller_cache["controller"] = ThreadpoolController()
+        _controller_cache["modules"] = modules
+    return _controller_cache["controller"]
 
 
 @contextmanager
-def limit_blas_threads(dimension: int) -> Iterator[None]:
-    """Run BLAS/LAPACK single-threaded inside the context if ``dimension`` is small, otherwise leave it untouched."""
+def limit_blas_threads(dimension: int) -> Generator[None, None, None]:
+    """
+    Run BLAS/LAPACK single-threaded inside the context if ``dimension`` is small, otherwise leave it untouched.
+
+    For small matrices, the threading overhead of BLAS outweighs its gain. The limit is set through ``threadpoolctl``,
+    which changes the thread count of the BLAS libraries themselves: while the context is active it applies to the
+    whole process, so BLAS calls made from other threads at the same time also run single-threaded. BLAS libraries
+    loaded by a later import are included; a library loaded without an import (e.g. through ``ctypes``) is not.
+    """
     if dimension <= SMALL_MATRIX_DIMENSION:
         with _threadpool_controller().limit(limits=1, user_api="blas"):
             yield
@@ -280,7 +775,7 @@ def limit_blas_threads(dimension: int) -> Iterator[None]:
 # -----------------------------------
 # Finite differences
 # -----------------------------------
-@lru_cache(maxsize=None)
+@cache
 def finite_difference_weights(offsets: tuple[int, ...]) -> np.ndarray:
     """
     Weights of the first-derivative finite-difference stencil on integer ``offsets`` (in units of the grid step).
@@ -306,6 +801,10 @@ def finite_difference_weights(offsets: tuple[int, ...]) -> np.ndarray:
     return weights
 
 
+# Size of the pieces in which uniform_grid_derivative forms its weighted sums.
+_DERIVATIVE_CHUNK_BYTES = 2**22
+
+
 def uniform_grid_derivative(samples: np.ndarray, step: float, n_points: int) -> np.ndarray:
     """
     First derivative along axis 0 of samples taken on a uniform grid with spacing ``step``.
@@ -323,11 +822,16 @@ def uniform_grid_derivative(samples: np.ndarray, step: float, n_points: int) -> 
     starts = np.clip(np.arange(n) - half, 0, n - n_points)
     relative = starts - np.arange(n)
     boundaries = np.flatnonzero(np.diff(relative)) + 1
+    # Rows per piece, so that the temporary ``weight * samples[...]`` stays small for large matrices.
+    rows = max(1, _DERIVATIVE_CHUNK_BYTES // max(1, derivative[0].nbytes))
     for block in np.split(np.arange(n), boundaries):
         first, last = int(block[0]), int(block[-1]) + 1
         offsets = tuple(int(relative[first]) + j for j in range(n_points))
         weights = finite_difference_weights(offsets)
-        for offset, weight in zip(offsets, weights, strict=True):
-            derivative[first:last] += weight * samples[first + offset : last + offset]
+        for lo in range(first, last, rows):
+            hi = min(lo + rows, last)
+            for offset, weight in zip(offsets, weights, strict=True):
+                derivative[lo:hi] += weight * samples[lo + offset : hi + offset]
 
-    return derivative / step
+    derivative /= step
+    return derivative

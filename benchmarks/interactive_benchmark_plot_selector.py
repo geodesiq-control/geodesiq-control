@@ -28,9 +28,10 @@ single dataset or compare A vs B.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import TYPE_CHECKING, Any
 
 import ipywidgets as widgets
 import matplotlib as mpl
@@ -40,12 +41,15 @@ import numpy as np
 import pandas as pd
 from IPython.display import clear_output, display
 
+if TYPE_CHECKING:
+    from matplotlib.typing import RcKeyType
+
 # ---------------------------------------------------------------------------
 # Module-level constants
 # ---------------------------------------------------------------------------
 
 # Matplotlib style overrides applied via rc_context around every figure.
-_RC: dict[str, Any] = {"font.family": "serif", "font.size": 10, "axes.labelsize": 11, "axes.titlesize": 11,
+_RC: dict[RcKeyType, Any] = {"font.family": "serif", "font.size": 10, "axes.labelsize": 11, "axes.titlesize": 11,
                        "axes.titleweight": "bold", "legend.fontsize": 7.5, "legend.framealpha": 0.85, "figure.dpi": 150,
                        "lines.linewidth": 1.8, "lines.markersize": 5, }
 

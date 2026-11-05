@@ -1,6 +1,7 @@
 import pytest
 
 from geodesiq._utils import Flags
+from geodesiq.exceptions import ValidationError
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -179,6 +180,50 @@ class TestPropagation:
         f["B"] = False
         assert f["C"] is False
         assert f["D"] is False
+
+
+# ---------------------------------------------------------------------------
+# A flag is never True while a parent is False (C-13)
+# ---------------------------------------------------------------------------
+
+
+class TestParentInvariant:
+    def test_setting_child_true_with_parent_false_raises(self, simple_flags):
+        simple_flags["A"] = False
+
+        with pytest.raises(ValidationError, match=r"'B' cannot be True while its parent flag\(s\) \['A'\]"):
+            simple_flags["B"] = True
+        assert simple_flags["B"] is False
+
+    def test_setting_child_true_requires_every_parent(self):
+        f = Flags()
+        f.add("A", value=True)
+        f.add("B")
+        f.add("C", parents=["A", "B"])
+
+        with pytest.raises(ValidationError, match=r"\['B'\]"):
+            f["C"] = True
+        f["B"] = True
+        f["C"] = True
+        assert f["C"] is True
+
+    def test_children_can_be_set_true_in_order(self, simple_flags):
+        simple_flags["A"] = False
+        for name in ("A", "B", "C"):
+            simple_flags[name] = True
+        assert simple_flags.all() is True
+
+    def test_adding_a_true_flag_below_a_false_parent_raises(self):
+        f = Flags()
+        f.add("A")
+
+        with pytest.raises(ValidationError, match="cannot be True"):
+            f.add("B", value=True, parent="A")
+
+    def test_setting_false_is_always_allowed(self, simple_flags):
+        simple_flags["A"] = False
+        simple_flags["C"] = False
+        assert simple_flags["C"] is False
 
 
 # ---------------------------------------------------------------------------

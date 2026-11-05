@@ -1,0 +1,45 @@
+{
+  "title": "geodesiq: a Python package for geometric diabatic–adiabatic optimal state transfer",
+  "upload_type": "software",
+  "description": "<p>We introduce the <a href=\"https://github.com/geodesiq-control/geodesiq-control\">geodesiq</a> Python package, which implements a geometric framework for shaping control pulses that achieve high-fidelity state transfer in multilevel quantum systems. The underlying method combines adiabatic and diabatic control in a single metric, which suppresses unwanted excitations while allowing selected diabatic passages. Finding the pulse thereby reduces to solving a single first-order ordinary differential equation. We explain how to use geodesiq and illustrate it with Landau–Zener transitions, spin-qubit initialization, adiabatic many-body ground-state preparation, and a diabatic–adiabatic transfer in a four-level system.</p>",
+  "creators": [
+    {
+      "name": "Fernández Fernández, David",
+      "affiliation": "University of Augsburg",
+      "orcid": "0000-0001-7163-8464"
+    },
+    {
+      "name": "Ventura Meinersen, Christian",
+      "affiliation": "Delft University of Technology",
+      "orcid": "0009-0006-0300-9379"
+    },
+    {
+      "name": "Rimbach-Russ, Maximilian",
+      "affiliation": "QuTech, TU Delft",
+      "orcid": "0000-0001-9775-0323"
+    },
+    {
+      "name": "Platero, Gloria",
+      "affiliation": "Instituto de Ciencia de Materiales de Madrid; Quantum Advanced Research Center QUARC-CSIC",
+      "orcid": "0000-0001-8610-0675"
+    }
+  ],
+  "keywords": [
+    "Python",
+    "Quantum state transfer",
+    "Adiabatic transfer",
+    "Quantum Optimal Control"
+  ],
+  "license": "lgpl-2.1",
+  "access_right": "open",
+  "language": "eng",
+  "notes": "Funding: G.P. and D.F.-F. acknowledge support from the Spanish Ministry of Science through grant PID2023-149072NBI00 and from the CSIC Research Platform PTI-001. M.R.-R. and C.V.-M. acknowledge that the EU partly supported this research through the Horizon Europe QLSI2 project and was partly sponsored by the Army Research Office under Award Number W911NF-23-1-0110. M.R.-R. acknowledges support from the Dutch Research Council (NWO) under Award Number Vidi TTW 22204.",
+  "custom": {
+    "code:codeRepository": "https://github.com/geodesiq-control/geodesiq-control",
+    "code:programmingLanguage": [
+      {"id": "python"},
+      {"id": "jupyter_notebook"}
+    ],
+    "code:developmentStatus": {"id": "active"}
+  }
+}

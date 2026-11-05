@@ -12,23 +12,23 @@ pip install geodesiq
 
 ## Example
 
-The two-level Landau-Zener problem $H[z(t)] = z(t)\,\sigma_z + x\,\sigma_x$ with control parameter $z(t)$:
+The two-level Landau–Zener problem $H(z(t)) = z(t)\,\sigma^z + \Delta\,\sigma^x$ with control parameter $z(t)$ and coupling $\Delta$:
 
 ```python
 import numpy as np
 from geodesiq import ControlModel, Dynamics
 
 
-def H_fun(x, z):
-    return np.array([[z, x], [x, -z]])
+def H_fun(delta, z):
+    return np.array([[z, delta], [delta, -z]])
 
 
-def H_partial(x, z):
+def H_partial(delta, z):
     return np.array([[1, 0], [0, -1]])
 
 
 model = ControlModel(H_fun, H_partial)
-model.set_parameters(x=1)
+model.set_parameters(delta=1)
 model.set_control(control_name="z", pulse_initial=-10, pulse_final=10, initial_state=0, alpha=2, beta=2)
 model.solve_problem()
 
@@ -38,8 +38,9 @@ pulse = model.synthesize_pulse(duration=duration)
 dynamics = Dynamics(model, duration=duration)
 print(dynamics.state_fidelity())  # 0.999791
 
-times, filtered = pulse.filtered_pulse(cutoff_freq=2.0)
-print(Dynamics(model, times=times, pulse=filtered).state_fidelity())  # 0.999960
+times, filtered = pulse.filtered_pulse(cutoff_freq=2.0)  # warns that the endpoints moved to -9.29 and 9.29
+# Dynamics warns too: the target is still the eigenstate at z = 10, not at the moved endpoint
+print(Dynamics(model, times=times, pulse=filtered).state_fidelity())  # 0.999997
 ```
 
 If the Hamiltonian is affine in the control, `H(z) = H_d + z H_c`, pass the matrices instead of a function,
@@ -51,9 +52,13 @@ If the Hamiltonian is affine in the control, `H(z) = H_d + z H_c`, pass the matr
   contracts.
 - The API reference documents every public class and function.
 - The [`examples/`](https://github.com/geodesiq-control/geodesiq-control/tree/main/examples) notebooks cover the
-  Landau-Zener, double-quantum-dot and many-body problems.
+  Landau-Zener, double-quantum-dot, many-body and four-level diabatic–adiabatic problems. They can be
+  [run in the browser](https://geodesiq-control.github.io/geodesiq-control/lab/index.html?path=landau_zener.ipynb)
+  without installing anything; locally they additionally need
+  `pip install jupyterlab tqdm joblib parameterrun quspin` (`parameterrun` and `quspin` are optional).
 
 ## Citing geodesiq
 
 If you use `geodesiq` in your research, please cite it. The citation metadata is in
 [`CITATION.cff`](https://github.com/geodesiq-control/geodesiq-control/blob/main/CITATION.cff).
+Each release is archived on Zenodo with its own DOI.

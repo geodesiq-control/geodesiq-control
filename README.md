@@ -16,10 +16,7 @@
 [![Coverage Status](https://coveralls.io/repos/github/geodesiq-control/geodesiq-control/badge.svg?branch=dev)](https://coveralls.io/github/geodesiq-control/geodesiq-control?branch=dev)
 [![PyPI - License](https://img.shields.io/pypi/l/geodesiq)](https://opensource.org/license/lgpl-2-1)
 [![PyPI Downloads](https://api.pepy.tech/badge/geodesiq/month?left_text=downloads%20%7C%20pip)](https://pypi.org/project/geodesiq/)
-
-[//]: # ([![Coverage Status]&#40;https://img.shields.io/coveralls/qutip/qutip.svg?logo=Coveralls&#41;]&#40;https://coveralls.io/r/qutip/qutip&#41;)
-[//]: # ([![Maintainability]&#40;https://api.codeclimate.com/v1/badges/df502674f1dfa1f1b67a/maintainability&#41;]&#40;https://codeclimate.com/github/qutip/qutip/maintainability&#41;)
-
+[![Try it in your browser](https://jupyterlite.rtfd.io/en/latest/_static/badge.svg)](https://geodesiq-control.github.io/geodesiq-control/lab/index.html?path=landau_zener.ipynb)
 
 ---
 [Installation](#installation) | [Example code](#example-code) | [Documentation](https://geodesiq.readthedocs.io) |
@@ -42,8 +39,8 @@ pip install geodesiq
 
 # Example code
 
-Here is an example code based on the two-level Landau-Zener problem $H[z (t)]=z (t)\sigma_z+x \sigma_x$ with control
-parameter $z (t)$. To compute the optimal pulse, you define the Hamiltonian and, optionally, its partial derivative with
+Here is an example code based on the two-level Landau–Zener problem $H(z(t))=z(t)\sigma^z+\Delta\sigma^x$ with control
+parameter $z(t)$ and coupling $\Delta$. To compute the optimal pulse, you define the Hamiltonian and, optionally, its partial derivative with
 respect to the control parameter.
 
 ```python
@@ -52,11 +49,11 @@ from geodesiq import ControlModel, Dynamics
 
 
 # ----- Define the Hamiltonian and its derivative -----
-def H_fun(x, z):
-    return np.array([[z, x], [x, -z]])
+def H_fun(delta, z):
+    return np.array([[z, delta], [delta, -z]])
 
 
-def H_partial(x, z):
+def H_partial(delta, z):
     return np.array([[1, 0], [0, -1]])
 
 
@@ -65,11 +62,11 @@ model = ControlModel(H_fun, H_partial)
 # ----- Set system and control parameters -----
 alpha = 2
 beta = 2
-x = 1
+delta = 1
 z0 = -10
 zf = -z0
 
-model.set_parameters(x=x)
+model.set_parameters(delta=delta)
 model.set_control(control_name='z', pulse_initial=z0, pulse_final=zf, initial_state=0, alpha=alpha, beta=beta)
 
 # ----- Solve for optimal pulse -----
@@ -84,9 +81,11 @@ dynamics = Dynamics(model, duration=duration)
 print(f"Optimal pulse fidelity:  {dynamics.state_fidelity():.6f}")  # 0.999791
 
 # ----- ... or by a low-pass filtered version of it -----
+# (warns that the filter moves the steep endpoints of the pulse, here to -9.29 and 9.29, and Dynamics warns that
+# the fidelity is still measured against the eigenstates at z0 and zf)
 times, filtered = pulse.filtered_pulse(cutoff_freq=2.0)
 filtered_dynamics = Dynamics(model, times=times, pulse=filtered)
-print(f"Filtered pulse fidelity: {filtered_dynamics.state_fidelity():.6f}")  # 0.999960
+print(f"Filtered pulse fidelity: {filtered_dynamics.state_fidelity():.6f}")  # 0.999997
 
 # ----- Compare with a linear ramp of the same duration -----
 ramp = Dynamics(model, times=times, pulse=np.linspace(z0, zf, times.size))
@@ -97,6 +96,25 @@ If the Hamiltonian is affine in the control, `H(z) = H_d + z H_c`, pass the two 
 `ControlModel(H_d=..., H_c=...)`, which is considerably faster. More examples are available in the
 [`examples/`](https://github.com/geodesiq-control/geodesiq-control/tree/main/examples) notebooks.
 
+The notebooks also run in the browser, with nothing to install, through
+[JupyterLite](https://geodesiq-control.github.io/geodesiq-control/lab/index.html?path=landau_zener.ipynb):
+[Landau–Zener](https://geodesiq-control.github.io/geodesiq-control/notebooks/index.html?path=landau_zener.ipynb),
+[double quantum dot](https://geodesiq-control.github.io/geodesiq-control/notebooks/index.html?path=dqd_model.ipynb),
+[many-body](https://geodesiq-control.github.io/geodesiq-control/notebooks/index.html?path=many_body.ipynb) and
+[four-level](https://geodesiq-control.github.io/geodesiq-control/notebooks/index.html?path=four_level.ipynb). The
+browser runs Python on a single thread, about half as fast as a local installation, and changes are kept only in the
+browser's storage.
+
+Locally, the notebooks need a few packages that `pip install geodesiq` does not install: `tqdm` (Landau–Zener),
+`joblib` (double quantum dot), and optionally `parameterrun` and `quspin` (many-body; without them it builds the
+Hamiltonian with NumPy and runs the sweep sequentially). To run all of them:
+
+```bash
+pip install jupyterlab tqdm joblib parameterrun quspin
+```
+
+In a clone of the repository, `uv sync --group notebooks` installs them as well.
+
 ## Public API
 
 Top-level imports are intentionally kept small and explicit:
@@ -104,11 +122,28 @@ Top-level imports are intentionally kept small and explicit:
 - `ControlModel`: Hamiltonian, eigensystem, geodesic metric and optimal (dimensionless) control pulse.
 - `PulseControl`: the pulse at a physical duration; resampling, spectrum, filtering, plotting and export.
 - `Dynamics`: closed- or open-system time evolution driven by the optimal pulse or any custom pulse.
-- `decompose_hamiltonian`: SVD decomposition of a sampled time-dependent Hamiltonian into a QuTiP `QobjEvo`.
+- `decompose_hamiltonian`: SVD decomposition of a sampled time-dependent Hamiltonian into a QuTiP `QobjEvo`,
+  returned as a `HamiltonianDecomposition`.
 - `about`: version and environment information.
 - `GeodesiQError` and the typed exception hierarchy
 - `GeodesiQWarning` and related warnings
 - `__version__`
+
+`model.tau` returns the normalized time grid, `tau = t / t_f`, corresponding to `model.control_sol`.
+
+Diabatic transfers require resolved anticrossings inside the control sweep. For a deliberately truncated passage,
+`model.set_control(allow_endpoint_passages=True)` also accepts gap minima at the endpoints.
+Uncoupled transitions contribute nothing for negative matrix-element exponents; zero exponents retain `0**0 = 1`.
+
+`pulse.fourier_spectrum()` returns a one-sided amplitude spectrum and holds the pulse's endpoint values in boundary
+windows. Use `padding="zeros"` for zero padding and `mfft` to sample the frequency axis more finely.
+
+Use `Dynamics(..., options={"atol": 1e-10, "rtol": 1e-8, "nsteps": 10000})` to configure QuTiP propagation;
+`options=None` keeps its numerical defaults. The [user guide](https://geodesiq.readthedocs.io/en/latest/api/#dynamics-solver-accuracy)
+explains convergence checks, internal step limits and solver errors.
+For a callable Hamiltonian that is nonlinear in the control and a custom pulse with few samples,
+`Dynamics(..., exact_hamiltonian=True)` evaluates `H(x(t))` at every solver step instead of interpolating its
+decomposition; `Dynamics.interpolation_error` estimates the difference, and a warning is emitted when it matters.
 
 The user guide and the full API reference are available at [geodesiq.readthedocs.io](https://geodesiq.readthedocs.io).
 
@@ -117,15 +152,28 @@ The user guide and the full API reference are available at [geodesiq.readthedocs
 If you use `geodesiq` in your research, please cite it. The citation metadata is in
 [`CITATION.cff`](https://github.com/geodesiq-control/geodesiq-control/blob/main/CITATION.cff), and GitHub's
 "Cite this repository" button exports it as BibTeX or APA.
+Each release is archived on Zenodo with its own DOI.
 
 ## Development
+
+Check that generated figures in `dev/figures/` match the local manuscript clone in `paper/Figures/` by SHA-256:
+
+```bash
+python dev/sync_figures.py --check
+python dev/sync_figures.py --sync
+```
+
+The default is a read-only check (exit code 1 for missing or changed figures, 2 for errors).
+`--sync` copies missing or changed files and verifies their hashes; paper-only files are preserved.
+Both directories must exist. Pull the manuscript clone before syncing and review its diff before pushing to Overleaf.
+Use `--source` and `--destination` to override the directories; defaults work from any working directory.
 
 Use the following checks before submitting changes:
 
 ```bash
 uv run ruff check src tests
 uv run ruff format --check src
-uv run ty check src
+uv run ty check src tests
 uv run pytest
 uv run mkdocs build --strict
 uv run python -m build

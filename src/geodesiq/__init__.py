@@ -3,7 +3,7 @@
 from ._meta import __version__
 from .about import about
 from .controlmodel import ControlModel
-from .decompose_hamiltonian import decompose_hamiltonian
+from .decompose_hamiltonian import HamiltonianDecomposition, decompose_hamiltonian
 from .dynamics import Dynamics
 from .exceptions import (
     ComputationError,
@@ -19,7 +19,12 @@ from .exceptions import (
     ValidationError,
 )
 from .pulses import PulseControl
-from .warnings import ExperimentalFeatureWarning, GeodesiQWarning, NumericalStabilityWarning, PerformanceWarning
+from .warnings import (
+    ExperimentalFeatureWarning,
+    GeodesiQWarning,
+    NumericalStabilityWarning,
+    PerformanceWarning,
+)
 
 __all__ = [
     "ControlModel",
@@ -42,5 +47,6 @@ __all__ = [
     "PerformanceWarning",
     "ExperimentalFeatureWarning",
     "decompose_hamiltonian",
+    "HamiltonianDecomposition",
     "__version__",
 ]

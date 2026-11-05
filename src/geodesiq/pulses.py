@@ -1,16 +1,20 @@
+import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Tuple
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import scipy as sp
+from numpy.typing import ArrayLike, NDArray
 from scipy.signal import ShortTimeFFT
 from scipy.signal.windows import hann
 
+from ._utils import figure_and_axes, real_samples
 from .exceptions import IOErrorGeodesiQ, ValidationError
+from .warnings import GeodesiQWarning
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
-    from matplotlib.figure import Figure
+    from matplotlib.figure import Figure, SubFigure
 
 
 class PulseControl:
@@ -20,14 +24,28 @@ class PulseControl:
     shape and its Fourier spectrum.
     """
 
-    def __init__(self, pulse: np.ndarray, duration: float):
+    # Padding modes of filtered_pulse(): hold the end values, or a padtype of scipy.signal.sosfiltfilt.
+    _FILTER_PADDINGS = ("hold", "odd", "even", "constant", None)
+    # Largest number of samples held at each end by the "hold" padding of filtered_pulse() (80 MB in float64).
+    _MAX_HOLD_SAMPLES = 10**7
+    # Padding modes of fourier_spectrum(), mapped to the padding of scipy.signal.ShortTimeFFT.stft.
+    _SPECTRUM_PADDINGS: dict[str, Literal["zeros", "edge", "even", "odd"]] = {
+        "hold": "edge",
+        "zeros": "zeros",
+        "even": "even",
+        "odd": "odd",
+    }
+    # filtered_pulse() warns when an endpoint moves by more than this fraction of the pulse range.
+    _FILTER_ENDPOINT_RTOL = 1e-2
+
+    def __init__(self, pulse: ArrayLike, duration: float) -> None:
         """
         Initialize the PulseControl object with the control pulse and its duration. The samples are assumed to be
         uniformly spaced in time, from 0 to ``duration``.
 
         Parameters
         ----------
-        pulse : np.ndarray
+        pulse : ArrayLike
             Control pulse values, uniformly sampled in time.
         duration : float
             Duration of the control pulse (t_f).
@@ -38,11 +56,7 @@ class PulseControl:
             raise ValidationError(f"pulse must be one-dimensional; received shape {values.shape}.")
         if values.size < 2:
             raise ValidationError("pulse must contain at least two samples.")
-        if np.iscomplexobj(values):
-            if not np.allclose(values.imag, 0.0):
-                raise ValidationError("pulse must contain real-valued samples.")
-            values = values.real
-        values = np.asarray(values, dtype=float)
+        values = np.asarray(real_samples(values, "pulse"), dtype=float)
         if not np.all(np.isfinite(values)):
             raise ValidationError("pulse contains NaN or infinite values.")
 
@@ -57,12 +71,12 @@ class PulseControl:
         self._pulse_times = np.linspace(0.0, duration, values.size, dtype=float)
 
     @property
-    def pulse(self) -> np.ndarray:
+    def pulse(self) -> NDArray[np.float64]:
         """Return a copy of the pulse samples."""
         return self._pulse.copy()
 
     @property
-    def times(self) -> np.ndarray:
+    def times(self) -> NDArray[np.float64]:
         """Return a copy of the physical-time sample grid."""
         return self._pulse_times.copy()
 
@@ -75,7 +89,7 @@ class PulseControl:
     #               Methods of PulseControl class
     # ------------------------------------------------------------
 
-    def discretized_pulse(self, linear_steps: int = 4) -> Tuple[np.ndarray, np.ndarray]:
+    def discretized_pulse(self, linear_steps: int = 4) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """
         Obtains the piecewise linear function from control pulse.
 
@@ -101,9 +115,21 @@ class PulseControl:
 
         return new_time, approx_sol
 
-    def fourier_spectrum(self, window_len: int = 256, hop: int = 32) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def fourier_spectrum(
+        self,
+        window_len: int = 256,
+        hop: int = 32,
+        detrend: bool = False,
+        padding: str = "hold",
+        mfft: int | None = None,
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
         """
         Compute the Short-Time Fourier Transform (STFT) spectrum of the control pulse.
+
+        The magnitude is an amplitude spectrum in the units of the control: a sinusoid ``A * sin(2 * pi * f * t)``
+        inside a window gives ``A`` at frequency ``f``, and a constant ``c`` gives ``c`` at zero frequency. The positive
+        frequencies of the one-sided spectrum are doubled for this (``fft_mode="onesided2X"`` of
+        ``scipy.signal.ShortTimeFFT``, with ``scale_to="magnitude"``).
 
         Parameters
         ----------
@@ -111,15 +137,32 @@ class PulseControl:
             The length of the window segment in number of samples. Default is 256.
         hop : int, optional
             The number of samples to advance between successive windows. Default is 32.
+        detrend : bool, optional
+            Subtract the mean of each window segment before the Fourier transform, which removes the DC part of the
+            spectrum (``scipy.signal.ShortTimeFFT.stft_detrend`` with ``detr="constant"``). A geodesic pulse sweeps
+            between two control values, so without it the zero-frequency row dominates the spectrum. Default is
+            False.
+        padding : str, optional
+            How the pulse is extended beyond its ends for the windows that overhang them, whose centers lie up to
+            ``window_len / 2`` samples outside the pulse. ``"hold"`` (default) holds the first and last values, as an
+            arbitrary waveform generator does before and after the pulse. ``"zeros"`` pads with zeros, which was the
+            default up to version 0.3.0 and adds the jump from the end values to zero to the spectrum. ``"even"`` and
+            ``"odd"`` mirror the pulse (``padding`` of ``scipy.signal.ShortTimeFFT.stft``).
+        mfft : int | None, optional
+            Length of the FFT, at least ``window_len``. Each window is zero-padded to this length, which gives
+            ``mfft // 2 + 1`` frequency bins instead of ``window_len // 2 + 1``. This interpolates the spectrum on a
+            finer frequency grid; the frequency resolution is still set by the window duration. Default is None, i.e.
+            ``window_len``.
 
         Returns
         -------
         frequencies : np.ndarray
-            Frequencies corresponding to the STFT rows.
+            Non-negative frequencies of the STFT rows, in cycles per unit time (not angular frequencies).
         times : np.ndarray
-            Time array corresponding to the centers of each STFT time slice.
+            Centers of the STFT windows. They extend up to ``window_len / 2`` samples beyond both ends of the pulse,
+            because the first and last windows overhang them (see ``padding``).
         magnitude : np.ndarray
-            2D magnitude spectrum of the control pulse (shape: [frequencies, times]).
+            Amplitude spectrum of the control pulse, in the units of the control (shape: [frequencies, times]).
         """
         if not isinstance(window_len, (int, np.integer)) or isinstance(window_len, bool) or int(window_len) < 2:
             raise ValidationError("window_len must be an integer >= 2.")
@@ -132,6 +175,15 @@ class PulseControl:
         hop = int(hop)
         if hop > window_len:
             raise ValidationError("hop must not exceed window_len.")
+        if not isinstance(detrend, (bool, np.bool_)):
+            raise ValidationError("detrend must be a boolean.")
+        if not isinstance(padding, str) or padding not in self._SPECTRUM_PADDINGS:
+            raise ValidationError(f"padding must be one of {', '.join(map(repr, self._SPECTRUM_PADDINGS))}.")
+        stft_padding = self._SPECTRUM_PADDINGS[padding]
+        if mfft is not None:
+            if not isinstance(mfft, (int, np.integer)) or isinstance(mfft, bool) or int(mfft) < window_len:
+                raise ValidationError("mfft must be None or an integer >= window_len.")
+            mfft = int(mfft)
 
         dt = float(self._pulse_times[1] - self._pulse_times[0])
         if not np.isfinite(dt) or dt <= 0:
@@ -139,9 +191,12 @@ class PulseControl:
 
         fs = float(1.0 / dt)
         win = hann(window_len, sym=False)
-        sft = ShortTimeFFT(win, hop=hop, fs=fs, scale_to="magnitude")
+        sft = ShortTimeFFT(win, hop=hop, fs=fs, fft_mode="onesided2X", mfft=mfft, scale_to="magnitude")
 
-        stft_matrix = sft.stft(self._pulse)
+        if detrend:
+            stft_matrix = sft.stft_detrend(self._pulse, "constant", padding=stft_padding)
+        else:
+            stft_matrix = sft.stft(self._pulse, padding=stft_padding)
 
         magnitude = np.abs(stft_matrix)
         frequencies = sft.f
@@ -149,9 +204,21 @@ class PulseControl:
 
         return frequencies, times, magnitude
 
-    def filtered_pulse(self, cutoff_freq: float, filter_order: int = 3) -> Tuple[np.ndarray, np.ndarray]:
+    def filtered_pulse(
+        self, cutoff_freq: float, filter_order: int = 3, padding: str | None = "hold", causal: bool = False
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
         """
         Apply a low-pass Butterworth filter to the control pulse.
+
+        By default the filter is applied forward and backward (``scipy.signal.sosfiltfilt``): there is no phase shift,
+        but the filter is acausal, the magnitude response is the square of the designed one (gain 1/2, i.e. -6 dB, at
+        ``cutoff_freq``) and the effective order is ``2 * filter_order``. With ``causal=True`` it is applied once
+        (``scipy.signal.sosfilt``), as a transmission line would: gain 1/sqrt(2) (-3 dB) at ``cutoff_freq`` and a
+        phase lag.
+
+        Low-pass filtering moves the endpoints of a pulse that is steep there, as geodesic pulses usually are.
+        ``Dynamics`` still measures fidelities against the eigenstates at ``pulse_initial`` and ``pulse_final``, so a
+        ``GeodesiQWarning`` is issued when an endpoint moves by more than 1% of the pulse range.
 
         Parameters
         ----------
@@ -159,6 +226,14 @@ class PulseControl:
             Cutoff frequency in units of 1 / time (e.g., Hz if time is in seconds) for the low-pass Butterworth filter.
         filter_order : int
             Order of the Butterworth filter.
+        padding : str | None
+            How the pulse is extended beyond its ends for the zero-phase filter. ``"hold"`` (default) holds the first
+            and last values for as long as the filter's impulse response takes to decay, as an arbitrary waveform
+            generator does before and after the pulse. ``"odd"``, ``"even"``, ``"constant"`` and None are passed to
+            ``sosfiltfilt`` as ``padtype``; ``"odd"`` was the default up to version 0.3.0. Not used with
+            ``causal=True``, which starts in the steady state of the first value (as after holding it).
+        causal : bool
+            Apply the filter forward only, instead of forward and backward.
 
         Returns
         -------
@@ -166,6 +241,21 @@ class PulseControl:
             Rescaled time array corresponding to the filtered control pulse.
         filtered_pulse : np.ndarray
             Returns the (butterworth-)filtered control pulse.
+
+        Raises
+        ------
+        ValidationError
+            If ``cutoff_freq`` is not positive and below the Nyquist frequency, if ``filter_order`` is not a positive
+            integer, if ``padding`` or ``causal`` is invalid, or if the pulse is too short for a zero-phase filter
+            without hold padding: ``sosfiltfilt`` pads ``3 * (2 * n + 1)`` samples at each end, with ``n`` the number
+            of second-order sections (``3`` less for an odd order, e.g. 12 for order 3 and 15 for order 4), and needs
+            more samples than that. Also raised if, with hold padding, ``cutoff_freq`` is so low that the filter needs
+            more than ten million held samples at each end to settle.
+
+        Warns
+        -----
+        GeodesiQWarning
+            If the first or last filtered value differs from the original one by more than 1% of the pulse range.
         """
         if not isinstance(cutoff_freq, (int, float, np.integer, np.floating)) or isinstance(cutoff_freq, bool):
             raise ValidationError("cutoff_freq must be a finite positive number.")
@@ -176,6 +266,11 @@ class PulseControl:
         if not isinstance(filter_order, (int, np.integer)) or isinstance(filter_order, bool) or filter_order < 1:
             raise ValidationError("filter_order must be a positive integer.")
         filter_order = int(filter_order)
+
+        if padding not in self._FILTER_PADDINGS:
+            raise ValidationError(f"padding must be one of {', '.join(map(repr, self._FILTER_PADDINGS))}.")
+        if not isinstance(causal, (bool, np.bool_)):
+            raise ValidationError("causal must be True or False.")
 
         # Compute the sampling rate from the rescaled time array
         dt = float(np.abs(self._pulse_times[1] - self._pulse_times[0]))  # Uniform spacing by construction
@@ -189,38 +284,107 @@ class PulseControl:
         # Design Butterworth filter
         sos = sp.signal.butter(N=filter_order, Wn=cutoff_freq, btype="low", fs=sampling_rate, output="sos")
 
-        # Apply the filter to the pulse using filtfilt for zero-phase filtering
-        filtered_pulse = sp.signal.sosfiltfilt(sos, self._pulse)
+        if causal:
+            # Start in the steady state of the first value, as after holding it before the pulse.
+            initial = sp.signal.sosfilt_zi(sos) * self._pulse[0]
+            filtered_pulse, _ = sp.signal.sosfilt(sos, self._pulse, zi=initial)
+        elif padding == "hold":
+            # Hold the end values until the impulse response has decayed by 1e-12, set by the digital pole of largest
+            # modulus. The analog estimate is not used: the bilinear transform moves the poles towards -1 near Nyquist.
+            poles = np.concatenate([np.roots(section[3:]) for section in sos])
+            radius = float(np.max(np.abs(poles)))
+            hold = np.inf if radius >= 1 else np.ceil(np.log(1e12) / -np.log(radius))
+            if hold > self._MAX_HOLD_SAMPLES:
+                raise ValidationError(
+                    f"cutoff_freq={cutoff_freq:.5g} is too low for hold padding: the filter needs more than "
+                    f"{self._MAX_HOLD_SAMPLES} held samples at each end to settle. Use a larger cutoff_freq or "
+                    "another padding."
+                )
+            hold = int(hold)
+            held = np.concatenate((np.full(hold, self._pulse[0]), self._pulse, np.full(hold, self._pulse[-1])))
+            filtered_pulse = sp.signal.sosfiltfilt(sos, held, padtype="constant")[hold:-hold]
+        else:
+            # sosfiltfilt pads both ends with padlen samples and needs a longer pulse; padlen as computed by SciPy
+            # (first-order sections of odd filter orders have zero trailing coefficients, which shorten it).
+            n_taps = 2 * len(sos) + 1 - min(int(np.sum(sos[:, 2] == 0)), int(np.sum(sos[:, 5] == 0)))
+            padlen = 3 * n_taps if padding is not None else 0
+            if self._pulse.size <= padlen:
+                raise ValidationError(
+                    f"The pulse has {self._pulse.size} samples, but zero-phase filtering with "
+                    f"filter_order={filter_order} pads {padlen} samples at each end and needs more than {padlen}. "
+                    "Use a larger pulse_accuracy in solve_problem(), a lower filter_order or padding='hold'."
+                )
+            filtered_pulse = sp.signal.sosfiltfilt(sos, self._pulse, padtype=padding)
 
-        return self._pulse_times.copy(), filtered_pulse
+        # Dynamics compares with the eigenstates at the original endpoints, which a moved endpoint no longer reaches.
+        # The rounding term keeps a constant pulse (zero range) from warning.
+        scale = float(np.max(np.abs(self._pulse)))
+        tolerance = self._FILTER_ENDPOINT_RTOL * float(np.ptp(self._pulse)) + 100 * np.finfo(float).eps * scale
+        moved = [
+            f"{label} {new:.6g} instead of {old:.6g}"
+            for label, new, old in (
+                ("starts at", filtered_pulse[0], self._pulse[0]),
+                ("ends at", filtered_pulse[-1], self._pulse[-1]),
+            )
+            if abs(new - old) > tolerance
+        ]
+        if moved:
+            warnings.warn(
+                f"The filtered pulse {' and '.join(moved)}. Fidelities from Dynamics still refer to the eigenstates at "
+                "the original endpoints; use a higher cutoff_freq if the endpoints must be kept.",
+                GeodesiQWarning,
+                stacklevel=2,
+            )
 
-    def plot_pulse(self, show: bool = True, **plot_kwargs: Any) -> "Tuple[Figure, Axes]":
+        return self._pulse_times.copy(), np.asarray(filtered_pulse, dtype=float)
+
+    def plot_pulse(
+        self,
+        fig: "Figure | SubFigure | None" = None,
+        ax: "Axes | None" = None,
+        xlabel: str | None = None,
+        ylabel: str | None = None,
+        title: str | None = None,
+        show: bool = True,
+        **plot_kwargs: Any,
+    ) -> "tuple[Figure | SubFigure, Axes]":
         """
         Plot the (real-time) control pulse.
 
         Parameters
         ----------
+        fig, ax
+            Optional matplotlib figure/axis. If not provided, they are created. When ``ax`` is given, the pulse is
+            drawn on it and ``fig`` is ignored. A ``fig`` that already has one axis is drawn on that axis; a figure
+            with several axes needs ``ax``.
+        xlabel : str | None
+            Label for the x-axis. Defaults to ``"Time $t$"`` when not provided.
+        ylabel : str | None
+            Label for the y-axis. Defaults to ``"Control Pulse"`` when not provided.
+        title : str | None
+            Plot title. No title is set when not provided.
         show : bool
-            Show plot before possibly adding plot_kwargs
+            Whether to call ``plt.show()``. Pass ``show=False`` to keep drawing on a provided figure/axis.
         plot_kwargs : dict
             Dictionary of style changes to ax.plot()
 
         Returns
         -------
-        fig, ax: Figure, Axes
+        fig, ax: Figure | SubFigure, Axes
             Figure and axes for the construction of a custom plot.
 
         """
         import matplotlib.pyplot as plt
 
-        fig, ax = plt.subplots()
+        fig, ax = figure_and_axes(fig, ax)
+
         ax.plot(self._pulse_times, self._pulse, **plot_kwargs)
-        ax.set_xlabel("Time $t$")
-        ax.set_ylabel("Control Pulse")
+        ax.set_xlabel("Time $t$" if xlabel is None else xlabel)
+        ax.set_ylabel("Control Pulse" if ylabel is None else ylabel)
+        if title is not None:
+            ax.set_title(title)
         if show:
             plt.show()
-        else:
-            plt.close(fig)
 
         return fig, ax
 
@@ -229,51 +393,64 @@ class PulseControl:
         Export (real-time) pulse data to a (npz, txt, csv) file.
 
         Values are written with full double precision (``%.17g``), so that e.g. nanosecond-scale times expressed in
-        seconds are preserved. The ``txt`` format is whitespace-delimited and the ``csv`` format is comma-delimited;
-        both have a one-line header with the column names.
+        seconds are preserved. The ``npz`` format stores the arrays ``times`` and ``pulse``. The ``txt`` format is
+        whitespace-delimited and the ``csv`` format is comma-delimited; both have a one-line header with the same names
+        (``times pulse`` or ``times,pulse``).
 
         Parameters
         ----------
         filename : str | Path
-            Name for the data file saved.
+            Name for the data file saved. The extension is appended unless the name already ends with it, so dots in
+            the name are kept (``"pulse_tf1.5"`` is written to ``pulse_tf1.5.npz``).
         file_extension : str
-            Data type the pulse should be stored in (i.e. 'txt', 'npz', 'csv'). Default is 'npz'.
+            Data type the pulse should be stored in ('npz', 'txt' or 'csv', case-insensitive, with or without a
+            leading dot). Default is 'npz'.
         overwrite : bool
-            Ensures accidental overwrites.
+            If False (default), raise instead of replacing an existing file.
 
         Returns
         -------
         output_path: Path
             Path of the written file.
+
+        Raises
+        ------
+        ValidationError
+            If ``file_extension`` is not a supported type.
+        IOErrorGeodesiQ
+            If the file exists and ``overwrite`` is False.
         """
 
-        # Remove possible file_extension starting with a dot
-        if file_extension.startswith("."):
-            file_extension = file_extension[1:]
-
+        if not isinstance(file_extension, str):
+            raise ValidationError(
+                f"file_extension must be a string ('npz', 'txt' or 'csv'); received {type(file_extension).__name__}."
+            )
+        file_extension = file_extension.lower().removeprefix(".")
         if file_extension not in ("npz", "txt", "csv"):
             raise ValidationError(
-                f"Unsupported data_type '{file_extension}'. Supported types are: 'npz', 'txt', and 'csv'."
+                f"Unsupported file_extension '{file_extension}'. Supported types are: 'npz', 'txt', and 'csv'."
             )
 
         output_path = Path(filename)
-        if output_path.suffix != f".{file_extension}":
-            output_path = output_path.with_suffix(f".{file_extension}")
-
-        if output_path.exists() and not overwrite:
-            raise IOErrorGeodesiQ(f"File already exists (choose overwrite=True to remove safety check.): {output_path}")
+        if not output_path.name.lower().endswith(f".{file_extension}"):
+            output_path = output_path.with_name(f"{output_path.name}.{file_extension}")
 
         t: np.ndarray = np.asarray(self._pulse_times)
         pulse: np.ndarray = np.asarray(self._pulse)
 
-        # Save data depending on users preference
-        if file_extension == "npz":
-            np.savez(output_path, times=t, pulse=pulse)
-        elif file_extension == "txt":
-            np.savetxt(output_path, np.column_stack((t, pulse)), header="t pulse", comments="", fmt="%.17g")
-        else:
-            np.savetxt(
-                output_path, np.column_stack((t, pulse)), delimiter=",", header="t,pulse", comments="", fmt="%.17g"
-            )
+        # Mode "x" creates the file only if it does not exist yet, so the check and the write are one step.
+        try:
+            with open(output_path, "wb" if overwrite else "xb") as file:
+                if file_extension == "npz":
+                    np.savez(file, times=t, pulse=pulse)
+                else:
+                    delimiter, header = (" ", "times pulse") if file_extension == "txt" else (",", "times,pulse")
+                    np.savetxt(
+                        file, np.column_stack((t, pulse)), delimiter=delimiter, header=header, comments="", fmt="%.17g"
+                    )
+        except FileExistsError:
+            raise IOErrorGeodesiQ(
+                f"File already exists (choose overwrite=True to remove safety check.): {output_path}"
+            ) from None
 
         return output_path

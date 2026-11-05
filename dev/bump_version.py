@@ -22,6 +22,7 @@ from packaging.version import InvalidVersion, Version
 
 _VERSION_PATTERN = re.compile(r'(__version__\s*=\s*")([^"]+)(")')
 _CITATION_VERSION_PATTERN = re.compile(r"^(version:\s*)(\S+)\s*$", re.MULTILINE)
+_CITATION_DATE_PATTERN = re.compile(r"^(date-released:[ \t]*)(\S+)[ \t]*$", re.MULTILINE)
 _UNRELEASED_PATTERN = re.compile(r"^(?P<heading>## \[Unreleased\][^\n]*\n)(?P<body>.*?)(?=^## \[|\Z)",
                                  re.MULTILINE | re.DOTALL, )
 
@@ -78,11 +79,19 @@ def prepare_updates(meta_content: str, changelog_content: str, new_version: Vers
     return updated_meta, updated_changelog
 
 
-def prepare_citation_update(citation_content: str, new_version: Version) -> str:
-    """Return CITATION.cff content with its top-level ``version`` set to ``new_version``."""
+def prepare_citation_update(citation_content: str, new_version: Version, *, release_date: date | None = None) -> str:
+    """Return CITATION.cff content with its top-level ``version`` and ``date-released`` updated.
+
+    ``date-released`` gets the same date as the changelog heading; it is added after ``version`` if missing.
+    """
     if _CITATION_VERSION_PATTERN.search(citation_content) is None:
         raise ValueError("Could not find a top-level 'version:' entry in CITATION.cff")
-    return _CITATION_VERSION_PATTERN.sub(rf"\g<1>{new_version}", citation_content, count=1)
+    day = (release_date or date.today()).isoformat()
+    updated = _CITATION_VERSION_PATTERN.sub(rf"\g<1>{new_version}", citation_content, count=1)
+    if _CITATION_DATE_PATTERN.search(updated) is not None:
+        # The date is quoted, so YAML reads it as the string CFF expects.
+        return _CITATION_DATE_PATTERN.sub(rf'\g<1>"{day}"', updated, count=1)
+    return _CITATION_VERSION_PATTERN.sub(rf'\g<0>\ndate-released: "{day}"', updated, count=1)
 
 
 def _write_temp(path: Path, content: str) -> Path:
@@ -136,7 +145,8 @@ def update_project(meta_file: Path, changelog_file: Path, new_version: Version, 
                                                       release_date=release_date, )
     files = {meta_file: updated_meta, changelog_file: updated_changelog}
     if citation_file is not None:
-        files[citation_file] = prepare_citation_update(citation_file.read_text(encoding="utf-8"), new_version)
+        files[citation_file] = prepare_citation_update(citation_file.read_text(encoding="utf-8"), new_version,
+                                                       release_date=release_date)
     if not dry_run:
         atomic_update(files)
     return updated_meta, updated_changelog

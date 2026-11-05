@@ -1,8 +1,10 @@
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Literal
+from typing import Literal
 
 import numpy as np
 import qutip as qt
+from numpy.typing import ArrayLike, NDArray
 
 from ._utils import HERMITIAN_RTOL, is_hermitian
 from .exceptions import ValidationError
@@ -41,23 +43,72 @@ def _real_vector_to_hermitian(vector: np.ndarray, d: int) -> np.ndarray:
 
 @dataclass
 class HamiltonianDecomposition:
-    times: np.ndarray
+    """
+    Low-rank decomposition ``H(t) ~= H_d + sum_i u_i(t) H_i`` of a sampled Hamiltonian, as returned by
+    ``decompose_hamiltonian``.
+
+    Attributes
+    ----------
+    times : NDArray[np.float64]
+        Strictly increasing sample times, shape ``(N,)``.
+    H_d : qt.Qobj
+        Static drift Hamiltonian.
+    H_controls : list[qt.Qobj]
+        The ``rank`` Hermitian control Hamiltonians ``H_i``, orthonormal in the Frobenius inner product.
+    coefficients : NDArray[np.float64]
+        Real control coefficients ``u_i(t)`` at the sample times, shape ``(rank, N)``.
+    singular_values : NDArray[np.float64]
+        All singular values of the sampled residuals ``H(t) - H_d``, in decreasing order, including the discarded ones.
+    rank : int
+        Number of control terms kept.
+    relative_residual_error : float
+        Frobenius norm of the discarded part relative to that of the residuals ``H(t) - H_d``.
+    relative_total_error : float
+        Frobenius norm of the discarded part relative to that of the sampled ``H(t)``.
+    """
+
+    times: NDArray[np.float64]
     H_d: qt.Qobj
     H_controls: list[qt.Qobj]
-    coefficients: np.ndarray
-    singular_values: np.ndarray
+    coefficients: NDArray[np.float64]
+    singular_values: NDArray[np.float64]
     rank: int
     relative_residual_error: float
     relative_total_error: float
 
     def qobjevo(self, order: int = 3) -> qt.QobjEvo:
-        """Construct H(t) = H_d + sum_i u_i(t) H_i as a QuTiP QobjEvo."""
+        """Construct H(t) = H_d + sum_i u_i(t) H_i as a QuTiP QobjEvo.
+
+        Parameters
+        ----------
+        order : int
+            Spline interpolation order for the sampled coefficients (default is 3).
+            Use 0 for sample-and-hold or 1 for linear interpolation.
+
+        Returns
+        -------
+        qt.QobjEvo
+            Time-dependent Hamiltonian with coefficients interpolated on ``times``.
+        """
         terms = [self.H_d]
         terms.extend([[H, coefficient] for H, coefficient in zip(self.H_controls, self.coefficients, strict=False)])
         return qt.QobjEvo(terms, tlist=self.times, order=order)
 
     def reconstruct_sample(self, index: int) -> qt.Qobj:
-        """Reconstruct H at one of the sampled times."""
+        """Reconstruct H at one of the sampled times.
+
+        Parameters
+        ----------
+        index : int
+            Index into ``times`` and the coefficient samples. Negative indices count
+            from the end, following NumPy indexing conventions.
+
+        Returns
+        -------
+        qt.Qobj
+            Hamiltonian at ``times[index]``, reconstructed using the retained control terms.
+            Discarded terms are not included.
+        """
         H = self.H_d.copy()
 
         for H_control, coefficient in zip(self.H_controls, self.coefficients, strict=False):
@@ -68,7 +119,7 @@ class HamiltonianDecomposition:
 
 def decompose_hamiltonian(
     H_func: Callable[[float], qt.Qobj | np.ndarray],
-    times: np.ndarray,
+    times: ArrayLike,
     drift: Literal["mean", "first", "zero"] | qt.Qobj | np.ndarray = "mean",
     rank: int | None = None,
     rtol: float = 1e-10,
@@ -102,11 +153,14 @@ def decompose_hamiltonian(
     atol
         Absolute singular-value cutoff.
     hermitian_tol
-        Relative tolerance used to verify Hermiticity: ``||H - H^dagger||_F <= hermitian_tol * ||H||_F``.
+        Relative tolerance used to verify Hermiticity:
+        ``||H - H^dagger||_F <= hermitian_tol * ||H_0||_F + 100 * eps * ||H||_F``, with ``H_0`` the traceless part of
+        ``H`` (see ``_utils.is_hermitian``).
 
     Returns
     -------
     HamiltonianDecomposition
+        The drift, control Hamiltonians and coefficients, with the truncation errors.
     """
     times = np.asarray(times, dtype=float)
 
@@ -158,7 +212,12 @@ def decompose_hamiltonian(
 
     residuals = samples - H_d_array
 
-    matrix = np.column_stack([_hermitian_to_real_vector(H) for H in residuals])
+    # One column per sample, filled in place to avoid a second d**2 x N copy. The SVD stays on this matrix: the Gram
+    # matrix would square its condition number and lose the singular values below about 1e-8 of the largest, which
+    # the default rtol=1e-10 cutoff needs (D-19).
+    matrix = np.empty((d * d, len(times)), dtype=float)
+    for column, H in enumerate(residuals):
+        matrix[:, column] = _hermitian_to_real_vector(H)
 
     U, singular_values, Vh = np.linalg.svd(matrix, full_matrices=False)
 
@@ -182,8 +241,8 @@ def decompose_hamiltonian(
     discarded_norm = np.linalg.norm(singular_values[rank:])
     residual_norm = np.linalg.norm(singular_values)
 
-    full_matrix = np.column_stack([_hermitian_to_real_vector(H) for H in samples])
-    full_norm = np.linalg.norm(full_matrix)
+    # The real-vector map preserves the Frobenius norm, so the norm of all samples needs no second matrix.
+    full_norm = np.linalg.norm(samples)
 
     relative_residual_error = float(discarded_norm / residual_norm if residual_norm > 0 else 0.0)
     relative_total_error = float(discarded_norm / full_norm if full_norm > 0 else 0.0)

@@ -1,25 +1,36 @@
+import sys
 import warnings
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from numpy.typing import ArrayLike, NDArray
 from scipy.differentiate import jacobian
 from scipy.integrate import romb, solve_ivp
 from scipy.interpolate import PchipInterpolator
 
 from ._utils import (
+    DiabaticList,
     Flags,
-    build_diab,
+    build_dia_list,
+    crossing_map,
+    degenerate_clusters,
+    figure_and_axes,
+    follow_state,
     is_hermitian,
     limit_blas_threads,
+    rotate_degenerate_subspaces,
+    stack_samples,
+    traceless,
     uniform_grid_derivative,
     validate_state_index,
     values_equal,
 )
 from .exceptions import (
+    ConfigurationError,
     ImmutableConfigurationError,
     InvalidControlParameterError,
     MetricComputationError,
@@ -47,10 +58,21 @@ class _EigensystemParameters:
 class _ControlParameters(_EigensystemParameters):
     initial_state: int
     final_state: int
+    final_state_explicit: bool
     alpha: float
     beta: float
     dia_alpha: float | None
     dia_beta: float | None
+    norm: float
+    allow_endpoint_passages: bool
+
+
+def _show_if(show: bool) -> None:
+    """Call ``plt.show()`` when ``show`` is true, as every plot method does by default."""
+    if show:
+        import matplotlib.pyplot as plt
+
+        plt.show()
 
 
 class ControlModel:
@@ -62,8 +84,12 @@ class ControlModel:
     """
 
     # All tolerances are relative, so the results do not depend on the units of the Hamiltonian.
-    # An energy gap below _GAP_RTOL * (spectral bandwidth) is treated as a degeneracy.
+    # An energy gap below _GAP_RTOL * (spectral bandwidth) is treated as a degeneracy, and a gap minimum shallower than
+    # that (rounding errors of a flat gap) is not an anticrossing.
     _GAP_RTOL = 1e-12
+    # Two states are not coupled (and may cross truly) if their matrix element of dH/dx is at most _CROSSING_RTOL times
+    # the largest one at that grid point.
+    _CROSSING_RTOL = 1e-8
     # Metric values below _METRIC_RTOL * max(metric) are treated as (numerical) zeros.
     _METRIC_RTOL = 1e-20
     # Default number of samples of the normalized pulse when solve_problem() is first called without one.
@@ -71,37 +97,54 @@ class ControlModel:
     # Numerical dH/dx: finite differences of order _FD_ORDER on the already sampled control grid. Points where the
     # difference with the order (_FD_ORDER - 2) estimate exceeds _FD_RTOL * max|dH/dx| are recomputed with the
     # adaptive scipy.differentiate.jacobian, as are all points of grids with fewer than _FD_MIN_POINTS samples.
+    # Both tolerances are floored at _FD_ROUNDOFF_FACTOR * eps * max|x| / step, the relative rounding error of the
+    # control steps, which dominates when the control values carry a large offset (e.g. x = 1e6 + [0, 1]). Only the
+    # traceless part of H is differentiated, and the absolute tolerances are also floored at
+    # _FD_ROUNDOFF_FACTOR * eps * max|H| / step, the rounding error that a large identity offset (e.g. H = 1e8 I + ...)
+    # leaves in the samples, which no smaller step can resolve.
     _FD_ORDER = 8
     _FD_RTOL = 1e-8
     _FD_MIN_POINTS = 5
+    _FD_ROUNDOFF_FACTOR = 100.0
+    # The matrix elements |<m|dH/dx|n>| are computed in chunks of grid points whose complex (chunk, dim, dim)
+    # temporaries take about this many bytes, so the products do not need further full-size stacks.
+    _MATRIX_ELEMENT_CHUNK_BYTES = 2**22
+    # A custom ODE solver's pulse x(tau) may deviate from the exact geodesic by at most _SOLVER_TAU_TOL in normalized
+    # time tau, i.e. |tau(x(tau_i)) - tau_i| <= _SOLVER_TAU_TOL at every sample
+    # (solve_ivp at its default rtol=1e-3 stays below about 5e-3).
+    _SOLVER_TAU_TOL = 1e-2
+    # ASCII stand-ins for the status marks of print_summary(), for outputs that cannot encode them (e.g. cp1252).
+    _SUMMARY_ASCII_MARKS = {"✅": "[OK]", "❌": "[--]", "→": "->"}
 
     def __init__(
         self,
-        H_func: Callable[..., np.ndarray] | None = None,
-        partial_H_func: Callable[..., np.ndarray] | None = None,
-        _flags_verbose: bool = False,
+        H_func: Callable[..., ArrayLike] | None = None,
+        partial_H_func: Callable[..., ArrayLike] | None = None,
         *,
-        H_d: np.ndarray | None = None,
-        H_c: np.ndarray | None = None,
+        H_d: ArrayLike | None = None,
+        H_c: ArrayLike | None = None,
+        _flags_verbose: bool = False,
     ) -> None:
         """
         Initialize the ControlModel from either a Hamiltonian function or constant drift and control matrices.
 
         Parameters
         ----------
-        H_func : Callable[..., np.ndarray] | None
+        H_func : Callable[..., ArrayLike] | None
             A function that takes the control parameter and other parameters as input and returns the Hamiltonian
-            matrix as a numpy array. The function should be defined such that it can accept the control parameter as a
-            keyword argument, e.g., H_func(lambda=..., param1=..., param2=..., ...). Provide either ``H_func`` or the
-            pair ``H_d`` and ``H_c``.
-        partial_H_func : Callable[..., np.ndarray] | None
+            matrix as a numpy array (or any array-like, converted with ``np.asarray``). The function should be defined
+            such that it can accept the control parameter as a keyword argument, e.g.,
+            H_func(lambda=..., param1=..., param2=..., ...). Provide either ``H_func`` or the pair ``H_d`` and ``H_c``.
+        partial_H_func : Callable[..., ArrayLike] | None
             An optional function that takes the control parameter and other parameters as input and returns the partial
             derivative of the Hamiltonian with respect to the control parameter as a numpy array.
             If this function is not provided, the class will compute the numerical partial derivative.
-        H_d, H_c : np.ndarray | None
+        H_d, H_c : ArrayLike | None
             Constant drift and control Hamiltonians defining the affine model
             ``H(control) = H_d + control * H_c``. Both matrices must be finite, Hermitian, square, and have the same
             shape. In this mode the derivative is exactly ``H_c`` and ``set_parameters`` is unavailable.
+        _flags_verbose : bool
+            Private debugging switch that prints every change of the cached-stage flags. Not part of the public API.
         """
         affine_requested = H_d is not None or H_c is not None
 
@@ -119,8 +162,8 @@ class ControlModel:
             dtype = np.result_type(drift.dtype, control.dtype)
             self._H_d: np.ndarray | None = np.asarray(drift, dtype=dtype)
             self._H_c: np.ndarray | None = np.asarray(control, dtype=dtype)
-            self._H_func: Callable[..., np.ndarray] | None = None
-            self._partial_H_func: Callable[..., np.ndarray] | None = None
+            self._H_func: Callable[..., ArrayLike] | None = None
+            self._partial_H_func: Callable[..., ArrayLike] | None = None
             self._affine_hamiltonian = True
             self._hamiltonian_dimension: int | None = drift.shape[0]
         else:
@@ -139,7 +182,7 @@ class ControlModel:
         # Initialize flags needed to track the state of the computations
         self._flags = Flags(_verbose=_flags_verbose)
         self._flags.add("eigenproblem_solved")
-        self._flags.add("dia_list_computed")
+        self._flags.add("dia_list_computed", parent="eigenproblem_solved")
         self._flags.add("metric_computed", parents=["eigenproblem_solved", "dia_list_computed"])
         self._flags.add("ode_solved", parent="metric_computed")
 
@@ -152,24 +195,35 @@ class ControlModel:
         self._pulse_final: float | None = None
         self._initial_state: int | None = None
         self._final_state: int | None = None
+        # Until final_state is given explicitly, it follows initial_state (adiabatic transfer).
+        self._final_state_explicit = False
         self._alpha: float | None = None
         self._beta: float | None = None
         self._dia_alpha: float | None = None
         self._dia_beta: float | None = None
+        self._norm = 2.0
+        self._allow_endpoint_passages = False
         self._num_steps: int | None = None
 
         # Initialize energy gaps and matrix elements to None (to be computed in self.solve_problem())
         self._centered_energies: np.ndarray | None = None
         self._energy_offset: np.ndarray | None = None
         self._matrix_elements: np.ndarray | None = None
+        # Largest matrix element at each grid point, the reference for _CROSSING_RTOL.
+        self._coupling_scale: np.ndarray | None = None
+        # Energy index changes of the states at true level crossings (see _utils.crossing_map).
+        self._state_map: np.ndarray | None = None
+        # Energy index of the occupied state along the grid, and the index it ends in.
+        self._occupied_states: np.ndarray | None = None
+        self._resolved_final_state: int | None = None
 
         # Initialize metric tensor and normalization factor to None (to be computed in self.solve_problem())
-        self._dia_list: np.ndarray | None = None
+        self._dia_list: DiabaticList | None = None
         self._metric_tensor: np.ndarray | None = None
         self._a_tilde: float | None = None
 
         # Initialize pulse parameters
-        self._s: np.ndarray | None = None
+        self._tau: np.ndarray | None = None
         self._control_pulse: np.ndarray | None = None
         self._control_sol: np.ndarray | None = None
 
@@ -191,8 +245,10 @@ class ControlModel:
             raise ImmutableConfigurationError(
                 "Direct H_func evaluation is unavailable when H_d and H_c define the Hamiltonian."
             )
-        matrix = np.asarray(H_func(*args, **{**self._parameters, **kwargs}))
+        return self._validate_hamiltonian(np.asarray(H_func(*args, **{**self._parameters, **kwargs})))
 
+    def _validate_hamiltonian(self, matrix: np.ndarray) -> np.ndarray:
+        """Check a matrix returned by H_func, and record the Hamiltonian dimension on the first call."""
         if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
             raise ValidationError(f"H_func must return a 2D square matrix, got shape {matrix.shape}.")
 
@@ -231,11 +287,8 @@ class ControlModel:
             raise ValidationError("partial_H_func must return a Hermitian matrix.")
 
         if self._hamiltonian_dimension is None:
-            H_func = self.H_func
-            if H_func is None:
-                raise MissingControlParameterError("H_func is not configured.")
-            hamiltonian_temp = H_func(*args, **{**self._parameters, **kwargs})
-            dim_temp = hamiltonian_temp.shape[0]
+            # Validated call: H_func may return e.g. a nested list, and this also records the dimension.
+            dim_temp = self._call_hamiltonian(*args, **kwargs).shape[0]
         else:
             dim_temp = self._hamiltonian_dimension
 
@@ -276,14 +329,32 @@ class ControlModel:
         return {**self._parameters, control_name: float(control_value)}
 
     def evaluate_hamiltonian(self, control_value: float) -> np.ndarray:
-        """Evaluate and validate the Hamiltonian at one control value."""
+        """Evaluate and validate the Hamiltonian at one control value.
 
-        if not isinstance(control_value, (int, float, np.integer, np.floating)) or isinstance(control_value, bool):
-            raise InvalidControlParameterError("Control value must be a finite real number.")
+        Parameters
+        ----------
+        control_value : float
+            Finite real value of the control parameter. Callable models receive it
+            under ``control_name``, together with the stored fixed parameters.
 
-        control_value = float(control_value)
-        if not np.isfinite(control_value):
-            raise InvalidControlParameterError("Control value must be finite.")
+        Returns
+        -------
+        np.ndarray
+            Hamiltonian matrix of shape ``(dimension, dimension)``. For affine models
+            this is ``H_d + control_value * H_c``.
+
+        Raises
+        ------
+        InvalidControlParameterError
+            If ``control_value`` is not a finite real number.
+        MissingControlParameterError
+            If a callable model has no configured ``control_name``.
+        ValidationError
+            If a callable returns a non-square, non-finite or non-Hermitian matrix,
+            or changes the Hamiltonian dimension after it has been established.
+        """
+
+        control_value = self._check_control_value(control_value)
 
         if self._affine_hamiltonian:
             assert self._H_d is not None
@@ -292,16 +363,57 @@ class ControlModel:
 
         return self._call_hamiltonian(**self._evaluation_kwargs(control_value))
 
+    def _frozen_hamiltonian(self) -> Callable[[float], np.ndarray]:
+        """
+        Evaluator of the current Hamiltonian that later changes to the model do not affect (used by ``Dynamics``).
+
+        It takes copies of ``H_d`` and ``H_c``, or of the fixed parameters and ``control_name`` of a callable model,
+        and validates like ``evaluate_hamiltonian``. ``H_func`` itself cannot be replaced; state that it keeps
+        internally (e.g. in a closure) is not copied.
+        """
+        if self._affine_hamiltonian:
+            if self._H_d is None or self._H_c is None:
+                raise ConfigurationError("Affine ControlModel is missing its constant drift or control Hamiltonian.")
+            H_d, H_c = self._H_d.copy(), self._H_c.copy()
+
+            def evaluate_affine(control_value: float) -> np.ndarray:
+                return H_d + self._check_control_value(control_value) * H_c
+
+            return evaluate_affine
+
+        H_func = self._H_func
+        if H_func is None:
+            raise MissingControlParameterError("H_func is not configured.")
+        kwargs = self._evaluation_kwargs(0.0)  # Checks that control_name is set.
+        control_name = self.control_name
+        assert control_name is not None
+        kwargs = deepcopy(kwargs)
+
+        def evaluate_callable(control_value: float) -> np.ndarray:
+            kwargs[control_name] = self._check_control_value(control_value)
+            return self._validate_hamiltonian(np.asarray(H_func(**kwargs)))
+
+        return evaluate_callable
+
+    @staticmethod
+    def _check_control_value(control_value: float) -> float:
+        if not isinstance(control_value, (int, float, np.integer, np.floating)) or isinstance(control_value, bool):
+            raise InvalidControlParameterError("Control value must be a finite real number.")
+        control_value = float(control_value)
+        if not np.isfinite(control_value):
+            raise InvalidControlParameterError("Control value must be finite.")
+        return control_value
+
     # Setters and getters are defined for the critical attributes of the ControlModel class, so we have control over how
     # the user modifies them. Every control setter delegates to set_control(), which validates the full configuration
     # and updates the flags in a single place. Assigning None keeps the previous value.
     @property
-    def H_func(self) -> Callable[..., np.ndarray] | None:
+    def H_func(self) -> Callable[..., ArrayLike] | None:
         """Hamiltonian function, or None for affine models defined by H_d and H_c."""
         return self._H_func
 
     @H_func.setter
-    def H_func(self, func: Callable[..., np.ndarray]) -> None:
+    def H_func(self, func: Callable[..., ArrayLike]) -> None:
         if self._affine_hamiltonian:
             raise ImmutableConfigurationError("H_func cannot be set when the Hamiltonian is defined by H_d and H_c.")
         if self._H_func is None:
@@ -315,12 +427,12 @@ class ControlModel:
             )
 
     @property
-    def partial_H_func(self) -> Callable[..., np.ndarray] | None:
+    def partial_H_func(self) -> Callable[..., ArrayLike] | None:
         """Analytical derivative of the Hamiltonian, or None when the numerical derivative is used."""
         return self._partial_H_func
 
     @partial_H_func.setter
-    def partial_H_func(self, func: Callable[..., np.ndarray]) -> None:
+    def partial_H_func(self, func: Callable[..., ArrayLike]) -> None:
         if self._affine_hamiltonian:
             raise ImmutableConfigurationError(
                 "partial_H_func cannot be set when the Hamiltonian is defined by H_d and H_c."
@@ -381,7 +493,7 @@ class ControlModel:
 
     @property
     def initial_state(self) -> int | None:
-        """Index (in increasing energy) of the initial eigenstate."""
+        """Index (in increasing energy, at ``pulse_initial``) of the initial eigenstate."""
         return self._initial_state
 
     @initial_state.setter
@@ -390,7 +502,16 @@ class ControlModel:
 
     @property
     def final_state(self) -> int | None:
-        """Index (in increasing energy) of the target eigenstate."""
+        """
+        Index (in increasing energy, at ``pulse_final``) of the target eigenstate.
+
+        As long as it has not been set explicitly, it is the index in which the state followed adiabatically from
+        ``initial_state`` ends. Before ``solve_problem()``, and without true level crossings, this is
+        ``initial_state``.
+        """
+        resolved = self._resolved_final_state
+        if not self._final_state_explicit and self._flags["dia_list_computed"] and resolved is not None:
+            return resolved
         return self._final_state
 
     @final_state.setter
@@ -434,6 +555,24 @@ class ControlModel:
         self.set_control(dia_beta=value)
 
     @property
+    def norm(self) -> float:
+        """Order ``p`` of the norm that combines the transitions from the occupied state into the metric."""
+        return self._norm
+
+    @norm.setter
+    def norm(self, value: float) -> None:
+        self.set_control(norm=value)
+
+    @property
+    def allow_endpoint_passages(self) -> bool:
+        """Whether a gap minimum at an end of the control grid counts as an anticrossing to pass diabatically."""
+        return self._allow_endpoint_passages
+
+    @allow_endpoint_passages.setter
+    def allow_endpoint_passages(self, value: bool) -> None:
+        self.set_control(allow_endpoint_passages=value)
+
+    @property
     def num_steps(self) -> int | None:
         """Number of points of the control-parameter grid."""
         return self._num_steps
@@ -443,8 +582,8 @@ class ControlModel:
         self.set_control(num_steps=value)
 
     @property
-    def control_sol(self) -> np.ndarray:
-        """Return the optimal control pulse on the normalized time grid ``s``, solving the problem if needed."""
+    def control_sol(self) -> NDArray[np.float64]:
+        """Return the optimal control pulse on the normalized time grid ``tau``, solving the problem if needed."""
         if not self._flags["ode_solved"]:
             self.solve_problem()  # Attempt to solve the ODE if not already solved (same accuracy as last time)
         if self._control_sol is None:
@@ -452,17 +591,21 @@ class ControlModel:
         return self._control_sol.copy()
 
     @property
-    def s(self) -> np.ndarray:
-        """Return the normalized time grid (s = t / t_f) of the control solution, solving the problem if needed."""
+    def tau(self) -> NDArray[np.float64]:
+        """
+        Return the normalized time grid (tau = t / t_f) of the control solution, solving the problem if needed.
+
+        It is always ``linspace(0, 1, pulse_accuracy)``; a custom solver's own time points are resampled onto it.
+        """
         if not self._flags["ode_solved"]:
             self.solve_problem()
-        if self._s is None:
+        if self._tau is None:
             raise SolverError("The normalized time grid is unavailable after solving.")
-        return self._s.copy()
+        return self._tau.copy()
 
     @property
-    def eigenenergies(self) -> np.ndarray:
-        """Return ControlModel eigenenergies, solving the eigenproblem if needed."""
+    def eigenenergies(self) -> NDArray[np.float64]:
+        """Return the real (float64) eigenenergies, also for complex H, solving the eigenproblem if needed."""
         if not self._flags["eigenproblem_solved"]:
             self._check_eigensystem_parameters()
             self._solve_eigenproblem()
@@ -471,7 +614,7 @@ class ControlModel:
         return self._centered_energies.copy() + self._energy_offset[:, None]
 
     @property
-    def control_pulse(self) -> np.ndarray:
+    def control_pulse(self) -> NDArray[np.float64]:
         """Return the control-parameter grid, solving the eigenproblem if needed."""
         if not self._flags["eigenproblem_solved"]:
             self._check_eigensystem_parameters()
@@ -486,6 +629,23 @@ class ControlModel:
         compute the ControlModel and its partial derivative. The parameters should be provided as keyword arguments,
         e.g., set_parameters(param1=value1, param2=value2, ...), and they will be stored. If a single parameter is
         updated, others will not be affected.
+
+        The values are stored as deep copies, so changing a passed object in place (e.g. an array) does not affect the
+        model until it is passed to ``set_parameters`` again.
+
+        Parameters
+        ----------
+        **parameters : Any
+            Fixed keyword arguments passed to ``H_func`` and ``partial_H_func``.
+            Supplied names replace their stored values; other parameters are retained.
+            A change invalidates the cached eigensystem and all dependent results.
+
+        Raises
+        ------
+        ImmutableConfigurationError
+            If the model was constructed with constant ``H_d`` and ``H_c`` matrices.
+        InvalidControlParameterError
+            If a parameter name is the configured ``control_name``.
         """
 
         if self._affine_hamiltonian:
@@ -499,7 +659,9 @@ class ControlModel:
                 f"{self.control_name!r} is the control variable and cannot also be supplied as a fixed parameter."
             )
 
-        new_params = {**self._parameters, **parameters}
+        # Copy on store: an aliased array changed in place would otherwise compare equal to itself here and leave the
+        # cached eigensystem and pulse stale.
+        new_params = {**self._parameters, **deepcopy(parameters)}
 
         if values_equal(new_params, self._parameters):
             return
@@ -523,7 +685,9 @@ class ControlModel:
         beta: float | None = None,
         dia_alpha: float | None = None,
         dia_beta: float | None = None,
+        norm: float | None = None,
         num_steps: int | None = None,
+        allow_endpoint_passages: bool | None = None,
     ) -> None:
         """
         Set the control parameters for the optimization problem. This method allows you to specify the control
@@ -542,27 +706,55 @@ class ControlModel:
         pulse_final : float | None
             The final value of the control pulse. This is the value of the control parameter at the end of the pulse.
         initial_state : int | None
-            The index of the initial state in the energy spectrum. This is used to compute the metric tensor and the
-             ODE for the control pulse.
+            The index of the initial state in the energy spectrum at ``pulse_initial``. This is used to compute the
+            metric tensor and the ODE for the control pulse. The occupied state is followed along the sweep by
+            eigenvector overlap, so at a true (symmetry-protected) level crossing it keeps its identity and changes its
+            energy index.
         final_state : int | None
-            The index of the final state in the energy spectrum. This is used to compute the metric tensor and the ODE
-            for the control pulse. If not provided, it will be assumed to be the same as the initial state.
+            The index of the final state in the energy spectrum at ``pulse_final``. This is used to compute the metric
+            tensor and the ODE for the control pulse. As long as it has never been provided, the transfer is adiabatic
+            and ``final_state`` is the index in which the state followed from ``initial_state`` ends (also when
+            ``initial_state`` changes later); once provided, it keeps its value. If it differs from that index, the
+            occupied state is followed along the sweep: each anticrossing (interior minimum of the gap) with the
+            neighbouring state towards ``final_state`` is passed diabatically, until ``final_state`` is reached. All
+            other anticrossings are passed adiabatically, and only transitions from the occupied state contribute to the
+            metric tensor.
         alpha : float | None
             The exponent alpha used in the metric tensor computation. This parameter controls the weighting of the
              energy gaps in the metric tensor.
         beta : float | None
             The exponent beta used in the metric tensor computation. This parameter controls the weighting of the
-            matrix elements in the metric tensor.
+            matrix elements in the metric tensor. A transition that dH/dx does not couple contributes
+            ``|E_n - E_m|**(-alpha)`` for ``beta = 0`` (``0**0 = 1``), so that ``(alpha, beta) = (0, 0)`` gives a
+            linear ramp, and nothing for ``beta < 0``.
         dia_alpha : float | None
             The exponent alpha used in the diabatic passage contribution to the metric tensor. This parameter controls
              the weighting of the energy gaps in the diabatic passage contribution to the metric tensor.
         dia_beta : float | None
             The exponent beta used in the diabatic passage contribution to the metric tensor. This parameter controls
-             the weighting of the matrix elements in the diabatic passage contribution to the metric tensor.
+             the weighting of the matrix elements in the diabatic passage contribution to the metric tensor. Uncoupled
+             transitions are treated as for ``beta``.
+        norm : float | None
+            The order ``p >= 1`` (``np.inf`` allowed) of the norm that combines the transitions from the occupied
+            state at each grid point. With the contribution ``r_k = |dH_mk|**beta / |E_k - E_m|**alpha`` of transition
+            ``k``, the metric is ``G = (sum_k r_k**(p/2))**(2/p)``, i.e. ``sqrt(G)`` is the L^p norm of the
+            amplitudes ``sqrt(r_k)``. ``p = 2`` (the default) sums the contributions; ``p = 1`` sums their square
+            roots and, with ``(alpha, beta) = (4, 2)``, gives the multilevel FAQUAD condition, the sum of the
+            adiabaticity parameters of all transitions; ``p = np.inf`` keeps the largest contribution. All orders agree
+            when a single transition contributes. The default ``p = 2`` is the only order for which the metric stays a
+            sum over transitions, which for ``(alpha, beta) = (2, 2)`` is the quantum metric tensor and for ``(4, 2)``
+            the squared norm of the first-order adiabatic correction to the state (per unit speed squared); it also
+            keeps the metric smooth where the dominant transition changes. ``None`` retains the current value.
         num_steps : int | None
             The number of steps to use in the discretization of the control pulse. This determines the resolution of
             the control pulse and the accuracy of the numerical solution. If omitted and no previous value exists,
             a default of ``2**10 + 1`` is used.
+        allow_endpoint_passages : bool | None
+            Whether a gap minimum at ``pulse_initial`` or ``pulse_final`` also counts as an anticrossing to pass
+            diabatically, for a deliberately truncated passage. A passage at the start relabels the initial state before
+            any evolution, so its transitions never enter the metric. Without it (the default, ``False``), a diabatic
+            transfer needs the sweep to bracket each anticrossing, and otherwise raises
+            ``InvalidControlParameterError``. ``None`` retains the current value.
         """
 
         # Build and validate the complete candidate configuration first.
@@ -584,9 +776,11 @@ class ControlModel:
         candidate_final_state = (
             self._final_state if final_state is None else self._validate_state_index(final_state, "Final")
         )
+        candidate_final_state_explicit = self._final_state_explicit or final_state is not None
 
-        # Preserve the existing behavior on first configuration.
-        if candidate_final_state is None and candidate_initial_state is not None:
+        # A final state that was never given explicitly follows the initial state, so changing initial_state alone
+        # keeps an adiabatic problem adiabatic instead of silently turning it into a diabatic transfer.
+        if not candidate_final_state_explicit:
             candidate_final_state = candidate_initial_state
 
         candidate_alpha = self._alpha if alpha is None else self._validate_exponent(alpha, "Alpha")
@@ -598,6 +792,15 @@ class ControlModel:
         )
 
         candidate_dia_beta = self._dia_beta if dia_beta is None else self._validate_exponent(dia_beta, "Diabatic beta")
+
+        candidate_norm = self._norm if norm is None else self._validate_norm(norm)
+
+        if allow_endpoint_passages is None:
+            candidate_endpoint_passages = self._allow_endpoint_passages
+        elif isinstance(allow_endpoint_passages, (bool, np.bool_)):
+            candidate_endpoint_passages = bool(allow_endpoint_passages)
+        else:
+            raise InvalidControlParameterError("allow_endpoint_passages must be a boolean.")
 
         if num_steps is None:
             candidate_num_steps = self._num_steps if self._num_steps is not None else 2**10 + 1
@@ -625,7 +828,14 @@ class ControlModel:
             or candidate_num_steps != self._num_steps
         )
 
-        states_changed = candidate_initial_state != self._initial_state or candidate_final_state != self._final_state
+        # Making final_state explicit turns an adiabatic transfer into a diabatic one if it differs from the index in
+        # which the followed state ends (self.final_state), which a true level crossing can change.
+        became_explicit = candidate_final_state_explicit and not self._final_state_explicit
+        states_changed = (
+            candidate_initial_state != self._initial_state
+            or candidate_final_state != (self.final_state if became_explicit else self._final_state)
+            or candidate_endpoint_passages != self._allow_endpoint_passages
+        )
 
         metric_changed = (
             states_changed
@@ -633,6 +843,7 @@ class ControlModel:
             or candidate_beta != self._beta
             or candidate_dia_alpha != self._dia_alpha
             or candidate_dia_beta != self._dia_beta
+            or candidate_norm != self._norm
         )
 
         # Everything is valid. Commit atomically.
@@ -641,10 +852,13 @@ class ControlModel:
         self._pulse_final = candidate_pulse_final
         self._initial_state = candidate_initial_state
         self._final_state = candidate_final_state
+        self._final_state_explicit = candidate_final_state_explicit
         self._alpha = candidate_alpha
         self._beta = candidate_beta
         self._dia_alpha = candidate_dia_alpha
         self._dia_beta = candidate_dia_beta
+        self._norm = candidate_norm
+        self._allow_endpoint_passages = candidate_endpoint_passages
         self._num_steps = candidate_num_steps
 
         # Invalidate caches only after the successful commit.
@@ -652,9 +866,7 @@ class ControlModel:
             self._flags["eigenproblem_solved"] = False
 
         if states_changed:
-            self._flags["dia_list_computed"] = (
-                candidate_initial_state is not None and candidate_initial_state == candidate_final_state
-            )
+            self._flags["dia_list_computed"] = False
             self._dia_list = None
 
         if metric_changed:
@@ -683,14 +895,43 @@ class ControlModel:
         solver : Callable[..., Any] | None
             Callable used to integrate the ODE. Defaults to ``scipy.integrate.solve_ivp``.
             Expected signature is solver(fun, t_span, y0, t_eval=..., **kwargs), and the return
-            value must expose ``t`` and ``y`` (or be a ``(t, y)`` tuple).
+            value must expose ``t`` and ``y`` (or be a ``(t, y)`` tuple). A custom solver integrates the forward
+            equation dx/dtau, normalized so that its exact solution ends at ``pulse_final``. Its result must follow the
+            exact normalized time tau(x) to within 1e-2 at every sample, otherwise a ``SolverError`` is raised. If it
+            returns other time points than the requested uniform ``t_eval``, the pulse is resampled onto that grid
+            (PCHIP), so ``tau`` is always uniform. Both endpoints are then set exactly. The forward equation is badly
+            conditioned for large exponents, where the default solver (which integrates the inverse equation dtau/dx)
+            is preferable.
         solver_kwargs : dict[str, Any] | None
-            Additional keyword arguments forwarded to ``solver``.
+            Additional keyword arguments forwarded to ``solver``. Stored as a deep copy and reused by later calls until
+            replaced; values may be arrays. For the default ``solve_ivp``, the keys ``dense_output``, ``events`` and
+            ``t_eval`` are reserved, and a key that the chosen ``method`` does not accept raises ``ValidationError``.
+            With the default solver, a non-empty dictionary replaces the exact antiderivative by Runge-Kutta
+            integration of the inverse equation dtau/dx (defaults ``method="RK45"``, ``atol=1e-12``, ``rtol=1e-10``).
+            Its independent variable is the control x, not tau: step options such as ``max_step``, ``first_step`` and
+            ``min_step`` are in units of the control, and ``atol``/``rtol`` apply to tau(x). For example, with
+            x from -500 to 500, ``max_step=1e-2`` takes at least 1e5 steps.
         metric_integrator : Callable[..., Any] | None
             Callable used to compute ``a_tilde`` from ``sqrt(metric_tensor)``. Defaults to
             ``scipy.integrate.romb``.
         metric_integrator_kwargs : dict[str, Any] | None
-            Additional keyword arguments forwarded to ``metric_integrator``.
+            Additional keyword arguments forwarded to ``metric_integrator``. Stored as a deep copy and reused by later
+            calls until replaced; values may be arrays (e.g. ``x`` for ``scipy.integrate.trapezoid``).
+
+        Notes
+        -----
+        ``solver``, ``solver_kwargs``, ``metric_integrator``, ``metric_integrator_kwargs`` and ``pulse_accuracy`` are
+        stored on the model. An argument left as None keeps the stored value, so a choice passed once is reused by
+        every later ``solve_problem()`` call and by the automatic re-solves of ``control_sol``, ``tau`` and
+        ``synthesize_pulse()`` (and therefore of ``Dynamics(duration=..., model=...)``). To return to the defaults,
+        pass them explicitly: ``solve_problem(solver=scipy.integrate.solve_ivp, solver_kwargs={},
+        metric_integrator=scipy.integrate.romb, metric_integrator_kwargs={})``. Changing any of them invalidates only
+        the dependent cached results (the metric for the integrator, the pulse for the solver).
+
+        ``metric_integrator`` computes the positive scale ``a_tilde`` from the sampled metric. Both solver paths
+        renormalize the PCHIP interpolant to span ``tau`` in [0, 1], so this scale cancels algebraically from their
+        normalized equations. In particular, custom solvers use the integral of that interpolant for their
+        normalization, avoiding an endpoint mismatch from using a different quadrature on the raw metric samples.
         """
         if pulse_accuracy is None:
             pulse_accuracy = (
@@ -701,7 +942,7 @@ class ControlModel:
         pulse_accuracy = int(pulse_accuracy)
         if pulse_accuracy < 3:
             raise InvalidControlParameterError("pulse_accuracy must be an integer >= 3.")
-        config = self._check_control_parameters()
+        config = self._check_control_parameters(metric_integrator)
 
         self._configure_integration(
             solver=solver,
@@ -738,27 +979,59 @@ class ControlModel:
         if not callable(selected_metric_integrator):
             raise ValidationError("metric_integrator must be a callable integration function.")
 
+        # values_equal handles array values (a plain != raises for them), and the stored deep copies keep an array
+        # changed in place and passed again from comparing equal to itself.
         integrator_changed = selected_metric_integrator is not self._metric_integrator
-        kwargs_changed = selected_metric_kwargs != self._metric_integrator_kwargs
+        kwargs_changed = not values_equal(selected_metric_kwargs, self._metric_integrator_kwargs)
 
         if integrator_changed or kwargs_changed:
             self._metric_integrator = selected_metric_integrator
-            self._metric_integrator_kwargs = dict(selected_metric_kwargs)
+            self._metric_integrator_kwargs = deepcopy(selected_metric_kwargs)
             self._flags["metric_computed"] = False
-        if selected_solver is not self._solver or selected_solver_kwargs != self._solver_kwargs:
+        if selected_solver is not self._solver or not values_equal(selected_solver_kwargs, self._solver_kwargs):
             self._solver = selected_solver
-            self._solver_kwargs = dict(selected_solver_kwargs)
+            self._solver_kwargs = deepcopy(selected_solver_kwargs)
             self._flags["ode_solved"] = False
 
     def _solve_dia_list(self, config: _ControlParameters) -> None:
-        """Compute the diabatic-passage list for a validated control configuration."""
+        """
+        Compute the occupied state along the grid and the diabatic-passage list for a validated control configuration.
+
+        The state is first followed from ``initial_state`` through the true level crossings alone. The transfer is
+        adiabatic if ``final_state`` was not given or is the index in which that state ends; then no list is needed:
+        ``_dia_list`` stays ``None``, and the stage is marked done so that the metric, which depends on it, can be
+        marked as computed.
+        """
         if self._flags["dia_list_computed"]:
             return
 
-        if self._centered_energies is None:
-            raise SolverError("Eigenenergies are unavailable before computing diabatic passages.")
-        dim = self._centered_energies.shape[1]
-        self._dia_list = build_diab(initial_state=config.initial_state, final_state=config.final_state, dim=dim)
+        if self._centered_energies is None or self._state_map is None:
+            raise SolverError("Eigenenergies are unavailable before computing the occupied state.")
+
+        adiabatic_path = follow_state(self._state_map, config.initial_state)
+        if not config.final_state_explicit or config.final_state == adiabatic_path[-1]:
+            self._dia_list = None
+            self._occupied_states = adiabatic_path
+        else:
+            if config.dia_alpha is None or config.dia_beta is None:
+                exponents = (("dia_alpha", config.dia_alpha), ("dia_beta", config.dia_beta))
+                missing_params = [name for name, value in exponents if value is None]
+                raise MissingControlParameterError(
+                    f"Missing control parameters: {', '.join(missing_params)}. They are required for a diabatic "
+                    f"transfer (final_state={config.final_state}, while the state followed adiabatically from "
+                    f"initial_state={config.initial_state} ends in state {adiabatic_path[-1]}). Please set them using "
+                    f"set_control({', '.join(f'{name}=<...>' for name in missing_params)})."
+                )
+            self._dia_list = build_dia_list(
+                self._centered_energies,
+                initial_state=config.initial_state,
+                final_state=config.final_state,
+                state_map=self._state_map,
+                allow_endpoint_passages=config.allow_endpoint_passages,
+                gap_rtol=self._GAP_RTOL,
+            )
+            self._occupied_states = self._dia_list.occupied
+        self._resolved_final_state = int(self._occupied_states[-1])
         self._flags["dia_list_computed"] = True
 
     def _solve_eigenproblem(self, config: _EigensystemParameters | None = None) -> None:
@@ -775,16 +1048,20 @@ class ControlModel:
             num=config.num_steps,
             dtype=float,
         )
+        # The (n_points, dim, dim) stacks dominate the memory for large dim. Each one is released as soon as it is no
+        # longer needed, and the Hamiltonian stack is centered in place.
         if self._affine_hamiltonian:
             assert self._H_d is not None
             assert self._H_c is not None
-            full_hamiltonian = self._H_d[None, :, :] + self._control_pulse[:, None, None] * self._H_c[None, :, :]
+            hamiltonian = np.empty(
+                (self._control_pulse.size, *self._H_d.shape), dtype=np.result_type(self._H_d, self._H_c, float)
+            )
+            np.multiply(self._control_pulse[:, None, None], self._H_c[None, :, :], out=hamiltonian)
+            hamiltonian += self._H_d
         else:
-            full_hamiltonian = np.stack([self.evaluate_hamiltonian(value) for value in self._control_pulse])
-        dimension = full_hamiltonian.shape[1]
-
-        energy_offset = np.trace(full_hamiltonian, axis1=1, axis2=2) / dimension
-        hamiltonian_centered = full_hamiltonian - energy_offset[:, None, None] * np.eye(dimension)
+            hamiltonian = stack_samples(self.evaluate_hamiltonian, self._control_pulse)
+        hamiltonian = hamiltonian.astype(np.result_type(hamiltonian.dtype, float), copy=False)
+        dimension = hamiltonian.shape[1]
 
         # State indices are required for a full solve, but not for plotting/eigenenergy access.
         if isinstance(config, _ControlParameters):
@@ -794,11 +1071,25 @@ class ControlModel:
                         f"{label}={index} is out of range for a {dimension}-dimensional Hamiltonian."
                     )
 
+        numerical_partial_H = self._flag_numerical_partial_H and not self._affine_hamiltonian
+        # Rounding error of the samples for the numerical derivative, set by their magnitude before centering.
+        sample_scale = float(np.max(np.abs(hamiltonian))) if numerical_partial_H else 0.0
+        # The trace of a Hermitian matrix is real; keeping it complex would make the public eigenenergies complex.
+        energy_offset = np.trace(hamiltonian, axis1=1, axis2=2).real / dimension
+        diagonal = np.arange(dimension)
+        hamiltonian[:, diagonal, diagonal] -= energy_offset[:, None]
+
+        # The finite differences need the samples, so they run before the eigenvectors are allocated.
+        partial_H = None
+        if numerical_partial_H:
+            partial_H = self._compute_numerical_partial_H(hamiltonian, sample_scale=sample_scale)
+
         try:
             with limit_blas_threads(dimension):
-                energies, eigenvectors = np.linalg.eigh(hamiltonian_centered)
+                energies, eigenvectors = np.linalg.eigh(hamiltonian)
         except np.linalg.LinAlgError as exc:
             raise SolverError("Hamiltonian eigendecomposition failed.") from exc
+        del hamiltonian
 
         energies = np.asarray(energies, dtype=float)
         if not np.all(np.isfinite(energies)):
@@ -806,55 +1097,113 @@ class ControlModel:
         self._centered_energies = energies
         self._energy_offset = energy_offset
 
+        # The identity part of dH/dx does not change the eigenstates, but it adds to the diagonal matrix elements and
+        # would inflate the coupling scale (the largest matrix element) used to detect true crossings. It is removed
+        # here; the numerical derivative is already traceless.
         if self._affine_hamiltonian:
             assert self._H_c is not None
-            full_partial_H = self._H_c
-        elif self._flag_numerical_partial_H:
-            full_partial_H = self._compute_numerical_partial_H(full_hamiltonian)
-        else:
-            full_partial_H = np.stack(
-                [self._call_partial_hamiltonian(**self._evaluation_kwargs(value)) for value in self._control_pulse]
+            partial_H = traceless(self._H_c)
+        elif partial_H is None:
+            partial_H = traceless(
+                stack_samples(
+                    lambda value: self._call_partial_hamiltonian(**self._evaluation_kwargs(value)), self._control_pulse
+                )
             )
 
+        # States are followed through true level crossings by eigenvector overlap. At a crossing on a grid point the
+        # crossing states are degenerate, and their eigenvectors are first rotated into the limits from either side.
         with limit_blas_threads(dimension):
-            matrix_elements = np.abs(eigenvectors.conj().transpose(0, 2, 1) @ full_partial_H @ eigenvectors)
+            rotate_degenerate_subspaces(eigenvectors, partial_H, degenerate_clusters(energies, self._GAP_RTOL))
+        self._matrix_elements = self._derivative_matrix_elements(eigenvectors, partial_H)
+        self._coupling_scale = np.max(self._matrix_elements, axis=(1, 2))
+        chunk = max(1, self._MATRIX_ELEMENT_CHUNK_BYTES // (16 * dimension * dimension))
+        with limit_blas_threads(dimension):
+            self._state_map = crossing_map(eigenvectors, self._matrix_elements, self._CROSSING_RTOL, chunk)
+        self._flags["eigenproblem_solved"] = True
+
+    def _derivative_matrix_elements(self, eigenvectors: np.ndarray, partial_H: np.ndarray) -> np.ndarray:
+        """
+        |<m|dH/dx|n>| between the eigenvectors at every grid point, with shape (n_points, dim, dim).
+
+        ``partial_H`` is one matrix (affine model) or one per grid point. The products are formed in chunks of grid
+        points, so their temporaries stay small compared with the (n_points, dim, dim) inputs.
+        """
+        n_points, dimension = eigenvectors.shape[:2]
+        chunk = max(1, self._MATRIX_ELEMENT_CHUNK_BYTES // (16 * dimension * dimension))
+        matrix_elements = np.empty((n_points, dimension, dimension), dtype=float)
+        with limit_blas_threads(dimension):
+            for start in range(0, n_points, chunk):
+                block = slice(start, min(start + chunk, n_points))
+                vectors = eigenvectors[block]
+                derivative = partial_H if partial_H.ndim == 2 else partial_H[block]
+                np.abs(vectors.conj().transpose(0, 2, 1) @ derivative @ vectors, out=matrix_elements[block])
         if not np.all(np.isfinite(matrix_elements)):
             raise SolverError("Hamiltonian derivative matrix elements contain non-finite values.")
-        self._matrix_elements = matrix_elements
-        self._flags["eigenproblem_solved"] = True
+        return matrix_elements
 
     def _metric_ratio(
         self,
         numerator: np.ndarray,
         denominator: np.ndarray,
-        alpha: float,
-        beta: float,
-        transition: tuple[int, int],
+        alpha: float | np.ndarray,
+        beta: float | np.ndarray,
+        transition: tuple[int | np.ndarray, int | np.ndarray],
+        points: np.ndarray | None = None,
     ) -> np.ndarray:
-        if alpha > 0:
+        """
+        Metric contribution of one transition, on all grid points or on the grid indices ``points``.
+
+        The exponents are scalars or arrays with one value per point. Several transitions can be evaluated at once by
+        passing one entry per (point, transition) pair, with ``points`` holding the grid index of each entry and the two
+        states of ``transition`` given as arrays.
+
+        A transition that dH/dx does not couple (matrix element at most ``_CROSSING_RTOL`` times the largest one at that
+        grid point) contributes ``1 / denominator**alpha`` for ``beta == 0`` (numpy's ``0**0 == 1``), so the weight
+        depends on the gap only, and (0, 0) gives a constant metric. For ``beta < 0`` it contributes zero instead of
+        diverging: such a transition cannot be driven.
+
+        A vanishing gap raises ``MetricComputationError``, except at a true level crossing on a grid point: there the
+        two states are degenerate at that point only, dH/dx does not couple them, and the contribution (zero on either
+        side of the crossing for ``beta != 0``) is set to zero.
+        """
+        crossings = np.array([], dtype=int)
+        positive_alpha = np.asarray(alpha) > 0
+        if np.any(positive_alpha):
             if self._centered_energies is None:
                 raise MetricComputationError("Eigenenergies are unavailable for degeneracy detection.")
 
             bandwidth = np.ptp(self._centered_energies, axis=1)
+            if points is not None:
+                bandwidth = bandwidth[points]
 
             tolerance = self._GAP_RTOL * bandwidth
 
-            singular = denominator <= tolerance
+            singular = (denominator <= tolerance) & positive_alpha
 
-            if np.any(singular):
+            indices = np.flatnonzero(singular)
+            grid_indices = indices if points is None else points[indices]
+            states = [np.broadcast_to(state, denominator.shape)[indices] for state in transition]
+            entry_beta = np.broadcast_to(beta, denominator.shape)[indices]
+            is_crossing = self._is_true_crossing(grid_indices, states[0], states[1], numerator[indices], entry_beta)
+            crossings = indices[is_crossing]
+
+            if not np.all(is_crossing):
                 control_pulse = self._control_pulse
 
                 if control_pulse is None:
                     raise MetricComputationError("Control grid is unavailable for degeneracy detection.")
 
-                indices = np.flatnonzero(singular)
+                indices, grid_indices = indices[~is_crossing], grid_indices[~is_crossing]
+                first = int(np.flatnonzero(~is_crossing)[0])
 
                 details = ", ".join(
-                    f"x={control_pulse[i]:.6g}, gap={denominator[i]:.3e}, tol={tolerance[i]:.3e}" for i in indices[:5]
+                    f"x={control_pulse[g]:.6g}, gap={denominator[i]:.3e}, tol={tolerance[i]:.3e}"
+                    for i, g in zip(indices[:5], grid_indices[:5], strict=True)
                 )
 
                 raise MetricComputationError(
-                    f"Degenerate or near-degenerate energy gap encountered for transition {transition}: {details}"
+                    "Degenerate or near-degenerate energy gap encountered for transition "
+                    f"({int(states[0][first])}, {int(states[1][first])}): {details}"
                 )
 
         with np.errstate(
@@ -862,9 +1211,39 @@ class ControlModel:
             invalid="ignore",
             over="ignore",
         ):
-            ratio = numerator**beta / denominator**alpha
+            ratio = np.asarray(numerator**beta / denominator**alpha, dtype=float)
+        ratio[crossings] = 0.0
 
-        return np.asarray(ratio, dtype=float)
+        negative_beta = np.asarray(beta) < 0
+        if np.any(negative_beta):
+            if self._coupling_scale is None:
+                raise MetricComputationError("Matrix elements are unavailable for coupling detection.")
+            scale = self._coupling_scale if points is None else self._coupling_scale[points]
+            ratio[(numerator <= self._CROSSING_RTOL * scale) & negative_beta] = 0.0
+
+        return ratio
+
+    def _is_true_crossing(
+        self, points: np.ndarray, source: np.ndarray, target: np.ndarray, numerator: np.ndarray, beta: np.ndarray
+    ) -> np.ndarray:
+        """
+        Whether each degenerate pair of states ``(source, target)`` at grid index ``points`` is a true level crossing.
+
+        The pair is degenerate at that grid point only, not at its neighbours, and dH/dx does not couple it
+        (``numerator`` at most ``_CROSSING_RTOL`` times the largest matrix element at that point). Its metric
+        contribution vanishes on both sides of the crossing only for ``beta != 0``.
+        """
+        assert self._centered_energies is not None and self._coupling_scale is not None
+        energies = self._centered_energies
+        n_points = energies.shape[0]
+        result = (numerator <= self._CROSSING_RTOL * self._coupling_scale[points]) & (beta != 0)
+        for offset in (-1, 1):
+            neighbour = np.clip(points + offset, 0, n_points - 1)
+            inside = neighbour != points
+            gap = np.abs(energies[neighbour, target] - energies[neighbour, source])
+            open_gap = gap > self._GAP_RTOL * np.ptp(energies[neighbour], axis=1)
+            result &= open_gap | ~inside
+        return result
 
     def _compute_metric_tensor(self, config: _ControlParameters) -> None:
         """
@@ -874,10 +1253,11 @@ class ControlModel:
         if self._flags["metric_computed"]:
             return
 
-        if config.initial_state == config.final_state:
+        # Also for an adiabatic transfer, where it follows the occupied state and leaves the list empty.
+        self._solve_dia_list(config)
+        if self._dia_list is None:
             self._compute_G_adiabatic(config)
         else:
-            self._solve_dia_list(config)
             self._compute_G_diabatic(config)
 
         if self._metric_tensor is None or self._control_pulse is None:
@@ -911,15 +1291,7 @@ class ControlModel:
         dx = float(np.abs(self._control_pulse[1] - self._control_pulse[0]))
         metric_values = np.sqrt(metric)
 
-        # scipy.integrate.romb requires sample count n = 2**k + 1.
-        if self._metric_integrator is romb:
-            n_samples = metric_values.size
-            power_minus_one = n_samples - 1
-            if power_minus_one <= 0 or (power_minus_one & (power_minus_one - 1)) != 0:
-                raise InvalidControlParameterError(
-                    f"num_steps={n_samples} is incompatible with romb. Use num_steps=2**k+1, "
-                    "or pass a different metric_integrator to solve_problem(...)."
-                )
+        self._check_metric_integrator_samples(metric_values.size, self._metric_integrator)
 
         try:
             result = self._metric_integrator(metric_values, dx=dx, **self._metric_integrator_kwargs)
@@ -941,63 +1313,101 @@ class ControlModel:
         if config.dia_alpha is None or config.dia_beta is None:
             raise MissingControlParameterError("Diabatic metric exponents are required.")
 
-        num, dim = self._centered_energies.shape
-        metric = np.zeros(num, dtype=float)
-
-        for m in range(dim):
-            for n in range(dim):
-                if n == m:
-                    continue
-                adiabatic = bool(self._dia_list[m, n])
-                denominator = np.abs(self._centered_energies[:, n] - self._centered_energies[:, m])
-                numerator = self._matrix_elements[:, m, n]
-                metric += self._metric_ratio(
-                    numerator,
-                    denominator,
-                    alpha=config.alpha if adiabatic else config.dia_alpha,
-                    beta=config.beta if adiabatic else config.dia_beta,
-                    transition=(m, n),
-                )
-        self._metric_tensor = metric
+        # Only transitions from the occupied state contribute. They are evaluated together, one entry per (point,
+        # target state) pair; the adiabatic fraction blends the adiabatic and diabatic exponents.
+        fraction = self._dia_list.adiabatic_fraction
+        points, targets = np.nonzero(fraction >= 0)
+        sources = self._dia_list.occupied[points]
+        adiabatic_fraction = fraction[points, targets]
+        denominator = np.abs(self._centered_energies[points, targets] - self._centered_energies[points, sources])
+        ratio = self._metric_ratio(
+            self._matrix_elements[points, sources, targets],
+            denominator,
+            alpha=adiabatic_fraction * config.alpha + (1.0 - adiabatic_fraction) * config.dia_alpha,
+            beta=adiabatic_fraction * config.beta + (1.0 - adiabatic_fraction) * config.dia_beta,
+            transition=(sources, targets),
+            points=points,
+        )
+        contributions = np.zeros(fraction.shape, dtype=float)
+        contributions[points, targets] = ratio
+        self._metric_tensor = self._combine_transitions(contributions, config.norm)
 
     def _compute_G_adiabatic(self, config: _ControlParameters) -> None:
-        """Compute the adiabatic contribution to the metric tensor."""
-        if self._centered_energies is None or self._matrix_elements is None:
+        """
+        Compute the adiabatic contribution to the metric tensor.
+
+        Only transitions from the occupied state contribute. It is followed through true level crossings, so its
+        energy index may change along the grid.
+        """
+        if self._centered_energies is None or self._matrix_elements is None or self._occupied_states is None:
             raise SolverError("Adiabatic metric prerequisites are unavailable.")
 
         num, dim = self._centered_energies.shape
-        metric = np.zeros(num, dtype=float)
-        for state in range(dim):
-            if state == config.initial_state:
-                continue
-            denominator = np.abs(self._centered_energies[:, state] - self._centered_energies[:, config.initial_state])
-            numerator = self._matrix_elements[:, config.initial_state, state]
-            metric += self._metric_ratio(
-                numerator,
+        occupied = self._occupied_states
+        contributions = np.zeros((num, dim - 1), dtype=float)
+        points = np.arange(num)
+        for offset in range(1, dim):
+            # The states other than the occupied one, one per point and offset, in no particular order.
+            state = (occupied + offset) % dim
+            denominator = np.abs(self._centered_energies[points, state] - self._centered_energies[points, occupied])
+            contributions[:, offset - 1] = self._metric_ratio(
+                self._matrix_elements[points, occupied, state],
                 denominator,
                 alpha=config.alpha,
                 beta=config.beta,
-                transition=(config.initial_state, state),
+                transition=(occupied, state),
             )
-        self._metric_tensor = metric
+        self._metric_tensor = self._combine_transitions(contributions, config.norm)
 
-    def _compute_numerical_partial_H(self, samples: np.ndarray | None = None) -> np.ndarray:
+    @staticmethod
+    def _combine_transitions(contributions: np.ndarray, norm: float) -> np.ndarray:
         """
-        Evaluate dH/dx at every point of the (uniform) control grid.
+        Combine the metric contributions ``r_k`` of the transitions (axis 1) at each grid point (axis 0).
+
+        Returns ``(sum_k r_k**(p/2))**(2/p)`` for ``p = norm``, so that ``sqrt(G)`` is the L^p norm of the amplitudes
+        ``sqrt(r_k)``: the sum for ``p = 2`` and the largest contribution for ``p = inf``. Zero entries (transitions
+        that do not contribute) leave the result unchanged. The contributions are scaled by their largest value at
+        each point, so that large orders and exponents do not overflow.
+        """
+        if norm == 2:
+            return contributions.sum(axis=1)
+        largest = contributions.max(axis=1, initial=0.0)
+        if np.isinf(norm):
+            return largest
+        scale = np.where(largest > 0, largest, 1.0)
+        with np.errstate(invalid="ignore", over="ignore"):
+            total = np.sum((contributions / scale[:, None]) ** (norm / 2), axis=1)
+            return scale * total ** (2 / norm)
+
+    def _compute_numerical_partial_H(
+        self, samples: np.ndarray | None = None, sample_scale: float | None = None
+    ) -> np.ndarray:
+        """
+        Evaluate the derivative of the traceless part of H, d(H - tr(H) I / N)/dx, at every point of the control grid.
+
+        The trace part only adds a multiple of the identity, which does not change the off-diagonal matrix elements
+        between eigenstates that the metric uses; leaving it out keeps a large identity offset in H from dominating
+        the error estimate.
 
         The derivative is first computed with finite differences of the Hamiltonian samples on the grid, which needs
         no extra Hamiltonian evaluations. Its error is estimated by comparison with a lower-order stencil, and points
-        where the estimate is too large are recomputed with the adaptive ``scipy.differentiate.jacobian``.
+        where the estimate is too large are recomputed with the adaptive ``scipy.differentiate.jacobian``. The
+        tolerance is floored at the rounding error of the samples, which a smaller step cannot resolve. If the
+        adaptive derivative does not converge at such a point, the finite-difference value is kept and a
+        ``NumericalStabilityWarning`` is issued.
 
         Parameters
         ----------
         samples : np.ndarray | None
             Hamiltonian evaluated on the control grid, with shape (n_points, *H_shape). Evaluated if not given.
+        sample_scale : float | None
+            If given, ``samples`` are already traceless (they are used as they are, without a copy) and
+            ``sample_scale`` is max|H| of the samples before the trace was removed, which sets their rounding error.
 
         Returns
         -------
         dH_dx
-            Complex derivative with shape (n_points, *H_shape).
+            Complex derivative of the traceless part of H, with shape (n_points, *H_shape).
         """
         if self._control_pulse is None:
             raise SolverError("x_grid is unavailable before the eigenproblem grid is initialized.")
@@ -1022,33 +1432,64 @@ class ControlModel:
         if samples.shape[0] != x_grid.size:
             raise SolverError("Hamiltonian samples do not match the control grid.")
 
+        if sample_scale is None:
+            # Rounding error of the samples, set by their full magnitude before the trace is removed.
+            sample_scale = float(np.max(np.abs(samples)))
+            samples = traceless(samples)
+
         n_points = x_grid.size
-        steps = np.diff(x_grid)
-        step = float(steps[0])
-        uniform = step != 0 and np.allclose(steps, step, rtol=1e-9, atol=0.0)
+        # The grid is a linspace, so its nominal step follows from the endpoints. The individual steps differ from it
+        # by rounding, which is large relative to the step when the control values carry a large offset.
+        step = float(x_grid[-1] - x_grid[0]) / (n_points - 1)
+        roundoff = self._FD_ROUNDOFF_FACTOR * np.finfo(float).eps * float(np.max(np.abs(x_grid))) / abs(step)
+        uniform = np.allclose(np.diff(x_grid), step, rtol=max(1e-9, roundoff), atol=0.0)
+        sample_noise = self._FD_ROUNDOFF_FACTOR * np.finfo(float).eps * sample_scale / abs(step)
 
         if uniform and n_points >= self._FD_MIN_POINTS:
             stencil = min(self._FD_ORDER + 1, n_points)
             derivative = uniform_grid_derivative(samples, step, stencil)
             estimate = uniform_grid_derivative(samples, step, stencil - 2)
-            error = np.max(np.abs(derivative - estimate), axis=tuple(range(1, samples.ndim)))
-            tolerance = self._FD_RTOL * float(np.max(np.abs(derivative)))
+            # In place, so the difference does not need another (n_points, *H_shape) array.
+            estimate -= derivative
+            error = np.max(np.abs(estimate), axis=tuple(range(1, samples.ndim)))
+            del estimate
+            tolerance = max(max(self._FD_RTOL, roundoff) * float(np.max(np.abs(derivative))), sample_noise)
             inaccurate = error > tolerance
+            fallback = derivative
         else:
             derivative = np.zeros_like(samples)
             inaccurate = np.ones(n_points, dtype=bool)
+            fallback = None
 
         if np.any(inaccurate):
-            derivative[inaccurate] = self._jacobian_partial_H(x_grid, inaccurate, samples)
+            derivative[inaccurate] = self._jacobian_partial_H(
+                x_grid,
+                inaccurate,
+                samples,
+                fallback=None if fallback is None else fallback[inaccurate],
+                sample_scale=sample_scale,
+            )
 
         return derivative
 
-    def _jacobian_partial_H(self, x_grid: np.ndarray, selected: np.ndarray, samples: np.ndarray) -> np.ndarray:
+    def _jacobian_partial_H(
+        self,
+        x_grid: np.ndarray,
+        selected: np.ndarray,
+        samples: np.ndarray,
+        fallback: np.ndarray | None = None,
+        sample_scale: float = 0.0,
+    ) -> np.ndarray:
         """
-        Adaptive dH/dx at the ``selected`` points of ``x_grid`` with ``scipy.differentiate.jacobian``.
+        Adaptive derivative of the traceless part of H at the ``selected`` points of ``x_grid``, computed with
+        ``scipy.differentiate.jacobian``.
 
         H_func is assumed not to be vectorized: it accepts one scalar x and returns a real- or complex-valued
-        Hamiltonian. Steps never leave the domain of the grid (one-sided differences at its boundaries).
+        Hamiltonian. ``samples`` are the traceless Hamiltonian samples on the grid, and ``sample_scale`` is max|H| of
+        the original samples, which sets their rounding error. Steps never leave the domain of the grid (one-sided
+        differences at its boundaries). Points where ``jacobian`` does not converge take the corresponding value of
+        ``fallback`` (shape (n_selected, *H_shape)) with a ``NumericalStabilityWarning``; without a fallback, a
+        ``SolverError`` is raised.
         """
         order = self._FD_ORDER
         unique_x = np.unique(x_grid)
@@ -1064,9 +1505,14 @@ class ControlModel:
         derivative_scale = max(float(np.max(np.abs(H_reference))), float(np.max(np.abs(H_end)))) / float(
             unique_x[-1] - unique_x[0]
         )
+        # The relative accuracy is limited by the rounding of x + step when x carries a large offset.
+        roundoff = self._FD_ROUNDOFF_FACTOR * np.finfo(float).eps * float(np.max(np.abs(unique_x))) / initial_step
+        # The rounding error of the Hamiltonian values (e.g. from a large identity offset) cannot be resolved by
+        # smaller steps either.
+        sample_noise = self._FD_ROUNDOFF_FACTOR * np.finfo(float).eps * sample_scale / initial_step
         tolerances = {
-            "atol": 1e-10 * derivative_scale if derivative_scale > 0 else 1e-10,
-            "rtol": 1e-8,
+            "atol": max(1e-10 * derivative_scale if derivative_scale > 0 else 1e-10, sample_noise),
+            "rtol": max(1e-8, roundoff),
         }
 
         def evaluate_and_pack(
@@ -1088,7 +1534,7 @@ class ControlModel:
             if H.shape != H_shape:
                 raise ValidationError(f"H_func returned inconsistent shapes: expected {H_shape}, got {H.shape}.")
 
-            H_flat = H.ravel()
+            H_flat = traceless(H).ravel()
 
             # scipy.differentiate.jacobian expects real outputs.
             return np.concatenate(
@@ -1132,6 +1578,7 @@ class ControlModel:
         )
 
         success = np.asarray(result.success, dtype=bool)
+        failed_points = np.zeros(points.size, dtype=bool)
         if not np.all(success):
             status = np.asarray(result.status)
             error = np.asarray(result.error, dtype=float)
@@ -1154,25 +1601,35 @@ class ControlModel:
 
                 details.append(f"x={points[index]:.6g}: status={statuses.tolist()}, max_error={max_error:.3e}")
 
-            raise SolverError(
+            message = (
                 "Numerical differentiation failed to converge at "
                 f"{failed_indices.size} control point(s): " + "; ".join(details)
+            )
+            if fallback is None:
+                raise SolverError(message)
+            warnings.warn(
+                message + ". The finite-difference derivative on the control grid is used there instead.",
+                NumericalStabilityWarning,
+                stacklevel=3,
             )
 
         # result.df shape:
         # (2 * n_elements, 1, n_points)
         derivative = np.asarray(result.df[:, 0, :])
 
-        if not np.all(np.isfinite(derivative)):
-            raise SolverError("Numerical Hamiltonian derivative contains non-finite values.")
-
         dH_flat = derivative[:n_elements] + 1j * derivative[n_elements:]
 
         # Convert from (*H_shape, n_points) to
         # (n_points, *H_shape).
-        dH_dx = dH_flat.reshape(H_shape + (points.size,))
+        dH_dx = np.moveaxis(dH_flat.reshape(H_shape + (points.size,)), -1, 0)
 
-        return np.moveaxis(dH_dx, -1, 0)
+        if fallback is not None:
+            dH_dx[failed_points] = fallback[failed_points]
+
+        if not np.all(np.isfinite(dH_dx)):
+            raise SolverError("Numerical Hamiltonian derivative contains non-finite values.")
+
+        return dH_dx
 
     def _solve_ode(self, pulse_accuracy: int) -> None:
         """Solve the normalized geodesic ODE and validate the solver result."""
@@ -1183,70 +1640,107 @@ class ControlModel:
         if self._control_pulse is None or self._metric_tensor is None or self._a_tilde is None:
             raise SolverError("ODE cannot be solved before the control pulse and metric tensor are available.")
 
-        factor = self._a_tilde / np.sqrt(self._metric_tensor)
-        if not np.all(np.isfinite(factor)) or np.any(factor <= 0):
-            raise MetricComputationError("ODE speed factor is non-finite or non-positive.")
+        # dtau/dx = sqrt(G) / a_tilde stays finite where the metric vanishes (the pulse passes such a point infinitely
+        # fast), unlike the speed dx/dtau = a_tilde / sqrt(G).
+        inverse_speed = np.sqrt(self._metric_tensor) / self._a_tilde
+        if not np.all(np.isfinite(inverse_speed)) or np.any(inverse_speed < 0):
+            raise MetricComputationError("ODE rate dtau/dx = sqrt(G) / a_tilde is non-finite or negative.")
 
         order = np.argsort(self._control_pulse)
-        interpolation = PchipInterpolator(
+        # Both solver paths use the PCHIP interpolant of dtau/dx, which keeps the non-negative samples non-negative.
+        inverse_interpolation = PchipInterpolator(
             self._control_pulse[order],
-            factor[order],
+            inverse_speed[order],
             extrapolate=False,
         )
+        antiderivative = inverse_interpolation.antiderivative()
 
         direction = float(np.sign(self._control_pulse[-1] - self._control_pulse[0]))
         lower = float(np.min(self._control_pulse))
         upper = float(np.max(self._control_pulse))
+        x_start = float(self._control_pulse[0])
+        x_end = float(self._control_pulse[-1])
 
-        def model(_: float, y: np.ndarray) -> np.ndarray:
-            clipped = np.clip(y, lower, upper)
-            return np.asarray(direction * interpolation(clipped), dtype=float)
-
-        s = np.linspace(0.0, 1.0, pulse_accuracy)
+        tau = np.linspace(0.0, 1.0, pulse_accuracy)
         kwargs = dict(self._solver_kwargs)
         if self._solver is solve_ivp:
             reserved = {"dense_output", "events", "t_eval"}.intersection(kwargs)
             if reserved:
                 names = ", ".join(sorted(reserved))
                 raise ValidationError(f"solver_kwargs must not override internally managed option(s): {names}.")
-            kwargs = {"method": "RK45", "atol": 1e-8, "rtol": 1e-6, **kwargs}
+            # The ODE dx/dtau = a_tilde / sqrt(G(x)) is autonomous; solve its inverse dtau/dx = sqrt(G(x)) / a_tilde and
+            # invert tau(x) afterward. The speed can span many orders of magnitude (e.g. large alpha/beta), which makes
+            # the forward problem require steps below floating-point spacing, while the inverse is well conditioned.
+            x_grid = np.linspace(x_start, x_end, max(self._control_pulse.size, 8 * pulse_accuracy))
 
-            target = float(self._control_pulse[-1])
+            if kwargs:
+                # Errors in tau are amplified by dx/dtau when inverting, hence the tight default tolerances.
+                kwargs = {"method": "RK45", "atol": 1e-12, "rtol": 1e-10, **kwargs}
 
-            class EndpointEvent:
-                def __init__(self, target: float, direction: float) -> None:
-                    self.target = target
-                    self.terminal = True
-                    self.direction = direction
+                def inverse_model(x: float, _: np.ndarray) -> np.ndarray:
+                    clipped = np.clip(x, lower, upper)
+                    return np.atleast_1d(direction * inverse_interpolation(clipped)).astype(float)
 
-                def __call__(self, _: float, y: np.ndarray) -> float:
-                    return float(y[0] - self.target)
+                try:
+                    with warnings.catch_warnings():
+                        # solve_ivp only warns about options the chosen method does not accept, so a typo such as
+                        # {"rtl": 1e-8} would silently fall back to the default tolerances.
+                        warnings.filterwarnings(
+                            "error", message="The following arguments have no effect", category=UserWarning
+                        )
+                        sol = solve_ivp(inverse_model, [x_start, x_end], [0.0], dense_output=True, **kwargs)
+                except UserWarning as exc:
+                    raise ValidationError(f"Invalid solve_ivp keyword arguments: {exc}") from exc
+                except TypeError as exc:
+                    raise ValidationError("Invalid solve_ivp keyword arguments.") from exc
+                if not sol.success:
+                    raise SolverError(str(sol.message))
+                if sol.sol is None:
+                    raise SolverError("ODE solution did not reach the requested final control value.")
+                tau_grid = np.asarray(sol.sol(x_grid), dtype=float)[0]
+            else:
+                # Without solver options, integrate the interpolant exactly through its piecewise-polynomial
+                # antiderivative, which is deterministic and free of step-size control.
+                tau_grid = direction * (antiderivative(x_grid) - antiderivative(x_start))
 
-            endpoint_event = EndpointEvent(target, direction)
-
-            try:
-                sol = solve_ivp(
-                    model,
-                    [0.0, 10.0],
-                    [self._control_pulse[0]],
-                    dense_output=True,
-                    events=endpoint_event,
-                    **kwargs,
-                )
-            except TypeError as exc:
-                raise ValidationError("Invalid solve_ivp keyword arguments.") from exc
-            if not sol.success:
-                raise SolverError(str(sol.message))
-            if not sol.t_events or sol.t_events[0].size == 0 or sol.sol is None:
-                raise SolverError("ODE solution did not reach the requested final control value.")
-            endpoint_time = float(sol.t_events[0][0])
+            endpoint_time = float(tau_grid[-1])
             if not np.isfinite(endpoint_time) or endpoint_time <= 0:
                 raise SolverError("ODE endpoint time must be finite and strictly positive.")
-            t = s
-            y = np.asarray(sol.sol(s * endpoint_time), dtype=float)
+            tau_grid = np.maximum.accumulate(tau_grid / endpoint_time)
+            # Keep only strictly increasing nodes; flat stretches occur where the metric is numerically negligible.
+            keep = np.concatenate(([True], np.diff(tau_grid) > 0))
+            # In a trailing flat stretch keep its last node (x_end) instead of its first, so that x(1) = x_end. The
+            # pulse still jumps there: a vanishing metric means the geodesic passes that stretch in zero time.
+            keep[tau_grid == tau_grid[-1]] = False
+            keep[-1] = True
+            if np.count_nonzero(keep) < 2:
+                raise SolverError("ODE solution did not reach the requested final control value.")
+            t = tau
+            y = PchipInterpolator(tau_grid[keep], x_grid[keep])(np.clip(tau, tau_grid[keep][0], tau_grid[keep][-1]))
         else:
+            # The forward equation divides by dtau/dx, so it is undefined where the metric vanishes.
+            zeros = inverse_speed == 0
+            if np.any(zeros):
+                sample = ", ".join(f"{value:.6g}" for value in self._control_pulse[zeros][:3])
+                raise MetricComputationError(
+                    f"The metric tensor is zero at control value(s) {sample}, where the forward equation "
+                    "dx/dtau = a_tilde / sqrt(G) of a custom solver is infinite. Use the default solver "
+                    "(scipy.integrate.solve_ivp), which integrates dtau/dx instead."
+                )
+            # Normalize the forward ODE with the exact integral of the interpolant it uses, so that x(1) = x_end.
+            # (a_tilde comes from the raw samples and differs from it, which made the pulse overshoot or fall short.)
+            length = direction * float(antiderivative(x_end) - antiderivative(x_start))
+            if not np.isfinite(length) or length <= 0:
+                raise SolverError("ODE normalization must be finite and strictly positive.")
+
+            def model(_: float, y: np.ndarray) -> np.ndarray:
+                y = np.asarray(y, dtype=float)
+                speed = length / inverse_interpolation(np.clip(y, lower, upper))
+                # Stop at x_end, so that an overshooting step cannot run away beyond the control grid.
+                return np.where(direction * (x_end - y) > 0, direction * speed, 0.0)
+
             try:
-                sol = self._solver(model, [0.0, 1.0], [self._control_pulse[0]], t_eval=s, **kwargs)
+                sol = self._solver(model, [0.0, 1.0], [x_start], t_eval=tau, **kwargs)
             except TypeError as exc:
                 raise ValidationError(
                     "Invalid solver call: ensure solver accepts (fun, t_span, y0, t_eval=..., **kwargs)."
@@ -1280,10 +1774,25 @@ class ControlModel:
             raise SolverError("Solver output contains NaN or infinite values.")
         if np.any(np.diff(t) <= 0) or not np.isclose(t[0], 0.0) or not np.isclose(t[-1], 1.0):
             raise SolverError("Solver time grid must be strictly increasing and span [0, 1].")
-        if self._solver is solve_ivp:
-            control[0] = self._control_pulse[0]
-            control[-1] = self._control_pulse[-1]
-        self._s = t.copy()
+        if self._solver is not solve_ivp:
+            # Validate the whole trajectory against the exact normalized time tau(x) of the interpolant: an endpoint
+            # check alone would accept a pulse that reaches x_end early and then stays there.
+            tau_exact = direction * (antiderivative(np.clip(control, lower, upper)) - antiderivative(x_start)) / length
+            deviation = float(np.max(np.abs(tau_exact - t)))
+            if not np.isfinite(deviation) or deviation > self._SOLVER_TAU_TOL:
+                raise SolverError(
+                    f"Custom solver result deviates from the geodesic by {deviation:.3g} in normalized time "
+                    f"(tolerance {self._SOLVER_TAU_TOL:g}). Tighten its tolerances (e.g. rtol) or use the default "
+                    "solver."
+                )
+            # The pulse is used on a uniform time grid (Dynamics, synthesize_pulse, PulseControl), so a solver that
+            # returns its own time points instead of the requested t_eval is resampled onto it (D-04).
+            if not np.allclose(t, tau, rtol=0.0, atol=1e-12):
+                control = PchipInterpolator(t, control)(tau)
+                t = tau
+        control[0] = x_start
+        control[-1] = x_end
+        self._tau = t.copy()
         self._control_sol = control.copy()
         self._previous_pulse_accuracy = pulse_accuracy
         self._flags["ode_solved"] = True
@@ -1333,15 +1842,20 @@ class ControlModel:
         xlabel: str | None = None,
         ylabel: str | None = None,
         title: str | None = None,
+        show: bool = True,
         **plot_kwargs: Any,
-    ) -> "tuple[Figure | SubFigure, Axes] | None":
+    ) -> "tuple[Figure | SubFigure, Axes]":
         """
         Plot ControlModel eigenvalues as a function of the control parameter.
 
         Parameters
         ----------
-        fig, ax
-            Optional matplotlib figure/axis. If not provided, they are created.
+        fig : Figure | SubFigure | None
+            Existing figure or subfigure. If ``ax`` is absent, its single axis is used, or a subplot is added if it
+            has none (a figure with several axes needs ``ax``); if neither is supplied, a new figure and axes are
+            created.
+        ax : Axes | None
+            Existing axes to draw on. Its parent figure or subfigure is returned when supplied.
         legend : bool
             Whether to draw a legend.
         legend_kwargs : dict | None
@@ -1351,50 +1865,44 @@ class ControlModel:
         ylabel : str | None
             Label for the y-axis. Defaults to ``"Energy"`` when not provided.
         title : str | None
-            Plot title. Defaults to ``"ControlModel Eigenvalues"`` when not provided.
+            Plot title. Defaults to ``"Hamiltonian eigenenergies"`` when not provided.
+        show : bool
+            Whether to call ``plt.show()``. Pass ``show=False`` to keep drawing on the figure.
         **plot_kwargs
             Extra kwargs forwarded to ``ax.plot`` for each energy branch.
 
         Returns
         -------
-        tuple
+        tuple[Figure | SubFigure, Axes]
             ``(fig, ax)`` with the generated plot.
-        """
-        import matplotlib.pyplot as plt
-        from matplotlib.axes import Axes
-        from matplotlib.figure import Figure, SubFigure
 
+        Raises
+        ------
+        ValidationError
+            If the supplied axes or, when no axes are supplied, figure has an unsupported type.
+        """
         config = self._check_eigensystem_parameters()
         control_name = config.control_name or "control"
 
-        if ax is None:
-            if fig is None:
-                fig, ax = plt.subplots()
-            elif isinstance(fig, (Figure, SubFigure)):
-                ax = fig.add_subplot(111)
+        # Read the grid only after (re-)solving: a stale grid would not match the new eigenenergies.
+        energies = self.eigenenergies
+        control_grid = self._control_pulse
+        assert control_grid is not None
 
-        if isinstance(ax, Axes):
-            fig = ax.figure
+        fig, ax = figure_and_axes(fig, ax)
 
-            # Read the grid only after (re-)solving: a stale grid would not match the new eigenenergies.
-            energies = self.eigenenergies
-            control_grid = self._control_pulse
-            assert control_grid is not None
+        for level in range(energies.shape[1]):
+            ax.plot(control_grid, energies[:, level], label=f"E{level}", **plot_kwargs)
 
-            for level in range(energies.shape[1]):
-                ax.plot(control_grid, energies[:, level].real, label=f"E{level}", **plot_kwargs)
+        ax.set_xlabel(control_name if xlabel is None else xlabel)
+        ax.set_ylabel("Energy" if ylabel is None else ylabel)
+        ax.set_title("Hamiltonian eigenenergies" if title is None else title)
 
-            ax.set_xlabel(control_name if xlabel is None else xlabel)
-            ax.set_ylabel("Energy" if ylabel is None else ylabel)
-            ax.set_title("Hamiltonian eigenenergies" if title is None else title)
+        if legend:
+            ax.legend(**(legend_kwargs or {}))
 
-            if legend:
-                ax.legend(**(legend_kwargs or {}))
-
-            assert fig is not None
-            return fig, ax
-        else:
-            return None
+        _show_if(show)
+        return fig, ax
 
     def plot_metric_tensor(
         self,
@@ -1405,8 +1913,9 @@ class ControlModel:
         xlabel: str | None = None,
         ylabel: str | None = None,
         title: str | None = None,
+        show: bool = True,
         **plot_kwargs: Any,
-    ) -> "tuple[Figure | SubFigure, Axes] | None":
+    ) -> "tuple[Figure | SubFigure, Axes]":
         """
         Plot the metric tensor (G tensor) as a function of the control parameter.
 
@@ -1415,8 +1924,12 @@ class ControlModel:
 
         Parameters
         ----------
-        fig, ax
-            Optional matplotlib figure/axis. If not provided, they are created.
+        fig : Figure | SubFigure | None
+            Existing figure or subfigure. If ``ax`` is absent, its single axis is used, or a subplot is added if it
+            has none (a figure with several axes needs ``ax``); if neither is supplied, a new figure and axes are
+            created.
+        ax : Axes | None
+            Existing axes to draw on. Its parent figure or subfigure is returned when supplied.
         legend : bool
             Whether to draw a legend.
         legend_kwargs : dict | None
@@ -1427,18 +1940,21 @@ class ControlModel:
             Label for the y-axis. Defaults to ``"G tensor"`` when not provided.
         title : str | None
             Plot title. Defaults to ``"G tensor"`` when not provided.
+        show : bool
+            Whether to call ``plt.show()``. Pass ``show=False`` to keep drawing on the figure.
         **plot_kwargs
             Extra kwargs forwarded to ``ax.plot``.
 
         Returns
         -------
-        tuple
+        tuple[Figure | SubFigure, Axes]
             ``(fig, ax)`` with the generated plot.
-        """
-        import matplotlib.pyplot as plt
-        from matplotlib.axes import Axes
-        from matplotlib.figure import Figure, SubFigure
 
+        Raises
+        ------
+        ValidationError
+            If the supplied axes or, when no axes are supplied, figure has an unsupported type.
+        """
         config = self._check_control_parameters()
         self._solve_eigenproblem(config)
         self._compute_metric_tensor(config)
@@ -1450,26 +1966,18 @@ class ControlModel:
         if self._metric_tensor is None:
             raise ValidationError("Metric tensor can not be None.")
 
-        if ax is None:
-            if fig is None:
-                fig, ax = plt.subplots()
-            elif isinstance(fig, (Figure, SubFigure)):
-                ax = fig.add_subplot(111)
+        fig, ax = figure_and_axes(fig, ax)
+        ax.plot(self._control_pulse, self._metric_tensor, label="G", **plot_kwargs)
 
-        if isinstance(ax, Axes):
-            fig = ax.figure
-            ax.plot(self._control_pulse, self._metric_tensor, label="G", **plot_kwargs)
+        ax.set_xlabel(control_name if xlabel is None else xlabel)
+        ax.set_ylabel("G tensor" if ylabel is None else ylabel)
+        ax.set_title("G tensor" if title is None else title)
 
-            ax.set_xlabel(control_name if xlabel is None else xlabel)
-            ax.set_ylabel("G tensor" if ylabel is None else ylabel)
-            ax.set_title("G tensor" if title is None else title)
+        if legend:
+            ax.legend(**(legend_kwargs or {}))
 
-            if legend:
-                ax.legend(**(legend_kwargs or {}))
-
-            assert fig is not None
-            return fig, ax
-        return None
+        _show_if(show)
+        return fig, ax
 
     def synthesize_pulse(self, duration: float) -> PulseControl:
         """
@@ -1492,13 +2000,30 @@ class ControlModel:
             raise SolverError("Cannot synthesize a pulse before the control solution is available.")
         return PulseControl(self._control_sol, duration)
 
-    def _check_control_parameters(self) -> _ControlParameters:
-        """Validate and return all parameters required for a complete solve."""
+    @staticmethod
+    def _check_metric_integrator_samples(n_samples: int, metric_integrator: Callable[..., Any]) -> None:
+        """Raise if ``metric_integrator`` is ``scipy.integrate.romb`` and ``n_samples`` is not ``2**k + 1``."""
+        if metric_integrator is romb:
+            power_minus_one = n_samples - 1
+            if power_minus_one <= 0 or (power_minus_one & (power_minus_one - 1)) != 0:
+                raise InvalidControlParameterError(
+                    f"num_steps={n_samples} is incompatible with romb. Use num_steps=2**k+1, "
+                    "or pass a different metric_integrator to solve_problem(...)."
+                )
+
+    def _check_control_parameters(self, metric_integrator: Callable[..., Any] | None = None) -> _ControlParameters:
+        """
+        Validate and return all parameters required for a complete solve.
+
+        ``metric_integrator`` is the integrator the solve will use (the stored one if None); ``num_steps`` is checked
+        against it here, before the eigenproblem is solved.
+        """
         control_name = self.control_name
         pulse_initial = self.pulse_initial
         pulse_final = self.pulse_final
         initial_state = self.initial_state
-        final_state = self.final_state
+        # The stored value, not the one resolved by a previous solve.
+        final_state = self._final_state
         alpha = self.alpha
         beta = self.beta
         dia_alpha = self.dia_alpha
@@ -1543,17 +2068,17 @@ class ControlModel:
         assert beta is not None
         assert num_steps is not None
 
-        if initial_state != final_state and (dia_alpha is None or dia_beta is None):
-            missing_params = [
-                name for name, value in (("dia_alpha", dia_alpha), ("dia_beta", dia_beta)) if value is None
-            ]
-            raise MissingControlParameterError(
-                f"Missing control parameters: {', '.join(missing_params)}. Please set them using set_control"
-                f"({', '.join(f'{name}=<...>' for name in missing_params)})."
-            )
+        # dia_alpha and dia_beta are checked once the spectrum shows whether the transfer is diabatic: final_state may
+        # differ from initial_state also in an adiabatic transfer through a true level crossing.
 
-        hamiltonian = self.evaluate_hamiltonian(pulse_initial)
-        dimension = hamiltonian.shape[0]
+        self._check_metric_integrator_samples(
+            num_steps, self._metric_integrator if metric_integrator is None else metric_integrator
+        )
+
+        # The dimension is fixed once known, so H is evaluated only when it is not known yet.
+        dimension = self._hamiltonian_dimension
+        if dimension is None:
+            dimension = self.evaluate_hamiltonian(pulse_initial).shape[0]
         validate_state_index(initial_state, dimension, "initial_state")
         validate_state_index(final_state, dimension, "final_state")
 
@@ -1564,10 +2089,13 @@ class ControlModel:
             num_steps=num_steps,
             initial_state=initial_state,
             final_state=final_state,
+            final_state_explicit=self._final_state_explicit,
             alpha=alpha,
             beta=beta,
             dia_alpha=dia_alpha,
             dia_beta=dia_beta,
+            norm=self._norm,
+            allow_endpoint_passages=self._allow_endpoint_passages,
         )
 
     def _generate_summary(self) -> str:
@@ -1614,6 +2142,8 @@ class ControlModel:
             f"Final state index → {self.final_state if self.final_state is not None else '❌ not set'}",
             f"(Alpha, Beta) → {alpha_beta}",
             f"(Diabatic Alpha, Diabatic Beta) → {diabatic_alpha_beta}",
+            f"Transition norm → L^{self.norm:g}",
+            f"Endpoint passages → {'allowed' if self.allow_endpoint_passages else 'not allowed'}",
             f"Eigenproblem solved → {'✅ yes' if self._flags['eigenproblem_solved'] else '❌ no'}",
             f"Metric computed → {'✅ yes' if self._flags['metric_computed'] else '❌ no'}",
             f"ODE solved → {'✅ yes' if self._flags['ode_solved'] else '❌ no'}",
@@ -1625,14 +2155,34 @@ class ControlModel:
         """
         Print a summary of the current control parameters and settings. This method provides a clear overview of the
         control parameters, their values, and any relevant settings for the optimization problem.
+
+        The status marks are emojis. If the encoding of ``sys.stdout`` cannot represent them (e.g. a Windows console
+        or redirected output with cp1252), they are printed as ``[OK]``, ``[--]`` and ``->`` instead.
         """
-        print(self._generate_summary())
+        print(self._printable_summary(self._generate_summary(), getattr(sys.stdout, "encoding", None)))
+
+    @classmethod
+    def _printable_summary(cls, summary: str, encoding: str | None) -> str:
+        """Return ``summary`` unchanged if ``encoding`` can encode it, otherwise with ASCII status marks."""
+        encoding = encoding or "utf-8"
+        try:
+            summary.encode(encoding)
+            return summary
+        except LookupError:
+            encoding = "ascii"
+        except UnicodeEncodeError:
+            pass
+        for mark, ascii_mark in cls._SUMMARY_ASCII_MARKS.items():
+            summary = summary.replace(mark, ascii_mark)
+        # Other characters the encoding lacks, e.g. in user parameter values, become "?"
+        return summary.encode(encoding, errors="replace").decode(encoding)
 
     def __str__(self) -> str:
         return (
             f"ControlModel(control_name={self.control_name}, pulse_initial={self.pulse_initial}, "
-            f"pulse_final={self.pulse_final}, initial_state={self.initial_state}, alpha={self.alpha}, "
-            f"beta={self.beta}, num_steps={self.num_steps})"
+            f"pulse_final={self.pulse_final}, initial_state={self.initial_state}, final_state={self.final_state}, "
+            f"alpha={self.alpha}, beta={self.beta}, dia_alpha={self.dia_alpha}, dia_beta={self.dia_beta}, "
+            f"norm={self.norm}, num_steps={self.num_steps}, allow_endpoint_passages={self.allow_endpoint_passages})"
         )
 
     def __repr__(self) -> str:
@@ -1693,6 +2243,19 @@ class ControlModel:
 
         if not np.isfinite(value):
             raise InvalidControlParameterError(f"{name} must be a finite number.")
+
+        return value
+
+    @staticmethod
+    def _validate_norm(value: Any) -> float:
+        if not isinstance(value, (int, float, np.integer, np.floating)) or isinstance(value, bool):
+            raise InvalidControlParameterError("Norm must be a number >= 1 or np.inf.")
+
+        value = float(value)
+
+        # NaN fails the comparison.
+        if not value >= 1:
+            raise InvalidControlParameterError("Norm must be a number >= 1 or np.inf.")
 
         return value
 

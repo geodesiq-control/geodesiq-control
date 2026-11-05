@@ -1,11 +1,15 @@
+import io
+import itertools
+import sys
 from typing import Any, cast
 
 import numpy as np
 import pytest
-from scipy.integrate import solve_ivp
+from scipy.integrate import solve_ivp, trapezoid
 
 from geodesiq import (
     ControlModel,
+    Dynamics,
     ImmutableConfigurationError,
     InvalidControlParameterError,
     MissingControlParameterError,
@@ -31,6 +35,14 @@ def lz_partial(lam, delta=1.0):
 
 LZ_H_D = np.array([[0.0, 1.0], [1.0, 0.0]])
 LZ_H_C = np.array([[1.0, 0.0], [0.0, -1.0]])
+
+_STAGES = ("eigenproblem_solved", "dia_list_computed", "metric_computed", "ode_solved")
+
+
+def mark_done(model: ControlModel, stage: str) -> None:
+    """Mark a cached stage and all stages it depends on as done (a flag cannot be True while a parent is False)."""
+    for name in _STAGES[: _STAGES.index(stage) + 1]:
+        model._flags[name] = True
 
 
 def _get_pyplot():
@@ -164,6 +176,19 @@ class TestAffineHamiltonian:
         with pytest.raises(ValidationError, match="same shape"):
             ControlModel(H_d=np.eye(2), H_c=np.eye(3))
 
+    def test_init_accepts_nested_lists_and_list_valued_callables(self):
+        # H_d/H_c are ArrayLike and H_func/partial_H_func return ArrayLike, so lists type-check as well (P-08).
+        affine = ControlModel(H_d=[[0.0, 1.0], [1.0, 0.0]], H_c=[[1.0, 0.0], [0.0, -1.0]])
+        callable_model = ControlModel(lambda x: [[x, 1.0], [1.0, -x]],
+                                      partial_H_func=lambda x: [[1.0, 0.0], [0.0, -1.0]])
+        for model in (affine, callable_model):
+            model.set_control(control_name="x", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0,
+                              beta=2.0, num_steps=33)
+
+        assert affine.control_sol.dtype == np.float64
+        assert affine.eigenenergies.dtype == np.float64
+        np.testing.assert_allclose(callable_model.control_sol, affine.control_sol, atol=1e-10)
+
     def test_affine_matrices_are_defensively_copied(self):
         H_d = LZ_H_D.copy()
         H_c = LZ_H_C.copy()
@@ -174,8 +199,10 @@ class TestAffineHamiltonian:
         assert returned_control is not None
         returned_control[0, 0] = 10.0
 
-        np.testing.assert_allclose(model.H_d, LZ_H_D)
-        np.testing.assert_allclose(model.H_c, LZ_H_C)
+        drift, control = model.H_d, model.H_c
+        assert drift is not None and control is not None
+        np.testing.assert_allclose(drift, LZ_H_D)
+        np.testing.assert_allclose(control, LZ_H_C)
 
     def test_evaluate_hamiltonian_uses_affine_form(self, affine_ham):
         control_value = 0.25
@@ -212,7 +239,9 @@ class TestAffineHamiltonian:
                                    beta=2.0, num_steps=2 ** 8 + 1, )
 
         np.testing.assert_allclose(configured_affine_ham.eigenenergies, callable_model.eigenenergies)
-        np.testing.assert_allclose(configured_affine_ham._matrix_elements, callable_model._matrix_elements)
+        affine_elements, callable_elements = configured_affine_ham._matrix_elements, callable_model._matrix_elements
+        assert affine_elements is not None and callable_elements is not None
+        np.testing.assert_allclose(affine_elements, callable_elements)
 
     def test_affine_problem_solves_without_control_name(self, affine_ham):
         affine_ham.set_control(pulse_initial=-2.0, pulse_final=2.0, initial_state=0, alpha=2.0, beta=2.0, num_steps=65)
@@ -258,11 +287,20 @@ class TestAffineHamiltonian:
         assert "affine (H_d + control * H_c)" in summary
         assert "exact constant H_c" in summary
 
-    def test_legacy_positional_verbose_argument_remains_supported(self):
-        model = ControlModel(lz_hamiltonian, lz_partial, True)
+    def test_private_verbose_argument_is_keyword_only(self, capsys):
+        # A private parameter must not take a positional slot in the public signature (P-05).
+        with pytest.raises(TypeError):
+            cast(Any, ControlModel)(lz_hamiltonian, lz_partial, True)
 
+        model = ControlModel(lz_hamiltonian, lz_partial, _flags_verbose=True)
         assert model.H_func is lz_hamiltonian
         assert model.partial_H_func is lz_partial
+
+        model.set_parameters(delta=0.5)
+        model.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0,
+                          beta=2.0, num_steps=33)
+        model.solve_problem(pulse_accuracy=30)
+        assert capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +362,23 @@ class TestSetterValidation:
     def test_beta_rejects_non_number(self, bare_ham):
         with pytest.raises(InvalidControlParameterError, match="number"):
             bare_ham.beta = "two"
+
+    @pytest.mark.parametrize("value", ["two", True, np.nan, 0.5, 0, -np.inf])
+    def test_norm_rejects_invalid_values(self, bare_ham, value):
+        with pytest.raises(InvalidControlParameterError, match="Norm"):
+            bare_ham.norm = value
+        assert bare_ham.norm == 2.0
+
+    @pytest.mark.parametrize("value", [1, 2.0, 3, np.int64(4), np.inf])
+    def test_norm_accepts_valid_values(self, bare_ham, value):
+        bare_ham.norm = value
+        assert bare_ham.norm == float(value)
+        assert isinstance(bare_ham.norm, float)
+
+    def test_norm_none_keeps_value(self, bare_ham):
+        bare_ham.set_control(norm=1)
+        bare_ham.set_control(norm=None)
+        assert bare_ham.norm == 1.0
 
     def test_num_steps_rejects_non_positive(self, bare_ham):
         with pytest.raises(InvalidControlParameterError, match=">= 3"):
@@ -424,6 +479,60 @@ class TestSetParameters:
         model.set_parameters(letter="y")
         assert np.allclose(model(value=1), hamiltonian(value=1, letter="y"))
 
+    @staticmethod
+    def _array_coupling_model(coupling) -> ControlModel:
+        def array_hamiltonian(lam, coupling):
+            return np.array([[lam, coupling[0]], [coupling[0], -lam]])
+
+        model = ControlModel(array_hamiltonian)
+        model.set_control(control_name="lam", pulse_initial=-5.0, pulse_final=5.0, initial_state=0, final_state=0,
+                          alpha=2.0, beta=2.0, num_steps=2 ** 8 + 1, )
+        model.set_parameters(coupling=coupling)
+        return model
+
+    def test_set_parameters_after_in_place_array_change_resolves(self):
+        coupling = np.array([0.5])
+        model = self._array_coupling_model(coupling)
+        model.solve_problem()
+        stale_pulse = model.control_sol.copy()
+
+        coupling[0] = 0.05
+        model.set_parameters(coupling=coupling)
+        assert model._flags["eigenproblem_solved"] is False
+
+        model.solve_problem()
+        fresh = self._array_coupling_model(np.array([0.05]))
+        fresh.solve_problem()
+        assert not np.allclose(model.control_sol, stale_pulse)
+        assert np.allclose(model.control_sol, fresh.control_sol)
+
+    def test_in_place_array_change_without_set_parameters_does_not_leak(self):
+        coupling = np.array([0.5])
+        model = self._array_coupling_model(coupling)
+        model.solve_problem()
+
+        coupling[0] = 0.05
+
+        assert not np.shares_memory(model._parameters["coupling"], coupling)
+        assert model.parameters["coupling"][0] == 0.5
+        assert np.allclose(model(lam=0.0), [[0.0, 0.5], [0.5, 0.0]])
+        assert model._flags["eigenproblem_solved"] is True
+
+    def test_set_parameters_copies_nested_arrays(self):
+        model = ControlModel(hamiltonian)
+        config = {"values": np.array([1.0, 2.0]), "weights": [np.array([3.0])], }
+        model.set_parameters(config=config)
+        model._flags["eigenproblem_solved"] = True
+
+        config["values"][0] = 100.0
+        config["weights"][0][0] = 100.0
+        assert model.parameters["config"]["values"][0] == 1.0
+        assert model.parameters["config"]["weights"][0][0] == 3.0
+
+        model.set_parameters(config=config)
+        assert model._flags["eigenproblem_solved"] is False
+        assert model.parameters["config"]["values"][0] == 100.0
+
 
 # ---------------------------------------------------------------------------
 # get_parameters
@@ -446,7 +555,7 @@ class TestGetParameters:
         model.set_parameters(offset=2.0)
 
         with pytest.raises(TypeError):
-            model.parameters["offset"] = 3.0
+            cast(Any, model.parameters)["offset"] = 3.0
 
     def test_parameters_does_not_expose_internal_numpy_array(self):
         model = ControlModel(simple_hamiltonian)
@@ -556,8 +665,7 @@ class TestSetControl:
         assert bare_ham.num_steps == 2 ** 10 + 1
 
     def test_set_control_same_values_keep_flags(self, configured_ham):
-        configured_ham._flags["eigenproblem_solved"] = True
-        configured_ham._flags["metric_computed"] = True
+        mark_done(configured_ham, "metric_computed")
 
         configured_ham.set_control(control_name="lam", pulse_initial=-5.0, pulse_final=5.0, initial_state=0,
                                    final_state=0, alpha=2.0, beta=2.0, num_steps=2 ** 8 + 1, )
@@ -619,6 +727,40 @@ class TestSetControl:
         assert model.dia_beta == 2.0
         assert model.num_steps == 129
 
+    def test_implicit_final_state_follows_initial_state(self, configured_ham):
+        # final_state kept its first (implicit) value, so this turned into a diabatic transfer 1 -> 0 that then
+        # failed asking for dia_alpha/dia_beta (C-12).
+        configured_ham.solve_problem()
+        configured_ham.set_control(initial_state=1)
+
+        assert configured_ham.final_state == 1
+        assert configured_ham._flags["metric_computed"] is False
+        configured_ham.solve_problem()
+        assert configured_ham._flags["ode_solved"]
+
+        configured_ham.initial_state = 0
+        assert configured_ham.final_state == 0
+
+    def test_explicit_final_state_is_kept_when_initial_state_changes(self, configured_ham):
+        configured_ham.set_control(final_state=0)
+        configured_ham.set_control(initial_state=1, dia_alpha=1.0, dia_beta=1.0)
+
+        assert (configured_ham.initial_state, configured_ham.final_state) == (1, 0)
+
+    def test_final_state_set_together_with_initial_state_is_explicit(self, ham_with_partial):
+        ham_with_partial.set_control(control_name="lam", pulse_initial=-2.0, pulse_final=2.0, initial_state=0,
+                                     final_state=0, alpha=2.0, beta=2.0, )
+        ham_with_partial.set_control(initial_state=1, dia_alpha=1.0, dia_beta=1.0)
+
+        assert ham_with_partial.final_state == 0
+
+    def test_failed_set_control_does_not_make_final_state_explicit(self, configured_ham):
+        with pytest.raises(InvalidControlParameterError):
+            configured_ham.set_control(final_state=1, alpha=np.inf)
+
+        configured_ham.set_control(initial_state=1)
+        assert configured_ham.final_state == 1
+
 
 # ---------------------------------------------------------------------------
 # _check_control_parameters
@@ -662,8 +804,10 @@ class TestCheckControlParameters:
         ham.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, final_state=1,
                         alpha=2.0, beta=2.0, num_steps=33, )
 
+        # Whether the transfer is diabatic is known once the spectrum shows where the followed state ends (C-07).
+        ham._check_control_parameters()
         with pytest.raises(MissingControlParameterError, match="dia_alpha"):
-            ham._check_control_parameters()
+            ham.solve_problem()
 
 
 # ---------------------------------------------------------------------------
@@ -678,7 +822,7 @@ class TestFlagResets:
         assert configured_ham._flags["eigenproblem_solved"] is False
 
     def test_changing_alpha_resets_metric(self, configured_ham):
-        configured_ham._flags["metric_computed"] = True
+        mark_done(configured_ham, "metric_computed")
         configured_ham.alpha = 3.0
         assert configured_ham._flags["metric_computed"] is False
 
@@ -705,31 +849,44 @@ class TestFlagResets:
         assert configured_ham._flags["eigenproblem_solved"] is True
 
     def test_reassigning_same_initial_state_keeps_metric_flag(self, configured_ham):
-        configured_ham._flags["metric_computed"] = True
+        mark_done(configured_ham, "metric_computed")
         configured_ham.initial_state = 0
         assert configured_ham._flags["metric_computed"] is True
 
     def test_reassigning_same_final_state_keeps_metric_flag(self, configured_ham):
-        configured_ham._flags["metric_computed"] = True
+        mark_done(configured_ham, "metric_computed")
         configured_ham.final_state = 0
         assert configured_ham._flags["metric_computed"] is True
 
     def test_reassigning_same_alpha_keeps_metric_flag(self, configured_ham):
-        configured_ham._flags["metric_computed"] = True
+        mark_done(configured_ham, "metric_computed")
         configured_ham.alpha = 2.0
         assert configured_ham._flags["metric_computed"] is True
 
     def test_reassigning_same_beta_keeps_metric_flag(self, configured_ham):
-        configured_ham._flags["metric_computed"] = True
+        mark_done(configured_ham, "metric_computed")
         configured_ham.beta = 2.0
         assert configured_ham._flags["metric_computed"] is True
 
+    def test_changing_norm_resets_metric_only(self, configured_ham):
+        mark_done(configured_ham, "ode_solved")
+        configured_ham.norm = 1
+        assert configured_ham._flags["eigenproblem_solved"] is True
+        assert configured_ham._flags["dia_list_computed"] is True
+        assert configured_ham._flags["metric_computed"] is False
+        assert configured_ham._flags["ode_solved"] is False
+
+    def test_reassigning_same_norm_keeps_metric_flag(self, configured_ham):
+        mark_done(configured_ham, "metric_computed")
+        configured_ham.norm = 2
+        assert configured_ham._flags["metric_computed"] is True
+
     def test_setting_dia_exponents_resets_metric_flag(self, configured_ham):
-        configured_ham._flags["metric_computed"] = True
+        mark_done(configured_ham, "metric_computed")
         configured_ham.dia_alpha = 1.5
         assert configured_ham._flags["metric_computed"] is False
 
-        configured_ham._flags["metric_computed"] = True
+        mark_done(configured_ham, "metric_computed")
         configured_ham.dia_beta = 1.5
         assert configured_ham._flags["metric_computed"] is False
 
@@ -782,6 +939,21 @@ class TestHamiltonians:
         with pytest.raises(ValidationError, match="return a matrix with the same shape as H_func"):
             model._call_partial_hamiltonian(0.0)
 
+    def test_partial_call_validates_list_valued_hamiltonian(self):
+        # The raw H_func result was used for its .shape, so a nested list raised AttributeError (C-21).
+        model = ControlModel(H_func=lambda x: [[x, 1.0], [1.0, -x]], partial_H_func=lambda x: np.diag([1.0, -1.0]))
+        model.set_control("x")
+
+        np.testing.assert_allclose(model._call_partial_hamiltonian(x=0.5), np.diag([1.0, -1.0]))
+        assert model.hamiltonian_dimension == 2
+
+    def test_partial_call_reports_invalid_hamiltonian(self):
+        model = ControlModel(H_func=lambda x: [[x, 1.0], [0.0, -x]], partial_H_func=lambda x: np.diag([1.0, -1.0]))
+        model.set_control("x")
+
+        with pytest.raises(ValidationError, match="H_func must return a Hermitian matrix"):
+            model._call_partial_hamiltonian(x=0.5)
+
 
 # ---------------------------------------------------------------------------
 # __str__ / __repr__
@@ -792,6 +964,15 @@ class TestStringRepresentations:
     def test_str_contains_control_name(self, configured_ham):
         s = str(configured_ham)
         assert "lam" in s
+
+    def test_str_contains_diabatic_configuration(self, configured_ham):
+        # final_state, dia_alpha and dia_beta were missing from __str__ (C-21).
+        configured_ham.set_control(final_state=1, dia_alpha=1.5, dia_beta=0.5)
+        s = str(configured_ham)
+
+        assert "final_state=1" in s
+        assert "dia_alpha=1.5" in s
+        assert "dia_beta=0.5" in s
 
     def test_repr_contains_summary_banner(self, configured_ham):
         r = repr(configured_ham)
@@ -824,7 +1005,7 @@ class TestSolveProblem:
 
     def test_solve_problem_recomputes_ode_when_pulse_accuracy_changes(self, configured_ham):
         configured_ham.solve_problem(pulse_accuracy=25)
-        first_s = configured_ham._s.copy()
+        first_tau = configured_ham._tau.copy()
         first_sol = configured_ham._control_sol.copy()
         assert configured_ham._previous_pulse_accuracy == 25
 
@@ -832,9 +1013,9 @@ class TestSolveProblem:
 
         assert configured_ham._flags["ode_solved"] is True
         assert configured_ham._previous_pulse_accuracy == 60
-        assert first_s.shape == (25,)
+        assert first_tau.shape == (25,)
         assert first_sol.shape == (25,)
-        assert configured_ham._s.shape == (60,)
+        assert configured_ham._tau.shape == (60,)
         assert configured_ham._control_sol.shape == (60,)
 
     def test_solve_problem_with_numerical_partial(self):
@@ -874,13 +1055,13 @@ class TestSolveProblem:
         def custom_metric_integrator(values, dx=1.0, scale=1.0):
             calls["dx"] = dx
             calls["scale"] = scale
-            return np.trapezoid(values, dx=dx) * scale
+            return trapezoid(values, dx=dx) * scale
 
         configured_ham.solve_problem(metric_integrator=custom_metric_integrator,
                                      metric_integrator_kwargs={"scale": 1.0}, )
 
         dx = float(np.abs(configured_ham._control_pulse[1] - configured_ham._control_pulse[0]))
-        expected = np.trapezoid(np.sqrt(configured_ham._metric_tensor), dx=dx)
+        expected = trapezoid(np.sqrt(configured_ham._metric_tensor), dx=dx)
 
         assert np.isclose(calls["dx"], dx)
         assert np.isclose(calls["scale"], 1.0)
@@ -890,13 +1071,63 @@ class TestSolveProblem:
         configured_ham.solve_problem()
         baseline = configured_ham._control_sol.copy()
 
-        def synthetic_solver(_, __, y0, t_eval=None, **kwargs):
-            return t_eval, np.array([np.full_like(t_eval, y0[0] + kwargs.get("offset", 0.0), dtype=float)])
+        calls = []
 
-        configured_ham.solve_problem(solver=synthetic_solver, solver_kwargs={"offset": 0.123})
+        # A custom solver must follow the geodesic (C-03), so this one records its call and integrates correctly.
+        def recording_solver(fun, t_span, y0, t_eval=None, **kwargs):
+            calls.append(kwargs)
+            return solve_ivp(fun, t_span, y0, t_eval=t_eval, **kwargs)
 
-        assert np.allclose(configured_ham._control_sol, configured_ham.pulse_initial + 0.123)
-        assert not np.allclose(configured_ham._control_sol, baseline)
+        configured_ham.solve_problem(solver=recording_solver, solver_kwargs={"rtol": 1e-10, "atol": 1e-12})
+
+        assert calls == [{"rtol": 1e-10, "atol": 1e-12}]
+        assert configured_ham._flags["ode_solved"]
+        np.testing.assert_allclose(configured_ham._control_sol, baseline, atol=1e-4)
+
+    def test_array_valued_metric_integrator_kwargs_are_compared_elementwise(self, configured_ham):
+        # Comparing the kwargs dicts with != raised "The truth value of an array ... is ambiguous" (C-11).
+        def integrator(values, dx=1.0, x=None):
+            return trapezoid(values, x=x)
+
+        x = configured_ham.control_pulse
+        configured_ham.solve_problem(metric_integrator=integrator, metric_integrator_kwargs={"x": x.copy()})
+        a_tilde = configured_ham._a_tilde
+
+        configured_ham.solve_problem(metric_integrator_kwargs={"x": x.copy()})
+        assert configured_ham._flags["metric_computed"] is True
+
+        configured_ham.solve_problem(metric_integrator_kwargs={"x": 2 * x})
+        assert np.isclose(configured_ham._a_tilde, 2 * a_tilde)
+
+    def test_array_valued_solver_kwargs_are_compared_elementwise(self, configured_ham):
+        calls = []
+
+        def solver_with_array_option(fun, t_span, y0, t_eval=None, weights=None, **kwargs):
+            assert weights is not None
+            calls.append(weights.copy())
+            return solve_ivp(fun, t_span, y0, t_eval=t_eval, rtol=1e-10, atol=1e-12, **kwargs)
+
+        weights = np.array([1.0, 2.0, 3.0])
+        configured_ham.solve_problem(solver=solver_with_array_option, solver_kwargs={"weights": weights.copy()})
+        configured_ham.solve_problem(solver_kwargs={"weights": weights.copy()})
+        assert len(calls) == 1
+
+        configured_ham.solve_problem(solver_kwargs={"weights": 2 * weights})
+        assert len(calls) == 2
+
+    def test_array_kwargs_changed_in_place_invalidate_the_cache(self, configured_ham):
+        def integrator(values, dx=1.0, x=None):
+            return trapezoid(values, x=x)
+
+        x = configured_ham.control_pulse.copy()
+        kwargs = {"x": x}
+        configured_ham.solve_problem(metric_integrator=integrator, metric_integrator_kwargs=kwargs)
+        a_tilde = configured_ham._a_tilde
+
+        x *= 2
+        assert np.isclose(configured_ham._metric_integrator_kwargs["x"][-1], x[-1] / 2)
+        configured_ham.solve_problem(metric_integrator_kwargs=kwargs)
+        assert np.isclose(configured_ham._a_tilde, 2 * a_tilde)
 
     def test_solve_problem_rejects_non_callable_solver(self, configured_ham):
         with pytest.raises(ValidationError, match="solver must be a callable"):
@@ -909,6 +1140,57 @@ class TestSolveProblem:
     def test_solve_problem_rejects_non_dict_solver_kwargs(self, configured_ham):
         with pytest.raises(ValidationError, match="solver_kwargs must be a dictionary"):
             configured_ham.solve_problem(solver_kwargs=cast(Any, "bad"))
+
+    @pytest.mark.parametrize("solver_kwargs", [{"rtol": 1e-10}, {"method": "LSODA", "rtol": 1e-10, "atol": 1e-12}])
+    def test_default_solver_kwargs_path_matches_the_exact_antiderivative(self, configured_ham, solver_kwargs):
+        # With solver_kwargs, the default solver integrates dtau/dx with solve_ivp instead of through the exact PCHIP
+        # antiderivative; both must give the same pulse (P-01).
+        configured_ham.solve_problem(pulse_accuracy=200)
+        exact = configured_ham.control_sol.copy()
+
+        configured_ham.solve_problem(solver_kwargs=solver_kwargs)
+
+        assert configured_ham._solver is solve_ivp
+        assert configured_ham.control_sol[0] == -5.0 and configured_ham.control_sol[-1] == 5.0
+        np.testing.assert_allclose(configured_ham.control_sol, exact, rtol=0, atol=1e-6)
+
+    def test_default_solver_step_options_are_in_control_units(self, configured_ham, monkeypatch):
+        # The default solver integrates dtau/dx over the control x in [-5, 5], so max_step limits steps in x, not in
+        # tau in [0, 1] (C-10).
+        import geodesiq.controlmodel as controlmodel
+
+        calls = []
+
+        def recording_solve_ivp(fun, t_span, y0, **kwargs):
+            sol = solve_ivp(fun, t_span, y0, **kwargs)
+            calls.append((list(t_span), sol.t))
+            return sol
+
+        monkeypatch.setattr(controlmodel, "solve_ivp", recording_solve_ivp)
+        configured_ham._solver = recording_solve_ivp
+
+        configured_ham.solve_problem(solver_kwargs={"max_step": 0.5})
+
+        (t_span, steps), = calls
+        assert t_span == [-5.0, 5.0]
+        assert steps.size - 1 >= 20  # at least 10 / 0.5 steps in x
+        assert np.max(np.diff(steps)) <= 0.5
+
+    @pytest.mark.parametrize("reserved", ["dense_output", "events", "t_eval"])
+    def test_default_solver_rejects_internally_managed_kwargs(self, configured_ham, reserved):
+        with pytest.raises(ValidationError, match=f"must not override internally managed option\\(s\\): {reserved}"):
+            configured_ham.solve_problem(solver_kwargs={reserved: None})
+
+    @pytest.mark.parametrize("solver_kwargs", [{"bogus": 1}, {"rtl": 1e-8}, {"method": "RK45", "min_step": 1e-3}])
+    def test_default_solver_rejects_kwargs_without_effect(self, configured_ham, solver_kwargs):
+        # solve_ivp only warns about options the chosen method ignores, so a typo kept the default tolerances.
+        name = [key for key in solver_kwargs if key != "method"][0]
+        with pytest.raises(ValidationError, match=f"Invalid solve_ivp keyword arguments: .*`{name}`"):
+            configured_ham.solve_problem(solver_kwargs=solver_kwargs)
+
+    def test_default_solver_reports_conflicting_kwargs(self, configured_ham):
+        with pytest.raises(ValidationError, match="Invalid solve_ivp keyword arguments"):
+            configured_ham.solve_problem(solver_kwargs={"y0": [0.0]})
 
     def test_solve_problem_rejects_non_dict_metric_integrator_kwargs(self, configured_ham):
         with pytest.raises(ValidationError, match="metric_integrator_kwargs must be a dictionary"):
@@ -1073,7 +1355,7 @@ class TestNumericalPartialAccuracy:
         ham_num.solve_problem()
         ham_ana.solve_problem()
 
-        np.testing.assert_allclose(ham_num._control_sol, ham_ana._control_sol, atol=1e-2,
+        np.testing.assert_allclose(ham_num.control_sol, ham_ana.control_sol, atol=1e-2,
                                    err_msg="Numerical and analytical solutions should be close", )
 
 
@@ -1093,6 +1375,20 @@ class TestControlSolMonotonicity:
 # ---------------------------------------------------------------------------
 # plot_eigenvalues
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("method", ["plot_eigenvalues", "plot_metric_tensor"])
+@pytest.mark.parametrize(("kwargs", "expected_calls"), [({}, 1), ({"show": False}, 0)])
+def test_controlmodel_plots_call_show_by_default(configured_ham, monkeypatch, method, kwargs, expected_calls):
+    """Like plot_pulse(), the ControlModel plots call plt.show() unless show=False (W2-102)."""
+    plt = _get_pyplot()
+    calls = []
+    monkeypatch.setattr(plt, "show", lambda: calls.append(1))
+
+    fig, _ = getattr(configured_ham, method)(**kwargs)
+
+    assert len(calls) == expected_calls
+    plt.close(fig)
 
 
 class TestPlotEigenvalues:
@@ -1161,6 +1457,39 @@ class TestPlotEigenvalues:
 
         plt.close(fig)
 
+    def test_plot_eigenvalues_with_subfigure_adds_axis(self, configured_ham):
+        plt = _get_pyplot()
+        fig = plt.figure()
+        subfig = fig.subfigures(1, 2)[1]
+
+        out_fig, out_ax = configured_ham.plot_eigenvalues(fig=subfig)
+
+        assert out_fig is subfig
+        assert out_ax.figure is subfig
+
+        plt.close(fig)
+
+    def test_plot_eigenvalues_rejects_a_figure_passed_as_axis(self, configured_ham):
+        # A figure passed positionally as ax returned None silently (P-04).
+        plt = _get_pyplot()
+        fig = plt.figure()
+        open_figures = plt.get_fignums()
+
+        with pytest.raises(ValidationError, match="ax must be a matplotlib Axes or None, got Figure"):
+            configured_ham.plot_eigenvalues(None, cast(Any, fig))
+
+        assert plt.get_fignums() == open_figures
+        plt.close(fig)
+
+    def test_plot_eigenvalues_rejects_an_invalid_figure(self, configured_ham):
+        plt = _get_pyplot()
+        open_figures = plt.get_fignums()
+
+        with pytest.raises(ValidationError, match="fig must be a matplotlib Figure, SubFigure or None, got str"):
+            configured_ham.plot_eigenvalues(fig=cast(Any, "figure"))
+
+        assert plt.get_fignums() == open_figures
+
 
 # ---------------------------------------------------------------------------
 # plot_metric_tensor
@@ -1222,6 +1551,27 @@ class TestPlotMetricTensor:
         assert out_fig is fig
 
         plt.close(fig)
+
+    def test_plot_metric_tensor_rejects_a_figure_passed_as_axis(self, configured_ham):
+        # A figure passed positionally as ax returned None silently (P-04).
+        plt = _get_pyplot()
+        fig = plt.figure()
+        open_figures = plt.get_fignums()
+
+        with pytest.raises(ValidationError, match="ax must be a matplotlib Axes or None, got Figure"):
+            configured_ham.plot_metric_tensor(None, cast(Any, fig))
+
+        assert plt.get_fignums() == open_figures
+        plt.close(fig)
+
+    def test_plot_metric_tensor_rejects_an_invalid_figure(self, configured_ham):
+        plt = _get_pyplot()
+        open_figures = plt.get_fignums()
+
+        with pytest.raises(ValidationError, match="fig must be a matplotlib Figure, SubFigure or None, got str"):
+            configured_ham.plot_metric_tensor(fig=cast(Any, "figure"))
+
+        assert plt.get_fignums() == open_figures
 
     def test_plot_metric_tensor_computes_metric_if_needed(self, configured_ham):
         plt = _get_pyplot()
@@ -1285,6 +1635,60 @@ class TestSolveProblemErrors:
         with pytest.raises(InvalidControlParameterError, match="incompatible with romb"):
             ham.solve_problem()
 
+    def test_romb_incompatible_num_steps_fails_before_the_eigenproblem(self):
+        # The romb check ran only after the full eigenproblem had been solved (C-18).
+        calls = []
+
+        def hamiltonian(lam, delta):
+            calls.append(lam)
+            return lz_hamiltonian(lam, delta)
+
+        ham = ControlModel(hamiltonian, partial_H_func=lz_partial)
+        ham.set_parameters(delta=0.5)
+        ham.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0, beta=2.0,
+                        num_steps=100)
+
+        with pytest.raises(InvalidControlParameterError, match="incompatible with romb"):
+            ham.solve_problem()
+        assert len(calls) <= 1
+        assert ham._flags["eigenproblem_solved"] is False
+
+    def test_non_romb_integrator_passed_to_solve_problem_accepts_any_num_steps(self):
+        ham = ControlModel(lz_hamiltonian, partial_H_func=lz_partial)
+        ham.set_parameters(delta=0.5)
+        ham.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0, beta=2.0,
+                        num_steps=100)
+
+        ham.solve_problem(metric_integrator=lambda values, dx: trapezoid(values, dx=dx))
+        assert ham._flags["ode_solved"]
+
+    def test_warm_solve_does_not_evaluate_the_hamiltonian(self):
+        # _check_control_parameters evaluated H(pulse_initial) on every call only to get the dimension (C-18).
+        calls = []
+
+        def hamiltonian(lam, delta):
+            calls.append(lam)
+            return lz_hamiltonian(lam, delta)
+
+        ham = ControlModel(hamiltonian, partial_H_func=lz_partial)
+        ham.set_parameters(delta=0.5)
+        ham.set_control(control_name="lam", pulse_initial=-1.0, pulse_final=1.0, initial_state=0, alpha=2.0, beta=2.0,
+                        num_steps=33)
+        ham.solve_problem()
+        calls.clear()
+
+        ham.solve_problem()
+        fig, _ = ham.plot_metric_tensor()
+        _get_pyplot().close(fig)
+        assert calls == []
+
+    def test_state_index_is_validated_against_the_known_dimension(self, configured_ham):
+        configured_ham.solve_problem()
+        configured_ham.set_control(initial_state=2)
+
+        with pytest.raises(ValidationError, match="between 0 and 1"):
+            configured_ham.solve_problem()
+
 
 # ---------------------------------------------------------------------------
 # _generate_summary content
@@ -1323,9 +1727,9 @@ class TestLandauZenerAnalytical:
         ham.set_control(control_name="lam", pulse_initial=pulse_0, pulse_final=pulse_f, initial_state=0, alpha=0,
                         beta=0, num_steps=2 ** 8 + 1, )
         ham.solve_problem()
-        s = ham._s
+        tau = ham.tau
 
-        expected_control = pulse_0 * (1 - 2 * s)
+        expected_control = pulse_0 * (1 - 2 * tau)
 
         np.testing.assert_allclose(ham.control_sol, expected_control, atol=1e-2,
                                    err_msg="Optimal control for LZ n_+ = 0 is wrong")
@@ -1342,9 +1746,9 @@ class TestLandauZenerAnalytical:
         ham.set_control(control_name="lam", pulse_initial=pulse_0, pulse_final=pulse_f, initial_state=0, alpha=1,
                         beta=1, num_steps=2 ** 8 + 1, )
         ham.solve_problem()
-        s = ham._s
+        tau = ham.tau
 
-        expected_control = delta * np.sinh((1 - 2 * s) * np.arcsinh(pulse_0 / delta))
+        expected_control = delta * np.sinh((1 - 2 * tau) * np.arcsinh(pulse_0 / delta))
 
         np.testing.assert_allclose(ham.control_sol, expected_control, atol=1e-2,
                                    err_msg="Optimal control for LZ n_+ = 1 is wrong")
@@ -1361,9 +1765,9 @@ class TestLandauZenerAnalytical:
         ham.set_control(control_name="lam", pulse_initial=pulse_0, pulse_final=pulse_f, initial_state=0, alpha=2,
                         beta=2, num_steps=2 ** 8 + 1, )
         ham.solve_problem()
-        s = ham._s
+        tau = ham.tau
 
-        expected_control = -delta * np.tan((2 * s - 1) * np.arctan(pulse_0 / delta))
+        expected_control = -delta * np.tan((2 * tau - 1) * np.arctan(pulse_0 / delta))
 
         np.testing.assert_allclose(ham.control_sol, expected_control, atol=1e-2,
                                    err_msg="Optimal control for LZ n_+ = 2 is wrong")
@@ -1380,12 +1784,56 @@ class TestLandauZenerAnalytical:
         ham.set_control(control_name="lam", pulse_initial=pulse_0, pulse_final=pulse_f, initial_state=0, alpha=3,
                         beta=3, num_steps=2 ** 8 + 1, )
         ham.solve_problem()
-        s = ham._s
+        tau = ham.tau
 
-        expected_control = (1 - 2 * s) * delta * pulse_0 / np.sqrt(delta ** 2 - 4 * (s - 1) * s * pulse_0 ** 2)
+        expected_control = (1 - 2 * tau) * delta * pulse_0 / np.sqrt(delta ** 2 - 4 * (tau - 1) * tau * pulse_0 ** 2)
 
         np.testing.assert_allclose(ham.control_sol, expected_control, atol=1e-2,
                                    err_msg="Optimal control for LZ n_+ = 3 is wrong")
+
+
+class TestLandauZenerSweepDirection:
+    """The LZ spectrum is symmetric under z -> -z, so sweeping z(0) > z(1) mirrors the sweep z(0) < z(1)."""
+
+    @staticmethod
+    def _solved_model(mode: str, pulse_initial: float, pulse_final: float, alpha: float, beta: float) -> ControlModel:
+        delta = 0.5
+        if mode == "affine":
+            model = ControlModel(H_d=lz_hamiltonian(0.0, delta), H_c=LZ_H_C)
+        else:
+            model = ControlModel(lz_hamiltonian, partial_H_func=lz_partial if mode == "partial" else None)
+            model.set_parameters(delta=delta)
+        model.set_control(control_name="lam", pulse_initial=pulse_initial, pulse_final=pulse_final, initial_state=0,
+                          alpha=alpha, beta=beta, num_steps=2 ** 8 + 1, )
+        model.solve_problem(pulse_accuracy=200)
+        return model
+
+    @pytest.mark.parametrize("mode", ["partial", "numerical", "affine"])
+    @pytest.mark.parametrize(("alpha", "beta"), [(0.0, 0.0), (2.0, 2.0), (4.0, 2.0)])
+    def test_decreasing_sweep_mirrors_increasing_sweep(self, mode: str, alpha: float, beta: float):
+        increasing = self._solved_model(mode, -5.0, 5.0, alpha, beta)
+        decreasing = self._solved_model(mode, 5.0, -5.0, alpha, beta)
+
+        z_up = increasing.control_sol
+        z_down = decreasing.control_sol
+        assert (z_up[0], z_up[-1]) == (-5.0, 5.0)
+        assert (z_down[0], z_down[-1]) == (5.0, -5.0)
+        assert np.all(np.diff(z_up) >= 0)
+        assert np.all(np.diff(z_down) <= 0)
+        # z_down(tau) = -z_up(tau), and by time-reversal symmetry also z_up(1 - tau).
+        np.testing.assert_allclose(z_down, -z_up, atol=1e-10)
+        np.testing.assert_allclose(z_down, z_up[::-1], atol=1e-10)
+
+    @pytest.mark.parametrize(("alpha", "beta"), [(2.0, 2.0), (4.0, 2.0)])
+    @pytest.mark.parametrize("duration", [2.0, 8.0, 20.0])
+    def test_decreasing_sweep_reaches_the_same_fidelity(self, alpha: float, beta: float, duration: float):
+        increasing = self._solved_model("partial", -5.0, 5.0, alpha, beta)
+        decreasing = self._solved_model("partial", 5.0, -5.0, alpha, beta)
+
+        fidelity_up = Dynamics(duration=duration, model=increasing).state_fidelity()
+        fidelity_down = Dynamics(duration=duration, model=decreasing).state_fidelity()
+
+        assert np.isclose(fidelity_down, fidelity_up, rtol=0.0, atol=1e-8)
 
 
 class TestCoverageRestorations:
@@ -1414,6 +1862,28 @@ class TestCoverageRestorations:
         captured = capsys.readouterr()
         assert "ControlModel Control Summary" in captured.out
 
+    def test_printable_summary_keeps_emojis_when_encodable(self, bare_ham):
+        summary = bare_ham._generate_summary()
+        assert bare_ham._printable_summary(summary, "utf-8") == summary
+        assert bare_ham._printable_summary(summary, None) == summary
+
+    def test_print_summary_falls_back_to_ascii_on_cp1252(self, bare_ham, monkeypatch):
+        # A Windows console or redirected output with cp1252 cannot encode the emojis; printing must not raise
+        buffer = io.BytesIO()
+        stream = io.TextIOWrapper(buffer, encoding="cp1252")
+        monkeypatch.setattr(sys, "stdout", stream)
+        bare_ham.print_summary()
+        stream.flush()
+        output = buffer.getvalue().decode("cp1252")
+        assert "[--] not set" in output
+        assert "Control name -> " in output
+        assert "❌" not in output
+
+    def test_printable_summary_unknown_encoding_falls_back_to_ascii(self, bare_ham):
+        output = bare_ham._printable_summary(bare_ham._generate_summary(), "no-such-codec")
+        assert output.isascii()
+        assert "[--] not set" in output
+
 
 class TestSynthesizePulse:
     def test_synthesize_pulse_returns_pulse_control_instance(self, configured_ham):
@@ -1435,7 +1905,7 @@ class TestSolveProblemErrorsExtended:
 
     def test_solve_ode_returns_early_when_already_solved(self, configured_ham):
         configured_ham._previous_pulse_accuracy = 10
-        configured_ham._flags["ode_solved"] = True
+        mark_done(configured_ham, "ode_solved")
 
         configured_ham._solve_ode(10)
 
@@ -1504,12 +1974,85 @@ class TestDiabaticMetricPath:
 
     def test_solve_dia_list_returns_early_when_cached(self):
         ham = ControlModel(lz_hamiltonian, partial_H_func=lz_partial)
-        ham._flags["dia_list_computed"] = True
-        ham._dia_list = np.array([[1]])
+        mark_done(ham, "dia_list_computed")
+        # Deliberately invalid values: the cached stage must return before looking at them.
+        ham._dia_list = cast(Any, np.array([[1]]))
 
-        ham._solve_dia_list({})
+        ham._solve_dia_list(cast(Any, {}))
 
         np.testing.assert_array_equal(ham._dia_list, np.array([[1]]))
+
+    @staticmethod
+    def _assert_flags_consistent(model: ControlModel) -> None:
+        for name in ("dia_list_computed", "metric_computed", "ode_solved"):
+            if model._flags[name]:
+                assert all(model._flags[parent] for parent in model._flags._parents[name]), name
+
+    def test_state_change_lowers_the_dia_list_flag_also_for_equal_states(self, configured_ham):
+        # set_control set dia_list_computed=True for equal states even without an eigenproblem (C-13).
+        configured_ham.set_control(initial_state=1, final_state=1)
+
+        assert configured_ham._flags["eigenproblem_solved"] is False
+        assert configured_ham._flags["dia_list_computed"] is False
+        self._assert_flags_consistent(configured_ham)
+
+    def test_adiabatic_solve_marks_the_empty_dia_list_stage_done(self, configured_ham):
+        configured_ham.solve_problem()
+
+        assert configured_ham._flags["dia_list_computed"] is True
+        assert configured_ham._dia_list is None
+        self._assert_flags_consistent(configured_ham)
+
+    def test_switching_between_adiabatic_and_diabatic_keeps_flags_consistent(self, configured_ham):
+        configured_ham.solve_problem()
+        configured_ham.set_control(final_state=1, dia_alpha=-1.0, dia_beta=1.0)
+        self._assert_flags_consistent(configured_ham)
+
+        configured_ham.solve_problem()
+        assert configured_ham._dia_list is not None
+        self._assert_flags_consistent(configured_ham)
+
+        configured_ham.set_control(final_state=0)
+        assert configured_ham._flags["dia_list_computed"] is False
+        assert configured_ham._dia_list is None
+        configured_ham.solve_problem()
+        assert configured_ham._flags["ode_solved"] is True
+        assert configured_ham._dia_list is None
+        self._assert_flags_consistent(configured_ham)
+
+    def test_sweep_without_the_anticrossing_needs_the_endpoint_override(self):
+        # Review K-09, A-13: z from 1 to 10 does not contain the LZ anticrossing at z = 0, so the gap minimum is the
+        # first grid point. That is not an anticrossing unless endpoint passages are allowed explicitly.
+        ham = ControlModel(H_d=np.array([[0.0, 1.0], [1.0, 0.0]]), H_c=np.array([[1.0, 0.0], [0.0, -1.0]]))
+        ham.set_control(control_name="z", pulse_initial=1.0, pulse_final=10.0, initial_state=0, final_state=1,
+                        alpha=2.0, beta=2.0, dia_alpha=2.0, dia_beta=2.0, num_steps=65)
+
+        with pytest.raises(InvalidControlParameterError, match="bracket the anticrossing"):
+            ham.solve_problem(pulse_accuracy=30)
+
+        ham.allow_endpoint_passages = True
+        ham.solve_problem(pulse_accuracy=30)
+
+        assert ham._flags["ode_solved"] is True
+        assert ham._dia_list is not None and np.all(ham._dia_list.occupied == 1)
+
+    def test_endpoint_override_invalidates_only_from_the_diabatic_list(self):
+        ham = ControlModel(H_d=np.array([[0.0, 1.0], [1.0, 0.0]]), H_c=np.array([[1.0, 0.0], [0.0, -1.0]]))
+        ham.set_control(pulse_initial=-1.0, pulse_final=10.0, initial_state=0, final_state=1, alpha=2.0, beta=2.0,
+                        dia_alpha=2.0, dia_beta=2.0, num_steps=65)
+        ham.solve_problem(pulse_accuracy=30)
+
+        ham.set_control(allow_endpoint_passages=False)  # unchanged value
+        assert ham._flags["ode_solved"]
+        ham.set_control(allow_endpoint_passages=True)
+        assert ham._flags["eigenproblem_solved"] and not ham._flags["dia_list_computed"]
+        assert not ham._flags["metric_computed"] and not ham._flags["ode_solved"]
+        assert "allow_endpoint_passages=True" in str(ham)
+
+    def test_endpoint_override_must_be_boolean(self, configured_ham):
+        with pytest.raises(InvalidControlParameterError, match="must be a boolean"):
+            configured_ham.set_control(allow_endpoint_passages=cast(Any, 1))
+        assert configured_ham.allow_endpoint_passages is False
 
 
 # ---------------------------------------------------------------------------
@@ -1518,7 +2061,8 @@ class TestDiabaticMetricPath:
 
 
 class TestMutability:
-    def test_parameter_change_keeps_diabatic_list(self):
+    def test_parameter_change_invalidates_diabatic_list(self):
+        """The diabatic list follows the anticrossings of the spectrum, so it is recomputed with the eigenproblem."""
         model = ControlModel(lz_hamiltonian, lz_partial)
 
         model.set_parameters(delta=1.0)
@@ -1528,13 +2072,45 @@ class TestMutability:
 
         model.solve_problem()
 
-        dia_list = model._dia_list
+        assert model._flags["dia_list_computed"] is True
 
         model.set_parameters(delta=2.0)
 
         assert model._flags["eigenproblem_solved"] is False
+        assert model._flags["dia_list_computed"] is False
+
+        model.solve_problem()
+
         assert model._flags["dia_list_computed"] is True
-        assert model._dia_list is dia_list
+        assert model._dia_list is not None
+        assert model._dia_list.occupied.shape == (model.num_steps,)
+        assert model._dia_list.adiabatic_fraction.shape == (model.num_steps, 2)
+
+    def test_diabatic_metric_skips_a_second_anticrossing_with_the_same_state(self):
+        """After a diabatic passage to the final state, a later anticrossing of the same pair is adiabatic."""
+
+        def two_anticrossings(lam: float) -> np.ndarray:
+            return np.array([[lam ** 2 - 1.0, 0.1], [0.1, 1.0 - lam ** 2]])
+
+        model = ControlModel(two_anticrossings)
+        model.set_control(control_name="lam", pulse_initial=-2.0, pulse_final=2.0, initial_state=0, final_state=1,
+                          alpha=2.0, beta=2.0, dia_alpha=-1.0, dia_beta=1.0, num_steps=257, )
+
+        # dH/dlam = diag(2 lam, -2 lam) vanishes at lam = 0, a grid point, so the metric is zero there (also for a
+        # purely adiabatic transfer): the warning is physical, not caused by the diabatic blending (P-03).
+        with pytest.warns(NumericalStabilityWarning, match="zero or numerically singular near control value"):
+            model.solve_problem()
+
+        x = model.control_pulse
+        assert model._dia_list is not None
+        dia_list = model._dia_list.dense()
+        assert np.all(dia_list[x <= -0.8, 0, 1] == 0)
+        assert np.all(dia_list[x >= 0.0, 0, 1] == 1)
+        # The spectrum is mirror-symmetric, but the two anticrossings use different exponents.
+        metric = model._metric_tensor
+        assert metric is not None
+        assert metric[np.argmin(np.abs(x - 1.0))] > 0
+        assert metric[np.argmin(np.abs(x - 1.0))] != metric[np.argmin(np.abs(x + 1.0))]
 
     def test_state_change_invalidates_diabatic_list(self):
         def hamiltonian(lam, t):
@@ -1594,3 +2170,112 @@ class TestIndices:
                           final_state=final_state, alpha=2.0, beta=2.0, dia_alpha=1, dia_beta=2, )
 
         model.solve_problem()
+
+
+# ---------------------------------------------------------------------------
+# Test the norm that combines the transitions into the metric
+# ---------------------------------------------------------------------------
+
+
+class TestTransitionNorm:
+    # Three levels, both transitions from the ground state coupled by dH/dx = H_C.
+    H_D = np.array([[0.0, 1.0, 0.4], [1.0, 0.0, 0.5], [0.4, 0.5, 2.0]])
+    H_C = np.diag([1.0, -1.0, 0.3])
+
+    def _solved(self, norm: float) -> ControlModel:
+        model = ControlModel(H_d=self.H_D, H_c=self.H_C)
+        model.set_control(pulse_initial=-3.0, pulse_final=3.0, initial_state=0, alpha=4.0, beta=2.0, num_steps=129,
+                          norm=norm)
+        model.solve_problem()
+        return model
+
+    @staticmethod
+    def _metric(model: ControlModel) -> np.ndarray:
+        assert model._metric_tensor is not None
+        return model._metric_tensor
+
+    @staticmethod
+    def _contributions(model: ControlModel, alpha: float = 4.0, beta: float = 2.0) -> np.ndarray:
+        """The adiabatic contributions r_k of the two transitions from the occupied state, one column each."""
+        energies, elements = model._centered_energies, model._matrix_elements
+        occupied = model._occupied_states
+        assert energies is not None and elements is not None and occupied is not None
+        points = np.arange(energies.shape[0])
+        columns = []
+        for offset in (1, 2):
+            state = (occupied + offset) % 3
+            gap = np.abs(energies[points, state] - energies[points, occupied])
+            columns.append(elements[points, occupied, state] ** beta / gap ** alpha)
+        return np.stack(columns, axis=1)
+
+    def test_adiabatic_metric_is_the_squared_lp_norm_of_the_amplitudes(self):
+        metric = {norm: self._metric(self._solved(norm)) for norm in (1, 2, 4, np.inf)}
+        contributions = self._contributions(self._solved(2))
+
+        np.testing.assert_allclose(metric[2], contributions.sum(axis=1), rtol=1e-12)
+        np.testing.assert_allclose(metric[1], np.sqrt(contributions).sum(axis=1) ** 2, rtol=1e-12)
+        np.testing.assert_allclose(metric[4], np.sqrt((contributions ** 2).sum(axis=1)), rtol=1e-12)
+        np.testing.assert_allclose(metric[np.inf], contributions.max(axis=1), rtol=1e-12)
+
+    def test_larger_norms_give_smaller_metrics(self):
+        metric = [self._metric(self._solved(norm)) for norm in (1, 2, 4, np.inf)]
+
+        for larger, smaller in itertools.pairwise(metric):
+            assert np.all(smaller <= larger * (1 + 1e-12))
+        assert np.any(metric[0] > metric[1] * 1.01)
+
+    def test_norms_agree_for_a_single_transition(self, configured_affine_ham):
+        metrics = []
+        for norm in (1, 2, np.inf):
+            configured_affine_ham.norm = norm
+            configured_affine_ham.solve_problem()
+            metrics.append(self._metric(configured_affine_ham).copy())
+
+        np.testing.assert_allclose(metrics[0], metrics[1], rtol=1e-14)
+        np.testing.assert_allclose(metrics[2], metrics[1], rtol=1e-14)
+
+    def test_norm_changes_the_pulse(self):
+        pulses = [self._solved(norm).synthesize_pulse(1.0) for norm in (1, 2)]
+        times = np.linspace(0, 1, 11)
+        l1, l2 = (np.interp(times, pulse.times, pulse.pulse) for pulse in pulses)
+
+        assert not np.allclose(l1, l2)
+
+    def test_diabatic_metric_uses_the_norm(self):
+        def three_levels(lam, t):
+            return np.array([[lam, t, 0], [t, -lam, 1], [0, 1, 0]])
+
+        metric = []
+        for norm in (1, 2, np.inf):
+            model = ControlModel(three_levels)
+            model.set_parameters(t=1.0)
+            model.set_control(control_name="lam", pulse_initial=-2.0, pulse_final=2.0, initial_state=0, final_state=1,
+                              alpha=2.0, beta=2.0, dia_alpha=1.0, dia_beta=1.0, norm=norm, )
+            model.solve_problem()
+            assert model._dia_list is not None
+            metric.append(self._metric(model))
+
+        for larger, smaller in itertools.pairwise(metric):
+            assert np.all(smaller <= larger * (1 + 1e-12))
+        assert np.any(metric[0] > metric[1] * 1.01)
+
+    def test_large_norm_and_exponents_do_not_overflow(self):
+        model = ControlModel(H_d=1e-3 * self.H_D, H_c=1e-3 * self.H_C)
+        model.set_control(pulse_initial=-3e-3, pulse_final=3e-3, initial_state=0, alpha=40.0, beta=2.0,
+                          num_steps=129, norm=64)
+        config = model._check_control_parameters()
+        model._solve_eigenproblem(config)
+        model._compute_metric_tensor(config)
+
+        metric = self._metric(model)
+        contributions = self._contributions(model, alpha=40.0)
+        assert np.all(np.isfinite(metric))
+        assert np.max(contributions) > 1e100
+        assert np.all(metric >= contributions.max(axis=1) * (1 - 1e-12))
+        assert np.all(metric <= contributions.max(axis=1) * 2 ** (2 / 64) * (1 + 1e-12))
+
+    def test_summary_and_str_show_the_norm(self, configured_ham):
+        configured_ham.norm = np.inf
+
+        assert "norm=inf" in str(configured_ham)
+        assert "Transition norm → L^inf" in repr(configured_ham)
