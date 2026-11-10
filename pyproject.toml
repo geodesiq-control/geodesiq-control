@@ -47,8 +47,8 @@ Changelog = "https://github.com/geodesiq-control/geodesiq-control/blob/main/CHAN
 
 [dependency-groups]
 test = [
-    "pytest>=8,<9",
-    "pytest-cov>=5,<7",
+    "pytest>=9.0.3,<10",
+    "pytest-cov>=5,<8",
 ]
 lint = [
     "ruff>=0.15.20",
@@ -60,7 +60,6 @@ build = [
     "twine>=7",
 ]
 bench = [
-    "filelock>=3.15",
     "ipython>=8.0",
     "ipywidgets>=8.1",
     "pandas>=2.0",
@@ -102,7 +101,6 @@ dev = [
     "jupyterlab-code-formatter>=3.1.0",
     "jupyterlab-lsp>=5.3.0",
     "line-profiler>=5.0.2",
-    "notebook-intelligence>=5.4.0",
     "python-lsp-ruff>=2.3.4",
     "python-lsp-server>=1.15.0",
     "scienceplots>=2.2.2",
@@ -130,6 +128,12 @@ include = [
 [tool.uv]
 package = true
 default-groups = ["dev"]
+# Floors for transitive dependencies with security advisories (Dependabot). Pillow and tornado have no patched
+# release for Python 3.10, so the Python 3.10 resolution keeps older versions of both.
+constraint-dependencies = [
+    "pillow>=13.0.0; python_version >= '3.11'",
+    "tornado>=6.6; python_version >= '3.11'",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -32,7 +32,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
-from filelock import FileLock
 from tqdm import tqdm
 
 # ---------------------------------------------------------------------------
@@ -395,19 +394,17 @@ def save_results(df: pd.DataFrame) -> Path:
     allows filtering by session later.
     """
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    lock_path = HISTORY_FILE.with_suffix(HISTORY_FILE.suffix + ".lock")
     temporary = HISTORY_FILE.with_suffix(HISTORY_FILE.suffix + f".{os.getpid()}.tmp")
 
-    with FileLock(lock_path):
-        combined = df
-        if HISTORY_FILE.exists():
-            existing = pd.read_parquet(HISTORY_FILE)
-            combined = pd.concat([existing, df], ignore_index=True)
-        try:
-            combined.to_parquet(temporary, index=False)
-            os.replace(temporary, HISTORY_FILE)
-        finally:
-            temporary.unlink(missing_ok=True)
+    combined = df
+    if HISTORY_FILE.exists():
+        existing = pd.read_parquet(HISTORY_FILE)
+        combined = pd.concat([existing, df], ignore_index=True)
+    try:
+        combined.to_parquet(temporary, index=False)
+        os.replace(temporary, HISTORY_FILE)
+    finally:
+        temporary.unlink(missing_ok=True)
     return HISTORY_FILE
 
 
