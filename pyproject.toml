@@ -129,9 +129,9 @@ include = [
 ]
 
 [tool.uv]
-# The uv minor version that writes and reads uv.lock, here and in CI (setup-uv installs the newest matching release).
-# Raise it deliberately, together with a fresh `uv lock`.
-required-version = ">=0.12,<0.13"
+# The oldest uv that reads and writes uv.lock, here and in CI (setup-uv installs the newest matching release). No upper
+# bound: Read the Docs always installs the latest uv and would fail on a cap.
+required-version = ">=0.12"
 package = true
 default-groups = ["dev"]
 # The lock file is resolved for Python >= 3.11.5 only: the patched soupsieve (>= 4, via beautifulsoup4 in the
