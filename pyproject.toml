@@ -78,7 +78,7 @@ examples = [  # Executes examples/landau_zener.ipynb in CI.
     "tqdm>=4.68.2",
 ]
 jupyterlite = [  # Runs the notebooks of the JupyterLite site in headless Chromium (jupyterlite/run_notebooks.py).
-    "playwright==1.64.1",
+    "playwright==1.65.0",
 ]
 notebooks = [
     "ipykernel==6.29.5", # Pinned because newer releases have caused ipywidgets regressions.
