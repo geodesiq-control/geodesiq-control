@@ -25,7 +25,7 @@ preferred-citation:
   type: article
   title: "geodesiq: a Python package for geometric diabatic–adiabatic optimal state transfer"
   authors:
-    - family-names: "Fernandez-Fernandez"
+    - family-names: "Fernández-Fernández"
       given-names: "David"
     - family-names: "Ventura-Meinersen"
       given-names: "Chris"
