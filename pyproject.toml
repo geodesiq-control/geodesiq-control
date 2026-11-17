@@ -13,7 +13,7 @@ authors = [
     { name = "David Fernández Fernández", email = "david.fernandezf@hotmail.com" },
     { name = "Christian Ventura Meinersen", email = "C.VenturaMeinersen@tudelft.nl" }
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 keywords = ["quantum-control", "optimal-control", "geodesic", "quantum-computing", "python", "spin-qubits",
     "superconducting-qubits", "trapped-ions", "quantum-dots"]
 classifiers = [
@@ -22,11 +22,11 @@ classifiers = [
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Scientific/Engineering",
     "Typing :: Typed",
 ]
@@ -54,9 +54,8 @@ lint = [
     "ruff>=0.15.20",
     "ty>=0.0.82",
 ]
-build = [
-    "build>=1.2",
-    "packaging>=24",
+build = [  # The distributions are built with `uv build`; twine checks their metadata.
+    "packaging>=24",  # dev/bump_version.py and its tests.
     "twine>=7",
 ]
 bench = [
@@ -78,6 +77,9 @@ examples = [  # Executes examples/landau_zener.ipynb in CI.
     "nbclient>=0.10",
     "tqdm>=4.68.2",
 ]
+jupyterlite = [  # Runs the notebooks of the JupyterLite site in headless Chromium (jupyterlite/run_notebooks.py).
+    "playwright==1.64.1",
+]
 notebooks = [
     "ipykernel==6.29.5", # Pinned because newer releases have caused ipywidgets regressions.
     "ipympl>=0.10.0",
@@ -96,6 +98,7 @@ dev = [
     { include-group = "bench" },
     { include-group = "docs" },
     { include-group = "examples" },
+    { include-group = "jupyterlite" },
     { include-group = "notebooks" },
     "cmocean>=4.0.3",  # Colour maps of the manuscript figures (dev/manuscript_figures.ipynb).
     "jupyterlab-code-formatter>=3.1.0",
@@ -126,13 +129,20 @@ include = [
 ]
 
 [tool.uv]
+# The uv minor version that writes and reads uv.lock, here and in CI (setup-uv installs the newest matching release).
+# Raise it deliberately, together with a fresh `uv lock`.
+required-version = ">=0.12,<0.13"
 package = true
 default-groups = ["dev"]
-# Floors for transitive dependencies with security advisories (Dependabot). Pillow and tornado have no patched
-# release for Python 3.10, so the Python 3.10 resolution keeps older versions of both.
+# The lock file is resolved for Python >= 3.11.5 only: the patched soupsieve (>= 4, via beautifulsoup4 in the
+# notebook tooling) requires it, and otherwise the lock would keep a vulnerable soupsieve 2.x for 3.11.0-3.11.4.
+# The package itself still supports any Python >= 3.11 (requires-python).
+environments = ["python_full_version >= '3.11.5'"]
+# Floors for transitive dependencies with security advisories (Dependabot).
 constraint-dependencies = [
-    "pillow>=13.0.0; python_version >= '3.11'",
-    "tornado>=6.6; python_version >= '3.11'",
+    "pillow>=13.0.0",
+    "soupsieve>=4.0.0",
+    "tornado>=6.6.1",
 ]
 
 [tool.pytest.ini_options]
@@ -141,7 +151,7 @@ addopts = "-q --cov=geodesiq --cov-report=term-missing --cov-fail-under=90"
 # Unexpected GeodesiQWarnings fail the tests: see pytest_configure in tests/conftest.py.
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 120
 src = ["src"]
 

@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+# Every `uv sync` fails if uv.lock is out of date with pyproject.toml (as `uv sync --locked`).
+env:
+  UV_LOCKED: 1
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -40,7 +44,7 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.10"
+          python-version: "3.11"
 
       - name: Install uv
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
@@ -49,7 +53,7 @@ jobs:
 
       # The test group lets ty resolve pytest in tests/.
       - name: Sync environment
-        run: uv sync --locked --no-default-groups --group lint --group test
+        run: uv sync --no-default-groups --group lint --group test
 
       - name: Lint
         run: uv run --no-sync ruff check src tests
@@ -81,7 +85,7 @@ jobs:
           enable-cache: true
 
       - name: Sync environment
-        run: uv sync --locked --no-default-groups --group test
+        run: uv sync --no-default-groups --group test
 
       - name: Run tests with coverage
         run: uv run --no-sync pytest -q --cov=geodesiq --cov-report=term-missing --cov-report=xml:coverage.xml
@@ -121,7 +125,7 @@ jobs:
 
       # As on Read the Docs (.readthedocs.yaml): the API reference is read from src/ without importing geodesiq.
       - name: Sync environment
-        run: uv sync --locked --only-group docs
+        run: uv sync --only-group docs
 
       - name: Build documentation
         run: uv run --no-sync mkdocs build --strict
@@ -145,7 +149,7 @@ jobs:
           enable-cache: true
 
       - name: Sync environment
-        run: uv sync --locked --no-default-groups --group examples
+        run: uv sync --no-default-groups --group examples
 
       # Executes the notebook without changing it; a failing cell fails the job.
       - name: Execute landau_zener.ipynb
@@ -184,15 +188,18 @@ jobs:
       - name: Build site
         run: bash jupyterlite/build.sh
 
+      # Playwright from the lock file; the package itself is not needed to drive the browser.
+      - name: Sync environment
+        run: uv sync --only-group jupyterlite
+
       - name: Install Chromium for Playwright
-        run: uv run --no-project --with playwright==1.64.1 playwright install --with-deps chromium
+        run: uv run --no-sync playwright install --with-deps chromium
 
       # The smoke test and the fast examples. dqd_model and many_body are too slow for CI in the browser; run them
       # locally with jupyterlite/run_notebooks.py.
       - name: Run notebooks in the browser
         run: |
-          uv run --no-project --with playwright==1.64.1 \
-            python jupyterlite/run_notebooks.py --screenshots jupyterlite-screenshots \
+          uv run --no-sync python jupyterlite/run_notebooks.py --screenshots jupyterlite-screenshots \
             smoke_test.ipynb landau_zener.ipynb four_level.ipynb
 
       - name: Upload screenshots
@@ -237,7 +244,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ ubuntu-latest, macos-latest, windows-latest ]
-        python-version: [ "3.10", "3.11", "3.12", "3.13", "3.14" ]
+        python-version: [ "3.11", "3.12", "3.13", "3.14", "3.15" ]
 
     steps:
       - uses: actions/checkout@v7
@@ -253,7 +260,7 @@ jobs:
           cache-suffix: ${{ matrix.os }}-py${{ matrix.python-version }}
 
       - name: Sync environment
-        run: uv sync --locked --no-default-groups --group test
+        run: uv sync --no-default-groups --group test
 
       - name: Run full test suite
         run: uv run --no-sync pytest --no-cov
@@ -277,10 +284,11 @@ jobs:
           enable-cache: true
 
       - name: Sync environment
-        run: uv sync --locked --only-group build
+        run: uv sync --only-group build
 
+      # --no-sources: build exactly as a user installing from PyPI would, ignoring any [tool.uv.sources].
       - name: Build distributions
-        run: uv run --no-sync python -m build
+        run: uv build --no-sources
 
       - name: Check distributions
         run: uv run --no-sync twine check --strict dist/*

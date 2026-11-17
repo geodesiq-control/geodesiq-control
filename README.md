@@ -178,5 +178,5 @@ uv run ruff format --check src
 uv run ty check src tests
 uv run pytest
 uv run mkdocs build --strict
-uv run python -m build
+uv build
 ```

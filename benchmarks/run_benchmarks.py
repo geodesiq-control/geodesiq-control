@@ -28,7 +28,7 @@ import time
 import timeit
 import warnings
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -227,7 +227,7 @@ def _make_rows(scenario: str, sweep_var: str, sweep_val: float | int | str, vari
 def _machine_info() -> dict:
     return {"geodesiq_version": geodesiq.__version__, "python_version": sys.version.split()[0],
             "platform": platform.platform(), "cpu_count": os.cpu_count() or 1, "processor": platform.processor(),
-            "run_timestamp": datetime.now(timezone.utc).isoformat(), }
+            "run_timestamp": datetime.now(UTC).isoformat(), }
 
 
 # ---------------------------------------------------------------------------

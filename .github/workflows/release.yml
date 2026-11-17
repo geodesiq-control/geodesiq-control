@@ -8,6 +8,10 @@ on:
 
 permissions: { }
 
+# Every `uv sync` fails if uv.lock is out of date with pyproject.toml (as `uv sync --locked`).
+env:
+  UV_LOCKED: 1
+
 concurrency:
   group: release-main
   cancel-in-progress: false
@@ -124,10 +128,11 @@ jobs:
           PY
 
       - name: Sync build environment
-        run: uv sync --locked --only-group build
+        run: uv sync --only-group build
 
+      # --no-sources: build exactly as a user installing from PyPI would, ignoring any [tool.uv.sources].
       - name: Build distributions
-        run: uv run --no-sync python -m build
+        run: uv build --no-sources
 
       - name: Check distributions
         run: uv run --no-sync twine check --strict dist/*
