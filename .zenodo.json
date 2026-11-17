@@ -33,7 +33,7 @@
   "license": "lgpl-2.1",
   "access_right": "open",
   "language": "eng",
-  "notes": "Funding: G.P. and D.F.-F. acknowledge support from the Spanish Ministry of Science through grant PID2023-149072NBI00 and from the CSIC Research Platform PTI-001. M.R.-R. and C.V.-M. acknowledge that the EU partly supported this research through the Horizon Europe QLSI2 project and was partly sponsored by the Army Research Office under Award Number W911NF-23-1-0110. M.R.-R. acknowledges support from the Dutch Research Council (NWO) under Award Number Vidi TTW 22204.",
+  "notes": "Funding: G.P. and D.F.-F. acknowledge support from the Spanish Ministry of Science through grant PID2023-149072NB-I00 and from the CSIC Research Platform PTI-001. M.R.-R. and C.V.-M. acknowledge that the EU partly supported this research through the Horizon Europe QLSI2 project and was partly sponsored by the Army Research Office under Award Number W911NF-23-1-0110. M.R.-R. acknowledges support from the Dutch Research Council (NWO) under Award Number Vidi TTW 22204.",
   "custom": {
     "code:codeRepository": "https://github.com/geodesiq-control/geodesiq-control",
     "code:programmingLanguage": [
