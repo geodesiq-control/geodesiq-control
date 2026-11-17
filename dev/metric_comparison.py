@@ -60,9 +60,9 @@ def dqd_hamiltonian(eps, U, tc, Ez, dEz, dEx):
     return np.array(
         [
             [U - eps, 0, -tc, tc, 0],
-            [0, Ez, dEx, -dEx, 0],
-            [-tc, dEx, dEz, 0, dEx],
-            [tc, -dEx, 0, -dEz, -dEx],
+            [0, Ez, -dEx, dEx, 0],
+            [-tc, -dEx, dEz, 0, dEx],
+            [tc, dEx, 0, -dEz, -dEx],
             [0, 0, dEx, -dEx, -Ez],
         ],
         dtype=float,
