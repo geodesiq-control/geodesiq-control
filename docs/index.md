@@ -61,4 +61,5 @@ If the Hamiltonian is affine in the control, `H(z) = H_d + z H_c`, pass the matr
 
 If you use `geodesiq` in your research, please cite it. The citation metadata is in
 [`CITATION.cff`](https://github.com/geodesiq-control/geodesiq-control/blob/main/CITATION.cff).
-Each release is archived on Zenodo with its own DOI.
+Each release is archived on Zenodo with its own DOI; the concept DOI
+[10.5281/zenodo.23985948](https://doi.org/10.5281/zenodo.23985948) always resolves to the latest version.

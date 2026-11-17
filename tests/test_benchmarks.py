@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
 
 # benchmarks/ is not shipped in the sdist, which includes the tests, and it needs the optional `bench` group;
 # importorskip skips the module in both cases.
-for module in ("pandas", "filelock", "tqdm"):
+for module in ("pandas", "tqdm"):
     pytest.importorskip(module)
 run_benchmarks = pytest.importorskip("benchmarks.run_benchmarks")
 make_ham = pytest.importorskip("benchmarks._models").make_ham

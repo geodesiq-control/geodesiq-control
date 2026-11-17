@@ -28,11 +28,10 @@ import time
 import timeit
 import warnings
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
-from filelock import FileLock
 from tqdm import tqdm
 
 # ---------------------------------------------------------------------------
@@ -228,7 +227,7 @@ def _make_rows(scenario: str, sweep_var: str, sweep_val: float | int | str, vari
 def _machine_info() -> dict:
     return {"geodesiq_version": geodesiq.__version__, "python_version": sys.version.split()[0],
             "platform": platform.platform(), "cpu_count": os.cpu_count() or 1, "processor": platform.processor(),
-            "run_timestamp": datetime.now(timezone.utc).isoformat(), }
+            "run_timestamp": datetime.now(UTC).isoformat(), }
 
 
 # ---------------------------------------------------------------------------
@@ -395,19 +394,17 @@ def save_results(df: pd.DataFrame) -> Path:
     allows filtering by session later.
     """
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    lock_path = HISTORY_FILE.with_suffix(HISTORY_FILE.suffix + ".lock")
     temporary = HISTORY_FILE.with_suffix(HISTORY_FILE.suffix + f".{os.getpid()}.tmp")
 
-    with FileLock(lock_path):
-        combined = df
-        if HISTORY_FILE.exists():
-            existing = pd.read_parquet(HISTORY_FILE)
-            combined = pd.concat([existing, df], ignore_index=True)
-        try:
-            combined.to_parquet(temporary, index=False)
-            os.replace(temporary, HISTORY_FILE)
-        finally:
-            temporary.unlink(missing_ok=True)
+    combined = df
+    if HISTORY_FILE.exists():
+        existing = pd.read_parquet(HISTORY_FILE)
+        combined = pd.concat([existing, df], ignore_index=True)
+    try:
+        combined.to_parquet(temporary, index=False)
+        os.replace(temporary, HISTORY_FILE)
+    finally:
+        temporary.unlink(missing_ok=True)
     return HISTORY_FILE
 
 

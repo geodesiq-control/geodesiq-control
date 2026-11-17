@@ -378,12 +378,12 @@ def crossing_map(eigenvectors: np.ndarray, matrix_elements: np.ndarray, rtol: fl
     state_map = np.tile(np.arange(dimension), (n_points, 1))
     # A state whose overlap with itself at the previous point exceeds 1/2 has the largest overlap with itself, so its
     # index cannot have changed. The full overlap matrix is only needed where this fails for some state.
-    candidates = []
+    candidates: list[int] = []
     for start in range(1, n_points, chunk):
         block = slice(start, min(start + chunk, n_points))
         previous = eigenvectors[block.start - 1 : block.stop - 1]
         same = np.abs(np.einsum("pij,pij->pj", previous.conj(), eigenvectors[block])) ** 2
-        candidates.extend(start + np.flatnonzero(np.any(same <= 0.5, axis=1)))
+        candidates.extend((start + np.flatnonzero(np.any(same <= 0.5, axis=1))).tolist())
 
     for point in candidates:
         overlap = np.abs(eigenvectors[point - 1].conj().T @ eigenvectors[point]) ** 2

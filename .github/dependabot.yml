@@ -1,0 +1,31 @@
+# Dependabot version updates: https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference
+# Pull requests go to dev; only dev may open PRs into main.
+version: 2
+
+updates:
+  # uv.lock (all dependency groups). Minor and patch updates come as one grouped PR a week; major updates one PR each.
+  - package-ecosystem: uv
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly
+    # Wait a few days after a release before proposing it, so that compromised or broken releases are usually yanked
+    # first. Security updates are not delayed.
+    cooldown:
+      default-days: 7
+    groups:
+      python-dependencies:
+        update-types: [ minor, patch ]
+    open-pull-requests-limit: 5
+
+  # The actions in .github/workflows, including the ones pinned to a commit SHA.
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: [ "*" ]

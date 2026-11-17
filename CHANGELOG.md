@@ -6,6 +6,24 @@ The format is based on Keep a Changelog and the project follows Semantic Version
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-17
+
+### Added
+
+- Zenodo concept DOI [10.5281/zenodo.23985948](https://doi.org/10.5281/zenodo.23985948) in `CITATION.cff`, the
+  README (badge and citation section) and the documentation.
+
+### Changed
+
+- Python 3.11 is now the minimum supported version (Python 3.10 support is dropped). The development lock file is
+  resolved for Python >= 3.11.5, so that it only contains patched versions of the dependencies with security
+  advisories (soupsieve, Pillow, tornado).
+- Python 3.15 is supported and tested in CI.
+- Development tooling follows the lock file more strictly: `[tool.uv] required-version` sets the oldest uv version
+  that reads `uv.lock`, Read the Docs and the JupyterLite browser test (Playwright, new `jupyterlite` dependency group)
+  install from it with `--locked`, and Dependabot proposes weekly updates of `uv.lock` and the GitHub Actions. The
+  distributions are built with `uv build` instead of `python -m build`.
+
 ## [0.4.0] - 2026-11-05
 
 ### Added

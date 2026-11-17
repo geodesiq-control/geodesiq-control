@@ -8,9 +8,10 @@ build:
   jobs:
     # Read the Docs runs `uv sync --group docs`, which also installs the default `dev` group of pyproject.toml
     # (Jupyter, quspin, ...). Install only the documentation tools instead. The API reference is generated from the
-    # sources in src/ without importing geodesiq, so the package itself is not needed.
+    # sources in src/ without importing geodesiq, so the package itself is not needed. --locked fails the build if
+    # uv.lock is out of date, so the docs use the versions CI tested.
     install:
-      - uv sync --only-group docs
+      - uv sync --locked --only-group docs
 
 # Selecting uv makes Read the Docs install uv and create the environment with `uv venv`; the command itself is
 # replaced by build.jobs.install above.

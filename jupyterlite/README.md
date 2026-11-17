@@ -19,7 +19,8 @@ Links to a single notebook:
 - `smoke_test.ipynb`: checks every part that could break in WebAssembly one by one and raises if any check fails.
 - `run_notebooks.py`: serves the built site, runs notebooks in a headless browser through the JupyterLab menus and
   fails if a cell does not run or prints a traceback. CI uses it; locally, e.g.
-  `uv run --no-project --with playwright python jupyterlite/run_notebooks.py --browser msedge smoke_test.ipynb`.
+  `uv run --group jupyterlite python jupyterlite/run_notebooks.py --browser msedge smoke_test.ipynb` (Playwright is
+  in the `jupyterlite` dependency group, pinned in `uv.lock`).
 
 The examples run unchanged. `many_body.ipynb` builds the Hamiltonian with NumPy when QuSpin is missing and runs the
 sweep sequentially when parameterrun is missing, as is the case here.

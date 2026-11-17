@@ -860,7 +860,7 @@ class TestUnitIndependence:
         model.solve_problem(pulse_accuracy=50)
 
         gaps = np.diff(np.sort(model.eigenenergies, axis=1), axis=1)
-        assert gaps.min() / np.ptp(model.eigenenergies, axis=1).max() < 1e-6
+        assert np.min(gaps) / np.max(np.ptp(model.eigenenergies, axis=1)) < 1e-6
         assert np.all(np.isfinite(model.control_sol))
 
 

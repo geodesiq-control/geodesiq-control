@@ -13,7 +13,7 @@ authors = [
     { name = "David Fernández Fernández", email = "david.fernandezf@hotmail.com" },
     { name = "Christian Ventura Meinersen", email = "C.VenturaMeinersen@tudelft.nl" }
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 keywords = ["quantum-control", "optimal-control", "geodesic", "quantum-computing", "python", "spin-qubits",
     "superconducting-qubits", "trapped-ions", "quantum-dots"]
 classifiers = [
@@ -22,11 +22,11 @@ classifiers = [
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Scientific/Engineering",
     "Typing :: Typed",
 ]
@@ -47,20 +47,18 @@ Changelog = "https://github.com/geodesiq-control/geodesiq-control/blob/main/CHAN
 
 [dependency-groups]
 test = [
-    "pytest>=8,<9",
-    "pytest-cov>=5,<7",
+    "pytest>=9.0.3,<10",
+    "pytest-cov>=5,<8",
 ]
 lint = [
     "ruff>=0.15.20",
     "ty>=0.0.82",
 ]
-build = [
-    "build>=1.2",
-    "packaging>=24",
+build = [  # The distributions are built with `uv build`; twine checks their metadata.
+    "packaging>=24",  # dev/bump_version.py and its tests.
     "twine>=7",
 ]
 bench = [
-    "filelock>=3.15",
     "ipython>=8.0",
     "ipywidgets>=8.1",
     "pandas>=2.0",
@@ -78,6 +76,9 @@ examples = [  # Executes examples/landau_zener.ipynb in CI.
     "ipykernel==6.29.5",  # Same pin as the notebooks group.
     "nbclient>=0.10",
     "tqdm>=4.68.2",
+]
+jupyterlite = [  # Runs the notebooks of the JupyterLite site in headless Chromium (jupyterlite/run_notebooks.py).
+    "playwright==1.64.1",
 ]
 notebooks = [
     "ipykernel==6.29.5", # Pinned because newer releases have caused ipywidgets regressions.
@@ -97,12 +98,12 @@ dev = [
     { include-group = "bench" },
     { include-group = "docs" },
     { include-group = "examples" },
+    { include-group = "jupyterlite" },
     { include-group = "notebooks" },
     "cmocean>=4.0.3",  # Colour maps of the manuscript figures (dev/manuscript_figures.ipynb).
     "jupyterlab-code-formatter>=3.1.0",
     "jupyterlab-lsp>=5.3.0",
     "line-profiler>=5.0.2",
-    "notebook-intelligence>=5.4.0",
     "python-lsp-ruff>=2.3.4",
     "python-lsp-server>=1.15.0",
     "scienceplots>=2.2.2",
@@ -128,8 +129,21 @@ include = [
 ]
 
 [tool.uv]
+# The oldest uv that reads and writes uv.lock, here and in CI (setup-uv installs the newest matching release). No upper
+# bound: Read the Docs always installs the latest uv and would fail on a cap.
+required-version = ">=0.12"
 package = true
 default-groups = ["dev"]
+# The lock file is resolved for Python >= 3.11.5 only: the patched soupsieve (>= 4, via beautifulsoup4 in the
+# notebook tooling) requires it, and otherwise the lock would keep a vulnerable soupsieve 2.x for 3.11.0-3.11.4.
+# The package itself still supports any Python >= 3.11 (requires-python).
+environments = ["python_full_version >= '3.11.5'"]
+# Floors for transitive dependencies with security advisories (Dependabot).
+constraint-dependencies = [
+    "pillow>=13.0.0",
+    "soupsieve>=4.0.0",
+    "tornado>=6.6.1",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -137,7 +151,7 @@ addopts = "-q --cov=geodesiq --cov-report=term-missing --cov-fail-under=90"
 # Unexpected GeodesiQWarnings fail the tests: see pytest_configure in tests/conftest.py.
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 120
 src = ["src"]
 
