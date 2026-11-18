@@ -235,3 +235,5 @@ dev/other_qoctrl/GradientDescend.ipynb
 Claude outputs/
 AGENTS.md
 .agents/
+# arXiv submission bundle (dev/prepare_arxiv.py)
+/arxiv/
