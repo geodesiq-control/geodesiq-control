@@ -73,7 +73,7 @@ docs = [
     "ruff>=0.15.20",  # Used by mkdocstrings to format the signatures in the API reference.
 ]
 examples = [  # Executes examples/landau_zener.ipynb in CI.
-    "ipykernel==6.29.5",  # Same pin as the notebooks group.
+    "ipykernel==7.4.0",  # Same pin as the notebooks group.
     "nbclient>=0.10",
     "tqdm>=4.68.2",
 ]
@@ -81,7 +81,7 @@ jupyterlite = [  # Runs the notebooks of the JupyterLite site in headless Chromi
     "playwright==1.65.0",
 ]
 notebooks = [
-    "ipykernel==6.29.5", # Pinned because newer releases have caused ipywidgets regressions.
+    "ipykernel==7.4.0", # Pinned because newer releases have caused ipywidgets regressions.
     "ipympl>=0.10.0",
     "joblib>=1.5.2",
     "jupyterlab>=4.6.3",
